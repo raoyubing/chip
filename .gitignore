@@ -10,3 +10,4 @@ apps/server/.venv/
 playwright-report/
 test-results/
 .DS_Store
+apps/server/.env.local

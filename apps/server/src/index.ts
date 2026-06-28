@@ -2,6 +2,8 @@ import cors from "@fastify/cors";
 import sensible from "@fastify/sensible";
 import Fastify from "fastify";
 import { nanoid } from "nanoid";
+import { readFileSync, existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { z } from "zod";
 import { createCandidate } from "./analyzer.js";
 import {
@@ -25,6 +27,12 @@ import type { Candidate, Job, SalaryData, SalaryFilters } from "./types.js";
 
 const server = Fastify({ logger: true });
 const port = Number(process.env.PORT || 5174);
+
+loadLocalEnv();
+
+const deepseekApiKey = process.env.DEEPSEEK_API_KEY || "";
+const deepseekBaseUrl = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com";
+const deepseekModel = process.env.DEEPSEEK_MODEL || "deepseek-v4-pro";
 
 await server.register(cors, { origin: true });
 await server.register(sensible);
@@ -65,6 +73,10 @@ const salaryFilterSchema = z.object({
   experience: z.string().min(1),
   industry: z.string().min(1),
   education: z.string().min(1),
+});
+
+const jobCopilotSchema = jobSchema.extend({
+  useCase: z.enum(["jd-optimize", "interview-questions"]).default("jd-optimize"),
 });
 
 server.get("/api/health", async () => ({ ok: true }));
@@ -166,6 +178,7 @@ server.patch("/api/candidates/:id/interview-stage", async (request) => {
     interviewTimeline: z.object({
       recommendedAt: z.string().optional(),
       firstInterviewPassedAt: z.string().optional(),
+      secondInterviewPassedAt: z.string().optional(),
       offerAt: z.string().optional(),
       onboardedAt: z.string().optional(),
     }).default({}),
@@ -202,6 +215,16 @@ server.post("/api/jobs/:id/salary/refresh", async (request) => {
   const salaryData = generateSalaryData(job, filters);
   upsertJob({ ...job, salaryData });
   return { salaryData, state: getState() };
+});
+
+server.post("/api/job-copilot", async (request) => {
+  const body = jobCopilotSchema.parse(request.body);
+  if (!deepseekApiKey) {
+    throw server.httpErrors.badRequest("未配置 DEEPSEEK_API_KEY，请先在 apps/server/.env.local 中配置。");
+  }
+
+  const result = await generateJobCopilot(body);
+  return result;
 });
 
 function buildCandidatesFromResumeInput(
@@ -257,6 +280,140 @@ function formatDateStamp(date = new Date()) {
   return date.toISOString().slice(0, 10);
 }
 
+async function generateJobCopilot(job: z.infer<typeof jobCopilotSchema>) {
+  const prompt = buildJobCopilotPrompt(job);
+  const response = await fetch(`${deepseekBaseUrl}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${deepseekApiKey}`,
+    },
+    body: JSON.stringify({
+      model: deepseekModel,
+      messages: [
+        {
+          role: "system",
+          content: "你是一位资深招聘业务顾问和企业HRBP，擅长将职位信息整理成清晰、可落地、适合中国招聘场景的输出。请严格输出 JSON，不要输出 markdown 代码块，不要输出多余解释。",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      temperature: 0.6,
+      response_format: {
+        type: "json_object",
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    requestLog("deepseek_error", { status: response.status, text });
+    throw server.httpErrors.badGateway(`DeepSeek 请求失败：${response.status}`);
+  }
+
+  const data = await response.json() as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  const content = data.choices?.[0]?.message?.content;
+  if (!content) throw server.httpErrors.badGateway("DeepSeek 未返回有效内容");
+
+  const parsed = safeJsonParse(content);
+  const schema = z.object({
+    recommendedTitle: z.string().default(""),
+    optimizedDescription: z.string().default(""),
+    actionSuggestions: z.array(z.string()).default([]),
+    interviewQuestions: z.array(z.object({
+      title: z.string(),
+      text: z.string(),
+      probe: z.string(),
+    })).default([]),
+  });
+  return schema.parse(parsed);
+}
+
+function buildJobCopilotPrompt(job: z.infer<typeof jobCopilotSchema>) {
+  const baseContext = [
+    `请基于以下职位信息生成招聘辅助内容。`,
+    `输出字段必须严格为 JSON 对象，包含：recommendedTitle(string), optimizedDescription(string), actionSuggestions(string[]), interviewQuestions([{title,text,probe}])。`,
+    `通用要求：`,
+    `1. 语言必须为中文。`,
+    `2. 不要输出 markdown，不要输出多余字段，不要输出解释性前后缀。`,
+    `3. 如果信息不足，仍要基于已有信息完成专业、合理、可用的输出。`,
+    ``,
+    `useCase: ${job.useCase}`,
+    `职位名称: ${job.title}`,
+    `所属部门: ${job.dept}`,
+    `工作城市: ${job.location}`,
+    `经验要求: ${job.experience}`,
+    `职位级别: ${job.level}`,
+    `薪资范围: ${job.salaryRange}`,
+    `招聘状态: ${job.status}`,
+    `岗位关键词: ${job.keywords}`,
+    `现有职位描述: ${job.description}`,
+  ];
+
+  if (job.useCase === "jd-optimize") {
+    return [
+      ...baseContext,
+      ``,
+      `其中 optimizedDescription 必须是一份可直接用于职位描述覆盖的“专业岗位 JD 正文”，必须严格遵守以下规则：`,
+      `1. 必须使用正式、专业、企业化书面表达，禁止使用“我们正在寻找”“你将负责”“加入我们”等口语化或招聘广告式写法。`,
+      `2. 不要写成一整段大白话，必须按标准 JD 结构输出，并保留清晰换行。`,
+      `3. optimizedDescription 必须严格按以下顺序组织：`,
+      `岗位概述：`,
+      `岗位职责：`,
+      `任职要求：`,
+      `优先条件：`,
+      `4. “岗位职责”“任职要求”“优先条件”下均需使用阿拉伯数字编号分点，如 1. 2. 3. 。`,
+      `5. “岗位概述”需为 1 段正式概述，不超过 2 句话；其余模块必须是条目式表达。`,
+      `6. 内容必须和岗位级别、经验要求、关键词、当前职责一致，强调真实招聘场景，不要空泛。`,
+      `7. recommendedTitle 需输出规范、专业、可发布的岗位名称，不要营销化修饰。`,
+      `8. actionSuggestions 输出 3-5 条，聚焦招聘动作建议，如渠道、筛选重点、画像校准。`,
+      `9. interviewQuestions 输出 5 条，每条都必须贴近该岗位职责与考核重点，并包含 title、text、probe。`,
+    ].join("\n");
+  }
+
+  return [
+    ...baseContext,
+    ``,
+    `当前任务重点是生成推荐面试问题。`,
+    `1. optimizedDescription 仍需返回一版专业、简洁的标准 JD 正文，结构同样使用“岗位概述 / 岗位职责 / 任职要求 / 优先条件”。`,
+    `2. interviewQuestions 输出 5 条，必须贴近岗位关键词、经验要求、职责描述，并包含 title、text、probe。`,
+    `3. 问题要体现结构化面试思路，避免空泛问法。`,
+    `4. actionSuggestions 输出 3-5 条，聚焦招聘筛选与面试推进建议。`,
+    `5. recommendedTitle 需输出规范、专业、可发布的岗位名称。`,
+  ].join("\n");
+}
+
+function safeJsonParse(content: string) {
+  const trimmed = content.trim();
+  const normalized = trimmed.startsWith("```")
+    ? trimmed.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim()
+    : trimmed;
+  return JSON.parse(normalized);
+}
+
+function loadLocalEnv() {
+  const envPath = resolve(process.cwd(), ".env.local");
+  if (!existsSync(envPath)) return;
+  const lines = readFileSync(envPath, "utf-8").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const index = trimmed.indexOf("=");
+    if (index <= 0) continue;
+    const key = trimmed.slice(0, index).trim();
+    const value = trimmed.slice(index + 1).trim().replace(/^['"]|['"]$/g, "");
+    if (!(key in process.env)) process.env[key] = value;
+  }
+}
+
+function requestLog(event: string, payload: Record<string, unknown>) {
+  server.log.warn({ event, ...payload });
+}
+
 function mergeInterviewTimeline(
   candidate: Candidate,
   body: {
@@ -277,6 +434,7 @@ function mergeInterviewTimeline(
     next.firstInterviewPassedAt = next.firstInterviewPassedAt || stamp;
   }
   if (body.interviewStage === "offer") {
+    next.secondInterviewPassedAt = next.secondInterviewPassedAt || stamp;
     next.offerAt = next.offerAt || stamp;
   }
   if (body.onboarded === "是") {

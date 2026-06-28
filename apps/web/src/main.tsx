@@ -1,7 +1,7 @@
 import React, { FormEvent, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import * as echarts from "echarts";
-import { api, type JobPayload, type ResumeUploadPayload } from "./api";
+import { api, type JobCopilotResult, type JobPayload, type ResumeUploadPayload } from "./api";
 import type { AppState, Candidate, Job, ResumeFilePayload, SalaryData, SalaryFilters } from "./types";
 import "./styles.css";
 
@@ -1072,7 +1072,7 @@ function JobsView({
                     <Badge color={statusColor(job.status)}>{job.status}</Badge>
                   </div>
                   <div className="kv"><span>{job.salaryRange}</span><span>{job.location}</span><span>{job.experience}</span></div>
-                  <p className="desc">{job.description}</p>
+                  <p className="desc job-card-desc">{job.description}</p>
                 </article>
               ))}
             </div>
@@ -2912,8 +2912,11 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
     status: job?.status || "招聘中",
   });
   const [jdResult, setJdResult] = useState<{ description: string; html: React.ReactNode } | null>(null);
+  const [generatedQuestions, setGeneratedQuestions] = useState<JobCopilotResult["interviewQuestions"]>(buildJobQuestions(form));
+  const [copilotLoading, setCopilotLoading] = useState<null | "jd" | "questions">(null);
+  const [copilotError, setCopilotError] = useState("");
   const [copied, setCopied] = useState(false);
-  const interviewQuestions = buildJobQuestions(form);
+  const interviewQuestions = generatedQuestions.length ? generatedQuestions : buildJobQuestions(form);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -2921,27 +2924,78 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
     onSaved(next);
   }
 
-  const optimize = () => {
-    const keywords = splitKeywords(form.keywords).slice(0, 3);
-    const description = `负责${form.dept || "相关业务"}${form.title || "岗位"}工作，围绕${keywords.join("、") || "关键任务"}建立清晰推进机制；结合业务目标完成诊断、方案设计、跨团队协同与结果复盘，持续提升组织效率和交付质量。`;
-    setJdResult({
-      description,
-      html: (
-        <>
-          <div className="tool-block">
-            <span className="tool-label">推荐标题</span>
-            <strong>{form.title || "目标岗位"}｜{form.location || "核心城市"}｜{form.level || "关键岗位"}</strong>
-          </div>
-          <div className="tool-block">
-            <span className="tool-label">优化描述</span>
-            <div className="row-between">
-              <p>{description}</p>
-              <button className="btn ghost compact" type="button" onClick={() => setForm({ ...form, description })}>一键覆盖职位描述</button>
+  async function optimize() {
+    setCopilotLoading("jd");
+    setCopilotError("");
+    try {
+      const result = await api.generateJobCopilot({ ...form, useCase: "jd-optimize" });
+      const description = normalizeJdDescription(result.optimizedDescription || form.description);
+      setGeneratedQuestions(result.interviewQuestions.length ? result.interviewQuestions : buildJobQuestions(form));
+      setJdResult({
+        description,
+        html: (
+          <>
+            <div className="tool-block">
+              <span className="tool-label">推荐标题</span>
+              <strong>{result.recommendedTitle || `${form.title || "目标岗位"}｜${form.location || "核心城市"}｜${form.level || "关键岗位"}`}</strong>
             </div>
-          </div>
-        </>
-      ),
-    });
+            <div className="tool-block">
+              <div className="row-between tool-heading-row">
+                <span className="tool-label">优化描述</span>
+                <button className="btn ghost compact" type="button" onClick={() => setForm({ ...form, description })}>一键覆盖职位描述</button>
+              </div>
+              {renderJdDescription(description)}
+            </div>
+            {result.actionSuggestions.length ? (
+              <div className="tool-block">
+                <span className="tool-label">行动建议</span>
+                <ul className="tool-bullet-list">
+                  {result.actionSuggestions.map((item) => <li key={item}>{item}</li>)}
+                </ul>
+              </div>
+            ) : null}
+          </>
+        ),
+      });
+    } catch (error) {
+      setCopilotError(error instanceof Error ? error.message : "生成失败，请稍后重试");
+    } finally {
+      setCopilotLoading(null);
+    }
+  }
+
+  async function refreshInterviewQuestions() {
+    setCopilotLoading("questions");
+    setCopilotError("");
+    try {
+      const result = await api.generateJobCopilot({ ...form, useCase: "interview-questions" });
+      setGeneratedQuestions(result.interviewQuestions.length ? result.interviewQuestions : buildJobQuestions(form));
+      if (!jdResult && result.optimizedDescription) {
+        const description = normalizeJdDescription(result.optimizedDescription);
+        setJdResult({
+          description,
+          html: (
+            <>
+              <div className="tool-block">
+                <span className="tool-label">推荐标题</span>
+                <strong>{result.recommendedTitle || form.title || "目标岗位"}</strong>
+              </div>
+              <div className="tool-block">
+                <div className="row-between tool-heading-row">
+                  <span className="tool-label">优化描述</span>
+                  <button className="btn ghost compact" type="button" onClick={() => setForm({ ...form, description })}>一键覆盖职位描述</button>
+                </div>
+                {renderJdDescription(description)}
+              </div>
+            </>
+          ),
+        });
+      }
+    } catch (error) {
+      setCopilotError(error instanceof Error ? error.message : "生成失败，请稍后重试");
+    } finally {
+      setCopilotLoading(null);
+    }
   };
 
   const copyQuestions = async () => {
@@ -2951,7 +3005,7 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
   };
 
   return (
-    <Modal onClose={onClose} actions={<button className="btn primary" type="submit" form="jobForm">保存职位</button>}>
+    <Modal className="modal-wide modal-job-editor" onClose={onClose} actions={<button className="btn primary" type="submit" form="jobForm">保存职位</button>}>
       <form id="jobForm" onSubmit={submit}>
         <div className="modal-body form-grid">
           <Input label="职位名称" value={form.title} onChange={(title) => setForm({ ...form, title })} />
@@ -2972,37 +3026,49 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
             <textarea required value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
           </label>
 
-          <section className="job-tool-card full">
-            <div className="job-tool-head">
-              <div>
-                <h4>JD优化器</h4>
-                <p>基于当前职位信息，离线生成更适合发布的岗位卖点与职责表达。</p>
+          <div className="job-tool-grid full">
+            <section className="job-tool-card">
+              <div className="job-tool-head">
+                <div className="job-tool-summary">
+                  <h4>JD优化器</h4>
+                  <p>基于当前职位信息，调用模型生成更适合发布的岗位卖点、职责表达和行动建议。</p>
+                </div>
+                <div className="job-tool-actions">
+                  <button type="button" className="btn ghost" onClick={optimize} disabled={copilotLoading !== null}>
+                    {copilotLoading === "jd" ? "生成中..." : "生成"}
+                  </button>
+                </div>
               </div>
-              <button type="button" className="btn ghost" onClick={optimize}>生成优化建议</button>
-            </div>
-            <div className={`tool-result ${jdResult ? "" : "empty-mini"}`}>{jdResult?.html || "点击生成后，将展示岗位标题、关键词和职位描述优化建议。"}</div>
-          </section>
+              <div className={`tool-result ${jdResult ? "" : "empty-mini"}`}>{jdResult?.html || "点击生成后，将展示岗位标题、关键词和职位描述优化建议。"}</div>
+            </section>
 
-          <section className="job-tool-card full">
-            <div className="job-tool-head">
-              <div>
-                <h4>推荐面试问题</h4>
-                <p>围绕关键词、经验要求与岗位职责，生成结构化面试追问。</p>
+            <section className="job-tool-card">
+              <div className="job-tool-head">
+                <div className="job-tool-summary">
+                  <h4>推荐面试问题</h4>
+                  <p>围绕关键词、经验要求与岗位职责，调用模型生成结构化面试追问。</p>
+                </div>
+                <div className="job-tool-actions">
+                  <button type="button" className="btn ghost" onClick={refreshInterviewQuestions} disabled={copilotLoading !== null}>
+                    {copilotLoading === "questions" ? "生成中..." : "生成"}
+                  </button>
+                  <button type="button" className="btn ghost" onClick={copyQuestions}>{copied ? "已复制" : "复制"}</button>
+                </div>
               </div>
-              <button type="button" className="btn ghost" onClick={copyQuestions}>{copied ? "已复制" : "一键复制"}</button>
-            </div>
-            <div className="tool-result">
-              <div className="question-list">
-                {interviewQuestions.map((question, index) => (
-                  <article className="question-item" key={question.title}>
-                    <strong>{index + 1}. {question.title}</strong>
-                    <p>{question.text}</p>
-                    <span>{question.probe}</span>
-                  </article>
-                ))}
+              {copilotError ? <div className="tool-error">{copilotError}</div> : null}
+              <div className="tool-result">
+                <div className="question-list">
+                  {interviewQuestions.map((question, index) => (
+                    <article className="question-item" key={question.title}>
+                      <strong>{index + 1}. {question.title}</strong>
+                      <p>{question.text}</p>
+                      <span>{question.probe}</span>
+                    </article>
+                  ))}
+                </div>
               </div>
-            </div>
-          </section>
+            </section>
+          </div>
         </div>
 
       </form>
@@ -3228,10 +3294,10 @@ function SalaryRegionChart({ data }: { data: NonNullable<Job["salaryData"]> }) {
 function SalaryIndustryChart({ data }: { data: NonNullable<Job["salaryData"]> }) { return <Chart option={{ color: ["#0F4C3A", "#1A6B4A", "#65A47D", "#A8CDB8", "#c8decf", "#7bb58f", "#2c7f5b"], tooltip: { trigger: "item" }, series: [{ type: "pie", radius: ["42%", "70%"], data: data.industryComparison }] }} />; }
 function SalaryEducationChart({ data }: { data: NonNullable<Job["salaryData"]> }) { return <Chart option={{ color: ["#d1e5d8", "#a8cdb8", "#65a47d", "#0f4c3a"], tooltip: { trigger: "axis" }, grid: { left: 42, right: 20, top: 30, bottom: 36 }, xAxis: { type: "category", data: data.educationComparison.map(i => i.label) }, yAxis: { type: "value", axisLabel: { formatter: "{value}k" } }, series: [{ type: "bar", barWidth: 38, data: data.educationComparison.map(i => i.value) }] }} />; }
 
-function Modal({ title, onClose, actions, children }: { title?: string; onClose: () => void; actions?: React.ReactNode; children: React.ReactNode }) {
+function Modal({ title, onClose, actions, children, className }: { title?: string; onClose: () => void; actions?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
     <div className="modal-root">
-      <div className="modal">
+      <div className={className ? `modal ${className}` : "modal"}>
         <div className={`modal-head ${!title ? "no-title" : ""}`}>
           <button className="btn" onClick={onClose}>关闭</button>
           {title && <h3>{title}</h3>}
@@ -3249,6 +3315,75 @@ function CardHeader({ title, desc, action }: { title: string; desc: string; acti
 function Badge({ color, children }: { color: string; children: React.ReactNode }) { return <span className={`badge ${color}`}>{children}</span>; }
 function KeywordList({ keywords }: { keywords: string }) { return <div className="kv spaced-small">{splitKeywords(keywords).map((keyword) => <span key={keyword}>{keyword}</span>)}</div>; }
 function splitKeywords(keywords = "") { return keywords.split(/[、,，;；\s]+/).map(k => k.trim()).filter(Boolean); }
+function normalizeJdDescription(text: string) {
+  return text
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function renderJdDescription(text: string) {
+  const normalized = normalizeJdDescription(text);
+  if (!normalized) return null;
+
+  const lines = normalized
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const blocks: Array<
+    | { type: "section"; title: string; items: string[] }
+    | { type: "paragraph"; text: string }
+  > = [];
+
+  let currentSection: { title: string; items: string[] } | null = null;
+
+  const flushSection = () => {
+    if (!currentSection) return;
+    blocks.push({ type: "section", title: currentSection.title, items: currentSection.items });
+    currentSection = null;
+  };
+
+  for (const line of lines) {
+    const heading = line.match(/^(岗位概述|岗位职责|任职要求|优先条件)[:：]?$/);
+    if (heading) {
+      flushSection();
+      currentSection = { title: heading[1], items: [] };
+      continue;
+    }
+
+    if (currentSection) {
+      currentSection.items.push(line.replace(/^[•·]\s*/, ""));
+    } else {
+      blocks.push({ type: "paragraph", text: line });
+    }
+  }
+
+  flushSection();
+
+  return (
+    <div className="jd-preview">
+      {blocks.map((block, index) => (
+        block.type === "section" ? (
+          <section className="jd-preview-section" key={`${block.title}-${index}`}>
+            <div className="jd-preview-title">{block.title}</div>
+            {block.title === "岗位概述" ? (
+              <p className="jd-preview-paragraph">{block.items.join(" ")}</p>
+            ) : (
+              <ol className="jd-preview-list">
+                {block.items.map((item, itemIndex) => (
+                  <li key={`${block.title}-${itemIndex}`}>{item.replace(/^\d+[.、]\s*/, "")}</li>
+                ))}
+              </ol>
+            )}
+          </section>
+        ) : (
+          <p className="jd-preview-paragraph" key={`paragraph-${index}`}>{block.text}</p>
+        )
+      ))}
+    </div>
+  );
+}
 function statusColor(status: Job["status"]) { return status === "招聘中" ? "green" : status === "暂停" ? "gold" : "gray"; }
 function scoreColor(score: number) { return score >= 85 ? "green" : score >= 70 ? "gold" : score >= 60 ? "gray" : "red"; }
 function buildJobQuestions(job: JobPayload) {

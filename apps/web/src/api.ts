@@ -19,6 +19,8 @@ export const api = {
   setCurrentJob: (jobId: string) => request<AppState>("/api/current-job", { method: "POST", body: JSON.stringify({ jobId }) }),
   createJob: (payload: JobPayload) => request<AppState>("/api/jobs", { method: "POST", body: JSON.stringify(payload) }),
   updateJob: (id: string, payload: JobPayload) => request<AppState>(`/api/jobs/${id}`, { method: "PUT", body: JSON.stringify(payload) }),
+  generateJobCopilot: (payload: JobCopilotPayload) =>
+    request<JobCopilotResult>("/api/job-copilot", { method: "POST", body: JSON.stringify(payload) }),
   closeJob: (id: string) => request<AppState>(`/api/jobs/${id}/close`, { method: "POST" }),
   deleteJob: (id: string) => request<AppState>(`/api/jobs/${id}`, { method: "DELETE" }),
   uploadResumes: (jobId: string, payload: ResumeUploadPayload) =>
@@ -32,6 +34,17 @@ export const api = {
 };
 
 export type JobPayload = Pick<Job, "title" | "dept" | "location" | "experience" | "level" | "salaryRange" | "keywords" | "description" | "status">;
+
+export interface JobCopilotPayload extends JobPayload {
+  useCase: "jd-optimize" | "interview-questions";
+}
+
+export interface JobCopilotResult {
+  recommendedTitle: string;
+  optimizedDescription: string;
+  actionSuggestions: string[];
+  interviewQuestions: Array<{ title: string; text: string; probe: string }>;
+}
 
 export interface ResumeUploadPayload {
   name?: string;
