@@ -2449,7 +2449,9 @@ textarea:focus {
 .modal {
   width: min(720px, 100%);
   max-height: calc(100vh - 48px);
-  overflow: auto;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
   background: #ffffff;
   border-radius: 18px;
   box-shadow: 0 28px 80px rgba(0, 0, 0, 0.22);
@@ -2484,6 +2486,12 @@ textarea:focus {
   align-items: center;
   justify-content: flex-end;
   min-width: 0;
+}
+
+.modal-scroll {
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .modal-body {

@@ -3237,7 +3237,7 @@ function Modal({ title, onClose, actions, children }: { title?: string; onClose:
           {title && <h3>{title}</h3>}
           <div className="modal-actions">{actions}</div>
         </div>
-        {children}
+        <div className="modal-scroll">{children}</div>
       </div>
     </div>
   );
