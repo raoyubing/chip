@@ -1,0 +1,12 @@
+node_modules/
+dist/
+apps/*/dist/
+apps/*/tsconfig.tsbuildinfo
+apps/server/data/*.sqlite
+apps/server/data/*.sqlite-*
+apps/server/data/uploads/*
+!apps/server/data/uploads/.gitkeep
+apps/server/.venv/
+playwright-report/
+test-results/
+.DS_Store

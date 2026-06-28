@@ -1,0 +1,20 @@
+{
+  "name": "xiaosongshu-recruitment-workbench",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@8.14.0",
+  "scripts": {
+    "dev": "pnpm --parallel --filter @xiaosongshu/server --filter @xiaosongshu/web dev",
+    "dev:server": "pnpm --filter @xiaosongshu/server dev",
+    "dev:web": "pnpm --filter @xiaosongshu/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.0",
+    "typescript": "^5.5.4"
+  }
+}
