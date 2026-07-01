@@ -1,10 +1,12 @@
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { AppState, Candidate, Job, SalaryData, VoiceAnalysis } from "./types.js";
+import { fileURLToPath } from "node:url";
+import type { AppState, Candidate, CandidateEvaluation, CandidateInterviewPlan, Job, SalaryData, VoiceAnalysis, VoiceTranscriptSegment } from "./types.js";
 import { seedState } from "./seed.js";
 
-const dbPath = resolve(process.cwd(), process.env.DB_PATH || "data/xiaosongshu.sqlite");
+const serverRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const dbPath = resolve(serverRoot, process.env.DB_PATH || "data/xiaosongshu.sqlite");
 mkdirSync(dirname(dbPath), { recursive: true });
 
 type BindValue = string | number | Uint8Array | null;
@@ -47,6 +49,8 @@ export async function initDb() {
     file_type TEXT,
     file_size INTEGER,
     file_blob BLOB,
+    evaluation_json TEXT NOT NULL DEFAULT '{}',
+    interview_plan_json TEXT NOT NULL DEFAULT '{}',
     key_point_analysis TEXT NOT NULL DEFAULT '[]',
     interview_questions TEXT NOT NULL DEFAULT '[]',
     interview_recommendation TEXT NOT NULL DEFAULT '待定',
@@ -69,6 +73,8 @@ export async function initDb() {
   ensureColumn("candidates", "interview_reason", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("candidates", "reason_tags", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn("candidates", "interview_timeline", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("candidates", "evaluation_json", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("candidates", "interview_plan_json", "TEXT NOT NULL DEFAULT '{}'");
   run(`CREATE TABLE IF NOT EXISTS voice_analyses (
     id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -87,6 +93,18 @@ export async function initDb() {
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );`);
   ensureColumn("voice_analyses", "recruiter_review", "TEXT NOT NULL DEFAULT '[]'");
+  run(`CREATE TABLE IF NOT EXISTS voice_transcript_segments (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    segment_index INTEGER NOT NULL,
+    raw_transcript TEXT NOT NULL,
+    normalized_transcript TEXT NOT NULL,
+    analysis_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );`);
+  ensureColumn("voice_transcript_segments", "analysis_json", "TEXT");
 
   const count = one<{ count: number }>("SELECT COUNT(*) AS count FROM jobs")?.count ?? 0;
   if (count === 0) seedDatabase();
@@ -194,9 +212,11 @@ export function insertCandidates(candidates: Candidate[]) {
 
 export function updateCandidate(candidate: Candidate) {
   const data = serializeCandidate(candidate);
+  const existingFileBlob = one<Record<string, unknown>>("SELECT file_blob FROM candidates WHERE id = ?", [candidate.id])?.file_blob;
+  const normalizedExistingFileBlob = normalizeBlob(existingFileBlob);
   run(
-    `UPDATE candidates SET name = ?, source = ?, score = ?, conclusion = ?, reason = ?, resume_text = ?, upload_time = ?, file_name = ?, file_type = ?, file_size = ?, file_blob = ?, key_point_analysis = ?, interview_questions = ?, interview_stage = ?, stage_recommendation = ?, interview_result = ?, onboarded = ?, report_month = ?, interview_reason = ?, reason_tags = ?, interview_timeline = ? WHERE id = ?`,
-    [data.name, data.source, data.score, data.conclusion, data.reason, data.resumeText, data.uploadTime, data.fileName, data.fileType, data.fileSize, data.fileBlob, data.keyPointAnalysis, data.interviewQuestions, data.interviewStage, data.stageRecommendation, data.interviewResult, data.onboarded, data.reportMonth, data.interviewReason, data.reasonTags, data.interviewTimeline, data.id],
+    `UPDATE candidates SET name = ?, source = ?, score = ?, conclusion = ?, reason = ?, resume_text = ?, upload_time = ?, file_name = ?, file_type = ?, file_size = ?, file_blob = ?, evaluation_json = ?, interview_plan_json = ?, key_point_analysis = ?, interview_questions = ?, interview_stage = ?, stage_recommendation = ?, interview_result = ?, onboarded = ?, report_month = ?, interview_reason = ?, reason_tags = ?, interview_timeline = ? WHERE id = ?`,
+    [data.name, data.source, data.score, data.conclusion, data.reason, data.resumeText, data.uploadTime, data.fileName, data.fileType, data.fileSize, data.fileBlob ?? normalizedExistingFileBlob, data.evaluationJson, data.interviewPlanJson, data.keyPointAnalysis, data.interviewQuestions, data.interviewStage, data.stageRecommendation, data.interviewResult, data.onboarded, data.reportMonth, data.interviewReason, data.reasonTags, data.interviewTimeline, data.id],
   );
   persist();
 }
@@ -204,6 +224,10 @@ export function updateCandidate(candidate: Candidate) {
 export function deleteCandidate(id: string) {
   run("DELETE FROM candidates WHERE id = ?", [id]);
   persist();
+}
+
+export function getDatabasePath() {
+  return dbPath;
 }
 
 export function getVoiceAnalyses(jobId: string): VoiceAnalysis[] {
@@ -216,6 +240,32 @@ export function insertVoiceAnalysis(analysis: VoiceAnalysis) {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [analysis.id, analysis.jobId, analysis.candidateId, analysis.audioName, analysis.audioType ?? null, analysis.audioSize ?? null, analysis.transcript, analysis.summary, analysis.jobFitAdvice, JSON.stringify(analysis.communicationStrengths), JSON.stringify(analysis.communicationRisks), JSON.stringify(analysis.recruiterSuggestions), JSON.stringify(analysis.recruiterReview), analysis.recommendation, analysis.createdAt],
   );
+  persist();
+}
+
+export function deleteVoiceAnalysis(id: string) {
+  run("DELETE FROM voice_analyses WHERE id = ?", [id]);
+  persist();
+}
+
+export function insertVoiceTranscriptSegment(segment: VoiceTranscriptSegment) {
+  run(
+    `INSERT INTO voice_transcript_segments (id, session_id, job_id, candidate_id, segment_index, raw_transcript, normalized_transcript, analysis_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [segment.id, segment.sessionId, segment.jobId, segment.candidateId, segment.segmentIndex, segment.rawTranscript, segment.normalizedTranscript, segment.analysisJson ?? null, segment.createdAt],
+  );
+  persist();
+}
+
+export function getVoiceTranscriptSegments(sessionId: string) {
+  return all<Record<string, unknown>>(
+    "SELECT * FROM voice_transcript_segments WHERE session_id = ? ORDER BY segment_index ASC, created_at ASC",
+    [sessionId],
+  ).map(rowToVoiceTranscriptSegment);
+}
+
+export function updateVoiceTranscriptSegmentAnalysis(id: string, analysisJson: string) {
+  run("UPDATE voice_transcript_segments SET analysis_json = ? WHERE id = ?", [analysisJson, id]);
   persist();
 }
 
@@ -256,8 +306,8 @@ function upsertJobNoPersist(job: Job) {
 function insertCandidateNoPersist(candidate: Candidate) {
   const data = serializeCandidate(candidate);
   run(
-    `INSERT INTO candidates (id, job_id, name, source, score, conclusion, reason, resume_text, upload_time, file_name, file_type, file_size, file_blob, key_point_analysis, interview_questions, interview_stage, stage_recommendation, interview_result, onboarded, report_month, interview_reason, reason_tags, interview_timeline) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [data.id, data.jobId, data.name, data.source, data.score, data.conclusion, data.reason, data.resumeText, data.uploadTime, data.fileName, data.fileType, data.fileSize, data.fileBlob, data.keyPointAnalysis, data.interviewQuestions, data.interviewStage, data.stageRecommendation, data.interviewResult, data.onboarded, data.reportMonth, data.interviewReason, data.reasonTags, data.interviewTimeline],
+    `INSERT INTO candidates (id, job_id, name, source, score, conclusion, reason, resume_text, upload_time, file_name, file_type, file_size, file_blob, evaluation_json, interview_plan_json, key_point_analysis, interview_questions, interview_stage, stage_recommendation, interview_result, onboarded, report_month, interview_reason, reason_tags, interview_timeline) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [data.id, data.jobId, data.name, data.source, data.score, data.conclusion, data.reason, data.resumeText, data.uploadTime, data.fileName, data.fileType, data.fileSize, data.fileBlob, data.evaluationJson, data.interviewPlanJson, data.keyPointAnalysis, data.interviewQuestions, data.interviewStage, data.stageRecommendation, data.interviewResult, data.onboarded, data.reportMonth, data.interviewReason, data.reasonTags, data.interviewTimeline],
   );
 }
 
@@ -312,6 +362,7 @@ function normalizeSalaryData(raw: unknown, row: Record<string, unknown>): Salary
 
   return {
     filters: {
+      role: String(row.title || "岗位调研"),
       region,
       experience,
       industry: "企业服务",
@@ -350,6 +401,29 @@ function normalizeSalaryData(raw: unknown, row: Record<string, unknown>): Salary
       reasons: ["这是旧版薪酬缓存数据，系统已自动兼容为新版结构。"],
       keywordPremiums: [],
     },
+    research: {
+      dataWindow: "历史缓存",
+      confidence: "低",
+      confidenceReason: "当前仅为旧版本地缓存兼容结果，缺少外部招聘网站与报告的交叉验证。",
+      limitations: ["未保留原始招聘网站样本明细。", "P25/P50/P75 无法追溯到外部来源，只能作为过渡参考。"],
+      triangulation: {
+        requiredSources: 3,
+        actualSources: 0,
+        passed: false,
+        summary: "当前旧版缓存未满足三角验证要求，建议重新生成调研结果。",
+      },
+      metricSources: {
+        p25: "历史缓存兼容值，缺少外部来源追溯。",
+        p50: "历史缓存兼容值，缺少外部来源追溯。",
+        p75: "历史缓存兼容值，缺少外部来源追溯。",
+      },
+      methodology: ["当前为旧版缓存兼容结果，尚未包含外部薪酬聚合调研。"],
+      coreSources: [],
+      validationSources: [],
+      sampleNotes: ["建议重新点击“刷新薪酬大盘”，生成最新调研结果。"],
+      evidence: [],
+      disclaimer: "该数据来自旧版本地缓存兼容结果，适合过渡查看，不建议直接作为正式定薪依据。",
+    },
   };
 }
 
@@ -377,6 +451,8 @@ function rowToCandidate(row: Record<string, unknown>): Candidate {
     fileType: row.file_type ? String(row.file_type) : null,
     fileSize: row.file_size ? Number(row.file_size) : null,
     fileDataBase64: null,
+    evaluation: parseCandidateEvaluation(row.evaluation_json),
+    interviewPlan: parseCandidateInterviewPlan(row.interview_plan_json),
     keyPointAnalysis: JSON.parse(String(row.key_point_analysis || "[]")),
     interviewQuestions: JSON.parse(String(row.interview_questions || "[]")),
     interviewStage: normalizeInterviewStage(row.interview_stage),
@@ -410,6 +486,20 @@ function rowToVoiceAnalysis(row: Record<string, unknown>): VoiceAnalysis {
   };
 }
 
+function rowToVoiceTranscriptSegment(row: Record<string, unknown>): VoiceTranscriptSegment {
+  return {
+    id: String(row.id),
+    sessionId: String(row.session_id),
+    jobId: String(row.job_id),
+    candidateId: String(row.candidate_id),
+    segmentIndex: Number(row.segment_index ?? 0),
+    rawTranscript: String(row.raw_transcript || ""),
+    normalizedTranscript: String(row.normalized_transcript || ""),
+    analysisJson: row.analysis_json ? String(row.analysis_json) : undefined,
+    createdAt: String(row.created_at || ""),
+  };
+}
+
 function normalizeInterviewStage(value: unknown): NonNullable<Candidate["interviewStage"]> {
   if (value === "复试" || value === "推荐复试" || value === "初试通过") return "复试";
   if (value === "offer" || value === "复试通过" || value === "入职") return "offer";
@@ -430,6 +520,12 @@ function formatReportMonth(date = new Date()) {
   return `${date.getFullYear()}年${month}月`;
 }
 
+function normalizeBlob(value: unknown) {
+  if (!value) return null;
+  if (value instanceof Uint8Array) return value;
+  return new Uint8Array(value as ArrayLike<number>);
+}
+
 function serializeCandidate(candidate: Candidate) {
   return {
     ...candidate,
@@ -437,6 +533,8 @@ function serializeCandidate(candidate: Candidate) {
     fileType: candidate.fileType ?? null,
     fileSize: candidate.fileSize ?? null,
     fileBlob: candidate.fileDataBase64 ? Uint8Array.from(Buffer.from(candidate.fileDataBase64, "base64")) : null,
+    evaluationJson: JSON.stringify(candidate.evaluation || {}),
+    interviewPlanJson: JSON.stringify(candidate.interviewPlan || {}),
     keyPointAnalysis: JSON.stringify(candidate.keyPointAnalysis || []),
     interviewQuestions: JSON.stringify(candidate.interviewQuestions || []),
     interviewStage: normalizeInterviewStage(candidate.interviewStage),
@@ -448,6 +546,78 @@ function serializeCandidate(candidate: Candidate) {
     reasonTags: JSON.stringify(candidate.reasonTags || []),
     interviewTimeline: JSON.stringify(candidate.interviewTimeline || {}),
   };
+}
+
+function parseCandidateEvaluation(raw: unknown): CandidateEvaluation | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(String(raw || "{}")) as Partial<CandidateEvaluation>;
+    const summary = String(parsed.summary || "").trim();
+    const strengths = Array.isArray(parsed.strengths) ? parsed.strengths.map((item) => String(item).trim()).filter(Boolean) : [];
+    const weaknesses = Array.isArray(parsed.weaknesses) ? parsed.weaknesses.map((item) => String(item).trim()).filter(Boolean) : [];
+    const risks = Array.isArray(parsed.risks) ? parsed.risks.map((item) => String(item).trim()).filter(Boolean) : [];
+    const interviewFocuses = Array.isArray(parsed.interviewFocuses) ? parsed.interviewFocuses.map((item) => String(item).trim()).filter(Boolean) : [];
+    if (!summary && !strengths.length && !weaknesses.length && !risks.length && !interviewFocuses.length) return undefined;
+    return { summary, strengths, weaknesses, risks, interviewFocuses };
+  } catch {
+    return undefined;
+  }
+}
+
+function parseCandidateInterviewPlan(raw: unknown): CandidateInterviewPlan | undefined {
+  if (!raw) return undefined;
+  try {
+    const parsed = JSON.parse(String(raw || "{}")) as Partial<CandidateInterviewPlan>;
+    if (!parsed || typeof parsed !== "object") return undefined;
+    const recommendedMethods = Array.isArray(parsed.recommendedMethods)
+      ? parsed.recommendedMethods
+        .map((item) => ({
+          methodKey: String(item?.methodKey || "") as CandidateInterviewPlan["recommendedMethods"][number]["methodKey"],
+          label: String(item?.label || "").trim(),
+          reason: String(item?.reason || "").trim(),
+        }))
+        .filter((item) => item.methodKey && item.label)
+      : [];
+    const questions = Array.isArray(parsed.questions)
+      ? parsed.questions.map((item) => ({
+        title: String(item?.title || "").trim(),
+        question: String(item?.question || "").trim(),
+        competency: String(item?.competency || "").trim(),
+        questionType: String(item?.questionType || "行为型").trim() as CandidateInterviewPlan["questions"][number]["questionType"],
+        designIntent: String(item?.designIntent || "").trim(),
+        strongSignals: Array.isArray(item?.strongSignals) ? item.strongSignals.map((text) => String(text).trim()).filter(Boolean) : [],
+        warningSignals: Array.isArray(item?.warningSignals) ? item.warningSignals.map((text) => String(text).trim()).filter(Boolean) : [],
+        followUps: Array.isArray(item?.followUps) ? item.followUps.map((text) => String(text).trim()).filter(Boolean) : [],
+        methodKey: item?.methodKey ? String(item.methodKey) as CandidateInterviewPlan["questions"][number]["methodKey"] : undefined,
+      })).filter((item) => item.title && item.question)
+      : [];
+    const evaluationGuide = parsed.evaluationGuide && typeof parsed.evaluationGuide === "object"
+      ? {
+        baseline: Array.isArray(parsed.evaluationGuide.baseline) ? parsed.evaluationGuide.baseline.map((text) => String(text).trim()).filter(Boolean) : [],
+        positiveSignals: Array.isArray(parsed.evaluationGuide.positiveSignals) ? parsed.evaluationGuide.positiveSignals.map((text) => String(text).trim()).filter(Boolean) : [],
+        vetoItems: Array.isArray(parsed.evaluationGuide.vetoItems) ? parsed.evaluationGuide.vetoItems.map((text) => String(text).trim()).filter(Boolean) : [],
+      }
+      : { baseline: [], positiveSignals: [], vetoItems: [] };
+    const riskReview = Array.isArray(parsed.riskReview)
+      ? parsed.riskReview.map((item) => ({
+        dimension: String(item?.dimension || "").trim() as CandidateInterviewPlan["riskReview"][number]["dimension"],
+        level: String(item?.level || "低").trim() as CandidateInterviewPlan["riskReview"][number]["level"],
+        reason: String(item?.reason || "").trim(),
+        validationTips: Array.isArray(item?.validationTips) ? item.validationTips.map((text) => String(text).trim()).filter(Boolean) : [],
+      })).filter((item) => item.dimension && item.reason)
+      : [];
+    const summaryReason = String(parsed.summaryReason || "").trim();
+    if (!recommendedMethods.length && !questions.length && !summaryReason) return undefined;
+    return {
+      recommendedMethods,
+      summaryReason,
+      questions,
+      evaluationGuide,
+      riskReview,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 function all<T extends Record<string, unknown>>(sql: string, params: BindValue[] = []): T[] {

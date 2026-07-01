@@ -1,6 +1,7 @@
 export type JobStatus = "招聘中" | "暂停" | "已关闭";
 
 export interface SalaryFilters {
+  role: string;
   region: string;
   experience: string;
   industry: string;
@@ -8,6 +9,8 @@ export interface SalaryFilters {
 }
 
 export interface SalaryData {
+  status?: "ready" | "insufficient_data";
+  errorMessage?: string;
   filters: SalaryFilters;
   benchmarkRegion: string;
   jobFamily: string;
@@ -27,6 +30,37 @@ export interface SalaryData {
     summary: string;
     reasons: string[];
     keywordPremiums: string[];
+  };
+  research: {
+    dataWindow: string;
+    confidence: "高" | "中" | "低";
+    confidenceReason: string;
+    limitations: string[];
+    triangulation: {
+      requiredSources: number;
+      actualSources: number;
+      passed: boolean;
+      summary: string;
+    };
+    metricSources: {
+      p25: string;
+      p50: string;
+      p75: string;
+    };
+    methodology: string[];
+    coreSources: string[];
+    validationSources: string[];
+    sampleNotes: string[];
+    evidence: Array<{
+      source: string;
+      role: string;
+      region: string;
+      experience: string;
+      salaryRange: string;
+      publishWindow: string;
+      note: string;
+    }>;
+    disclaimer: string;
   };
 }
 
@@ -54,6 +88,49 @@ export interface CandidateTimeline {
   onboardedAt?: string;
 }
 
+export interface CandidateEvaluation {
+  summary: string;
+  strengths: string[];
+  weaknesses: string[];
+  risks: string[];
+  interviewFocuses: string[];
+}
+
+export type InterviewMethodKey = "structured" | "behavioral" | "star" | "scenario" | "case";
+
+export interface CandidateInterviewPlanQuestion {
+  title: string;
+  question: string;
+  competency: string;
+  questionType: "行为型" | "情景型" | "认知型";
+  designIntent: string;
+  strongSignals: string[];
+  warningSignals: string[];
+  followUps: string[];
+  methodKey?: InterviewMethodKey;
+}
+
+export interface CandidateInterviewPlan {
+  recommendedMethods: Array<{
+    methodKey: InterviewMethodKey;
+    label: string;
+    reason: string;
+  }>;
+  summaryReason: string;
+  questions: CandidateInterviewPlanQuestion[];
+  evaluationGuide: {
+    baseline: string[];
+    positiveSignals: string[];
+    vetoItems: string[];
+  };
+  riskReview: Array<{
+    dimension: "经历真实性风险" | "能力夸大风险" | "稳定性风险";
+    level: "高" | "中" | "低";
+    reason: string;
+    validationTips: string[];
+  }>;
+}
+
 export interface Candidate {
   id: string;
   jobId: string;
@@ -68,8 +145,17 @@ export interface Candidate {
   fileType?: string | null;
   fileSize?: number | null;
   fileDataBase64?: string | null;
+  evaluation?: CandidateEvaluation;
+  interviewPlan?: CandidateInterviewPlan;
   keyPointAnalysis: Array<{ keyword: string; matched: boolean; evidence: string }>;
-  interviewQuestions: Array<{ title: string; text: string; probe: string }>;
+  interviewQuestions: Array<{
+    title: string;
+    text: string;
+    probe: string;
+    competency?: string;
+    starFocus?: string[];
+    evaluationSignals?: string[];
+  }>;
   interviewStage?: "初试" | "复试" | "offer";
   stageRecommendation?: "是" | "否";
   interviewResult?: "通过" | "淘汰" | "待定" | "未到面";
@@ -96,6 +182,67 @@ export interface VoiceAnalysis {
   recruiterReview: Array<{ title: string; level: "良好" | "注意" | "待优化"; text: string }>;
   recommendation: "建议推进" | "建议复核" | "暂缓推进";
   createdAt: string;
+}
+
+export interface VoiceTranscriptSegment {
+  id: string;
+  sessionId: string;
+  jobId: string;
+  candidateId: string;
+  segmentIndex: number;
+  rawTranscript: string;
+  normalizedTranscript: string;
+  analysisJson?: string;
+  createdAt: string;
+}
+
+export interface VoiceRecruiterCoachReport {
+  opening: {
+    score: number;
+    evidence: string[];
+    issues: string[];
+    suggestion: string;
+  };
+  informationCompleteness: {
+    score: number;
+    missingItems: string[];
+    suggestionLines: string[];
+  };
+  followUpDepth: {
+    score: number;
+    goodExamples: string[];
+    missedOpportunities: Array<{
+      moment: string;
+      suggestion: string;
+    }>;
+  };
+  rhythm: {
+    score: number;
+    topicJumpLevel: "低" | "中" | "高";
+    interviewerTalkRatio: string;
+    timeAllocation: string;
+    advice: string[];
+  };
+  conciseImprovements: string[];
+}
+
+export interface VoiceFinalEvaluation {
+  summary: string;
+  passedKeywords: string[];
+  pendingKeywords: string[];
+  score: number;
+  strengths: string[];
+  risks: string[];
+  interviewerAdvice: {
+    nextRoundFocus: string[];
+    notRecommendedReasons: string[];
+  };
+  recruiterCoach: VoiceRecruiterCoachReport;
+}
+
+export interface VoiceTranscriptResult {
+  transcript: string;
+  normalizedTranscript: string;
 }
 
 export interface AppState {

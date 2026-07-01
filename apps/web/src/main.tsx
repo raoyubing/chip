@@ -2,7 +2,7 @@ import React, { FormEvent, useEffect, useId, useMemo, useRef, useState } from "r
 import { createRoot } from "react-dom/client";
 import * as echarts from "echarts";
 import { api, type JobCopilotResult, type JobPayload, type ResumeUploadPayload } from "./api";
-import type { AppState, Candidate, Job, ResumeFilePayload, SalaryData, SalaryFilters } from "./types";
+import type { AppState, Candidate, CandidateInterviewPlan, CandidateInterviewPlanQuestion, InterviewMethodKey, Job, ResumeFilePayload, SalaryData, SalaryFilters, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceRecruiterCoachReport, VoiceSegmentInsight } from "./types";
 import "./styles.css";
 
 const views = [
@@ -30,33 +30,9 @@ interface VoiceRealtimeAnalysis {
   recommendation: VoiceRecommendation;
 }
 
-interface BrowserSpeechRecognitionEvent {
-  resultIndex: number;
-  results: ArrayLike<{
-    isFinal: boolean;
-    0: {
-      transcript: string;
-    };
-  }>;
-}
-
-interface BrowserSpeechRecognitionErrorEvent {
-  error: string;
-}
-
-interface BrowserSpeechRecognitionInstance extends EventTarget {
-  continuous: boolean;
-  interimResults: boolean;
-  lang: string;
-  onresult: ((event: BrowserSpeechRecognitionEvent) => void) | null;
-  onerror: ((event: BrowserSpeechRecognitionErrorEvent) => void) | null;
-  onend: (() => void) | null;
-  start: () => void;
-  stop: () => void;
-}
-
-interface BrowserSpeechRecognitionConstructor {
-  new (): BrowserSpeechRecognitionInstance;
+interface VoiceAiLiveState {
+  quickInsight: VoiceSegmentInsight;
+  followUp: VoiceFollowUpPlan;
 }
 
 type Modal =
@@ -80,6 +56,7 @@ function App() {
   const [activeInterviewStage, setActiveInterviewStage] = useState<InterviewStage>("初试");
   const [activeInterviewJobId, setActiveInterviewJobId] = useState<string>("all");
   const [activeInterviewMonth, setActiveInterviewMonth] = useState<string>("all");
+  const [salaryData, setSalaryData] = useState<SalaryData | null>(null);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [modal, setModal] = useState<Modal>(null);
   const [toast, setToast] = useState("");
@@ -184,9 +161,8 @@ function App() {
   }
 
   async function refreshSalary(filters: SalaryFilters) {
-    if (!currentJob) return;
-    const result = await api.refreshSalary(currentJob.id, filters);
-    setRemoteState(result.state);
+    const result = await api.researchSalary(filters);
+    setSalaryData(result.salaryData);
     showToast("薪酬调研数据已刷新");
   }
 
@@ -245,10 +221,19 @@ function App() {
         <section className="content">
           {activeView === "dashboard" && <Dashboard state={state} currentJob={currentJob} onJump={setActiveView} onReset={resetDemo} onSelectJob={changeJob} />}
           {activeView === "jobs" && <JobsView state={state} currentJob={currentJob} onSelect={changeJob} onEdit={(job) => setModal({ type: "job", job })} onCreate={() => setModal({ type: "job" })} onCloseJob={closeJob} onDelete={deleteJob} />}
-          {activeView === "candidates" && <CandidatesView candidates={currentCandidates} selectedId={selectedCandidateId} onSelect={setSelectedCandidateId} onUpload={() => setModal({ type: "resume" })} onMark={markInterview} onDelete={deleteCandidate} currentJob={currentJob} />}
+          {activeView === "candidates" && <CandidatesView candidates={currentCandidates} selectedId={selectedCandidateId} onSelect={setSelectedCandidateId} onUpload={() => setModal({ type: "resume" })} onMark={markInterview} onDelete={deleteCandidate} currentJob={currentJob} onStateChange={setRemoteState} />}
           {activeView === "interviews" && <InterviewsView jobs={ongoingJobs} selectedJobId={activeInterviewJobId} onJobChange={setActiveInterviewJobId} selectedMonth={activeInterviewMonth} onMonthChange={setActiveInterviewMonth} activeStage={activeInterviewStage} candidates={interviewCandidates} onStageChange={setActiveInterviewStage} onSaveStage={updateInterviewStage} />}
-          {activeView === "voice" && <VoiceParseView jobs={ongoingJobs} currentJob={currentJob} candidatesByJob={state.candidates} onToast={showToast} />}
-          {activeView === "salary" && <SalaryView jobs={ongoingJobs} currentJob={currentJob} onSelectJob={changeJob} onRefresh={refreshSalary} />}
+          {activeView === "voice" && (
+            <VoiceParseView
+              jobs={state.jobs}
+              currentJob={currentJob}
+              candidatesByJob={state.candidates}
+              voiceAnalysesByJob={state.voiceAnalyses}
+              onStateChange={setRemoteState}
+              onToast={showToast}
+            />
+          )}
+          {activeView === "salary" && <SalaryView data={salaryData} onRefresh={refreshSalary} />}
         </section>
       </main>
 
@@ -546,7 +531,7 @@ function Dashboard({ state, currentJob, onJump, onReset, onSelectJob }: { state:
   const periodComparison = buildPeriodComparison(currentComparisonCandidates, previousComparisonCandidates);
   const focusJob = state.jobs.find((job) => job.id === focusJobId) || currentJob;
   const focusJobAnalysis = buildFocusJobAnalysis(focusJob, filteredCandidates.filter((candidate) => candidate.jobId === focusJob.id));
-  const pendingOnboardAnalytics = buildPendingOnboardReasonAnalytics(filteredCandidates);
+  const pendingOnboardAnalytics = buildPendingOnboardReasonAnalytics(filteredCandidates, state.jobs);
   const insightJobOptions = activeJobs.filter((job) => (state.candidates[job.id] || []).some((candidate) => getCandidatePeriodValue(candidate, granularity) === selectedPeriod));
 
   useEffect(() => {
@@ -683,23 +668,31 @@ function Dashboard({ state, currentJob, onJump, onReset, onSelectJob }: { state:
         <div className="grid cols-2 dashboard-job-overview-grid">
           <section className="card"><CardHeader title="职位简历量" desc="所有在招岗位的简历量情况" /><JobBarChart jobs={activeJobs} /></section>
           <section className="card pad pending-onboard-card">
-            <CardHeader title="复试通过后未入职原因占比" desc="按面试管理 offer 标签统计全部岗位未入职原因；支持多标签，按标签次数计算占比。" />
+            <CardHeader title="复试通过后未入职原因占比" desc="按部门与面试管理 offer 标签统计全部岗位未入职原因；上表看部门问题分布，下图看整体原因占比。" />
             {pendingOnboardAnalytics.total ? (
               <div className="pending-onboard-layout">
                 <div className="table-wrap pending-onboard-table-wrap">
                   <table className="table pending-onboard-table">
                     <thead>
                       <tr>
-                        <th>指标</th>
-                        {pendingOnboardAnalytics.rows.map((row) => <th key={row.label}>{row.label}</th>)}
+                        <th>部门</th>
+                        {pendingOnboardAnalytics.reasonColumns.map((label) => <th key={label}>{label}</th>)}
                       </tr>
                     </thead>
                     <tbody>
-                      <tr>
-                        <td><strong>标签次数</strong></td>
-                        {pendingOnboardAnalytics.rows.map((row) => <td key={row.label}>{row.count}</td>)}
-                      </tr>
+                      {pendingOnboardAnalytics.departmentRows.map((row) => (
+                        <tr key={row.department}>
+                          <td><strong>{row.department}</strong></td>
+                          {row.counts.map((count, index) => <td key={`${row.department}-${pendingOnboardAnalytics.reasonColumns[index]}`}>{count}</td>)}
+                        </tr>
+                      ))}
                     </tbody>
+                    <tfoot>
+                      <tr>
+                        <td><strong>合计</strong></td>
+                        {pendingOnboardAnalytics.totalRow.counts.map((count, index) => <td key={`total-${pendingOnboardAnalytics.reasonColumns[index]}`}><strong>{count}</strong></td>)}
+                      </tr>
+                    </tfoot>
                   </table>
                 </div>
                 <div className="pending-onboard-chart-wrap">
@@ -1109,7 +1102,7 @@ function JobsView({
   );
 }
 
-function CandidatesView({ candidates, selectedId, onSelect, onUpload, onMark, onDelete, currentJob }: { candidates: Candidate[]; selectedId: string | null; onSelect: (id: string) => void; onUpload: () => void; onMark: (id: string) => void; onDelete: () => void; currentJob: Job }) {
+function CandidatesView({ candidates, selectedId, onSelect, onUpload, onMark, onDelete, currentJob, onStateChange }: { candidates: Candidate[]; selectedId: string | null; onSelect: (id: string) => void; onUpload: () => void; onMark: (id: string) => void; onDelete: () => void; currentJob: Job; onStateChange: (state: AppState) => void }) {
   const selected = candidates.find((candidate) => candidate.id === selectedId) || candidates[0] || null;
   const [detailTab, setDetailTab] = useState<CandidateDetailTab>("overview");
 
@@ -1124,7 +1117,7 @@ function CandidatesView({ candidates, selectedId, onSelect, onUpload, onMark, on
 
   return <>
     <section className="card pad"><div className="toolbar"><div><h3 className="card-title">{currentJob.title} · 简历甄选</h3><p className="helper-text">按当前职位查看候选人，并基于岗位关键考核点生成分析。</p></div><div className="toolbar-right"><button className="btn primary" onClick={onUpload}>上传/录入简历</button></div></div></section>
-    <div className="candidate-layout"><section className="card pad">{candidates.length ? <div className="candidate-list">{candidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} selected={candidate.id === selected?.id} onSelect={() => selectCandidate(candidate.id)} onOpenResume={() => selectCandidate(candidate.id, "resume")} />)}</div> : <div className="empty"><div><strong>暂无简历</strong><br />点击“上传/录入简历”添加候选人。</div></div>}</section><section key={selected?.id || "empty"} className="card pad candidate-detail-card">{selected ? <CandidateDetail candidate={selected} activeTab={detailTab} onTabChange={setDetailTab} onMark={onMark} onDelete={onDelete} /> : <div className="empty"><div><strong>暂无候选人详情</strong><br />上传或录入简历后可查看甄选结论。</div></div>}</section></div>
+    <div className="candidate-layout"><section className="card pad">{candidates.length ? <div className="candidate-list">{candidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} selected={candidate.id === selected?.id} onSelect={() => selectCandidate(candidate.id)} onOpenResume={() => selectCandidate(candidate.id, "resume")} />)}</div> : <div className="empty"><div><strong>暂无简历</strong><br />点击“上传/录入简历”添加候选人。</div></div>}</section><section key={selected?.id || "empty"} className="card pad candidate-detail-card">{selected ? <CandidateDetail candidate={selected} activeTab={detailTab} onTabChange={setDetailTab} onMark={onMark} onDelete={onDelete} onStateChange={onStateChange} currentJob={currentJob} /> : <div className="empty"><div><strong>暂无候选人详情</strong><br />上传或录入简历后可查看甄选结论。</div></div>}</section></div>
   </>;
 }
 
@@ -1166,7 +1159,7 @@ function extractCandidateProfileTags(candidate: Candidate) {
   ].filter((tag): tag is { label: string; value: string } => Boolean(tag));
 }
 
-type InterviewMethodKey = "structured" | "behavioral" | "star" | "scenario" | "case";
+type InterviewQuestionItem = Candidate["interviewQuestions"][number];
 
 const interviewMethods: Array<{ key: InterviewMethodKey; label: string; desc: string }> = [
   { key: "structured", label: "结构化面试", desc: "固定维度评分，适合多人横向对比" },
@@ -1178,18 +1171,40 @@ const interviewMethods: Array<{ key: InterviewMethodKey; label: string; desc: st
 
 type CandidateDetailTab = "overview" | "interview" | "resume";
 
-function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete }: { candidate: Candidate; activeTab: CandidateDetailTab; onTabChange: (tab: CandidateDetailTab) => void; onMark: (id: string) => void; onDelete: () => void }) {
+function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete, onStateChange, currentJob }: { candidate: Candidate; activeTab: CandidateDetailTab; onTabChange: (tab: CandidateDetailTab) => void; onMark: (id: string) => void; onDelete: () => void; onStateChange: (state: AppState) => void; currentJob: Job }) {
   const [copied, setCopied] = useState(false);
   const [methodKey, setMethodKey] = useState<InterviewMethodKey>(() => getInterviewRecommendation(candidate).methodKey);
-  const recommendation = getInterviewRecommendation(candidate);
-  const interviewPack = buildInterviewPack(candidate, methodKey);
+  const [planLoading, setPlanLoading] = useState(false);
+  const [planError, setPlanError] = useState("");
   const overview = buildCandidateOverview(candidate);
   const matchedCount = overview.matched.length;
+  const interviewPlan = candidate.interviewPlan;
+  const recommendation = getInterviewRecommendation(candidate, currentJob, interviewPlan);
+  const interviewPack = buildInterviewPack(candidate, methodKey, currentJob, interviewPlan);
 
   useEffect(() => {
-    setMethodKey(getInterviewRecommendation(candidate).methodKey);
+    setMethodKey(getInterviewRecommendation(candidate, currentJob, candidate.interviewPlan).methodKey);
     setCopied(false);
-  }, [candidate.id]);
+    setPlanError("");
+  }, [candidate.id, candidate.interviewPlan, currentJob.id]);
+
+  useEffect(() => {
+    if (candidate.interviewPlan || activeTab !== "interview") return;
+    void generateInterviewPlan();
+  }, [activeTab, candidate.id]);
+
+  const generateInterviewPlan = async () => {
+    setPlanLoading(true);
+    setPlanError("");
+    try {
+      const result = await api.generateCandidateInterviewPlan(candidate.id);
+      onStateChange(result.state);
+    } catch (error) {
+      setPlanError(error instanceof Error ? error.message : "面试方案生成失败，请稍后重试");
+    } finally {
+      setPlanLoading(false);
+    }
+  };
 
   const copyInterviewPack = async () => {
     await navigator.clipboard.writeText(formatCandidateInterviewPack(candidate, interviewPack, recommendation));
@@ -1253,7 +1268,7 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete }
             <section className="ai-point-card risk"><strong>风险点</strong><ul>{overview.risks.map((item) => <li key={item}>{item}</li>)}</ul></section>
           </div>
           <section>
-            <div className="row-between section-title-row"><span className="meta">关键考核点分析</span><span className="helper-text">已命中 {matchedCount} 项</span></div>
+            <div className="row-between section-title-row"><span className="meta">关键面试考核点</span><span className="helper-text">已命中 {matchedCount} 项</span></div>
             <div className="analysis-list compact spaced-small">
               {candidate.keyPointAnalysis.map((item) => (
                 <div className="analysis-item" key={item.keyword}>
@@ -1270,8 +1285,11 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete }
         <div className="tab-panel interview-panel">
           <section className="interview-pack">
             <div className="row-between">
-              <div><span className="meta">面试方法与问题生成</span><p className="helper-text">选择不同方法后，问题、追问和评估建议会同步变化。</p></div>
-              <button className="btn ghost compact" type="button" onClick={copyInterviewPack}>{copied ? "已复制" : "一键复制"}</button>
+              <div><span className="meta">面试方法与问题生成</span><p className="helper-text">AI 会基于岗位 JD、简历摘要、命中/未命中关键点和风险项生成更严谨的面试方案。</p></div>
+              <div className="toolbar-right compact-actions">
+                <button className="btn" type="button" onClick={generateInterviewPlan} disabled={planLoading}>{planLoading ? "生成中..." : interviewPlan ? "重新生成" : "生成方案"}</button>
+                <button className="btn ghost compact" type="button" onClick={copyInterviewPack} disabled={planLoading}>{copied ? "已复制" : "一键复制"}</button>
+              </div>
             </div>
             <div className="method-tabs compact">
               {interviewMethods.map((method) => (
@@ -1282,11 +1300,87 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete }
             </div>
             <div className="interview-method-summary"><strong>{interviewPack.methodLabel}</strong><span>{interviewPack.focus}</span></div>
             <div className="recommendation-note"><strong>系统推荐：{interviewMethods.find((method) => method.key === recommendation.methodKey)?.label}</strong><span>{recommendation.reason}</span></div>
-            <div className="question-list spaced-small">{interviewPack.questions.map((question, index) => <article className="question-item" key={`${question.title}-${index}`}><strong>{index + 1}. {question.title}</strong><p>{question.text}</p><span>{question.probe}</span></article>)}</div>
+            {interviewPlan?.recommendedMethods?.length ? <div className="interview-method-ai"><strong>推荐组合</strong><div className="question-chip-row">{interviewPlan.recommendedMethods.map((method) => <span key={method.methodKey} className={`question-chip ${method.methodKey === methodKey ? "" : "soft"}`}>{method.label}</span>)}</div><p>{interviewPlan.summaryReason}</p></div> : null}
+            {planError ? <div className="tool-error">{planError}</div> : null}
+            <div className="question-list spaced-small">
+              {interviewPack.questions.map((question, index) => (
+                <article className="question-item" key={`${question.title}-${index}`}>
+                  <strong>{index + 1}. {question.title}</strong>
+                  {"question" in question ? (
+                    <>
+                      <div className="question-chip-row">
+                        <span className="question-chip">{question.competency}</span>
+                        <span className="question-chip soft">{question.questionType}</span>
+                      </div>
+                      <p>{question.question}</p>
+                      <div className="question-meta-grid">
+                        <div className="question-meta-group">
+                          <span className="question-probe-label">设计意图</span>
+                          <span className="question-probe-text">{question.designIntent}</span>
+                        </div>
+                        <div className="question-meta-group">
+                          <span className="question-probe-label">优秀答案特征</span>
+                          <ul className="question-signal-list">
+                            {question.strongSignals.map((item) => <li key={item}>{item}</li>)}
+                          </ul>
+                        </div>
+                        <div className="question-meta-group">
+                          <span className="question-probe-label">警示信号</span>
+                          <ul className="question-signal-list warning">
+                            {question.warningSignals.map((item) => <li key={item}>{item}</li>)}
+                          </ul>
+                        </div>
+                      </div>
+                      <span className="question-probe-label">建议追问</span>
+                      <span className="question-probe-text">{question.followUps.join("\n")}</span>
+                    </>
+                  ) : (
+                    <>
+                      {question.competency ? <div className="question-chip-row"><span className="question-chip">{question.competency}</span></div> : null}
+                      <p>{question.text}</p>
+                      {question.starFocus?.length ? (
+                        <div className="question-meta-group">
+                          <span className="question-probe-label">STAR关注点</span>
+                          <div className="question-chip-row">
+                            {question.starFocus.map((item) => <span className="question-chip soft" key={item}>{item}</span>)}
+                          </div>
+                        </div>
+                      ) : null}
+                      <span className="question-probe-label">追问</span>
+                      <span className="question-probe-text">{normalizeProbeText(question.probe)}</span>
+                      {question.evaluationSignals?.length ? (
+                        <div className="question-meta-group">
+                          <span className="question-probe-label">判断信号</span>
+                          <ul className="question-signal-list">
+                            {question.evaluationSignals.map((item) => <li key={item}>{item}</li>)}
+                          </ul>
+                        </div>
+                      ) : null}
+                    </>
+                  )}
+                </article>
+              ))}
+            </div>
           </section>
           <section>
-            <span className="meta">如何判断是否合适</span>
-            <div className="evaluation-list spaced-small">{interviewPack.evaluationMethods.map((method) => <article className="evaluation-item" key={method.title}><strong>{method.title}</strong><p>{method.text}</p></article>)}</div>
+            <span className="meta">面试评估指引</span>
+            <div className="evaluation-list spaced-small">
+              {interviewPack.evaluationMethods.map((method) => <article className="evaluation-item" key={method.title}><strong>{method.title}</strong><p>{method.text}</p></article>)}
+              {interviewPlan?.riskReview?.length ? (
+                <article className="evaluation-item risk-review-item">
+                  <strong>风险提示</strong>
+                  <div className="risk-review-list">
+                    {interviewPlan.riskReview.map((item) => (
+                      <div key={item.dimension} className="risk-review-row">
+                        <div className="row-between"><span>{item.dimension}</span><Badge color={item.level === "高" ? "red" : item.level === "中" ? "orange" : "green"}>{item.level}</Badge></div>
+                        <p>{item.reason}</p>
+                        {item.validationTips.length ? <small>{item.validationTips.join("；")}</small> : null}
+                      </div>
+                    ))}
+                  </div>
+                </article>
+              ) : null}
+            </div>
           </section>
         </div>
       )}
@@ -1309,6 +1403,7 @@ function buildCandidateOverview(candidate: Candidate) {
   const missed = candidate.keyPointAnalysis.filter((item) => !item.matched);
   const matchedKeywords = matched.map((item) => item.keyword);
   const missedKeywords = missed.map((item) => item.keyword);
+  const evaluation = candidate.evaluation;
   const keywordRatio = candidate.keyPointAnalysis.length ? Math.round((matched.length / candidate.keyPointAnalysis.length) * 100) : Math.round(candidate.score * 0.68);
   const dimensions = [
     { label: "岗位关键词", value: clampScore(keywordRatio || candidate.score) },
@@ -1316,13 +1411,19 @@ function buildCandidateOverview(candidate: Candidate) {
     { label: "专业技能", value: clampScore(candidate.score + (matched.length >= 2 ? 4 : -6)) },
     { label: "软性素质", value: clampScore(candidate.score + (/协同|推动|沟通|管理|团队/.test(candidate.resumeText) ? 8 : -4)) },
   ];
-  const strengths = matchedKeywords.length
+  const strengths = evaluation?.strengths?.length
+    ? evaluation.strengths
+    : matchedKeywords.length
     ? matchedKeywords.slice(0, 3).map((keyword) => `简历已覆盖“${keyword}”，可作为面试重点深挖。`)
     : ["简历信息仍偏概括，需要通过面试补充验证核心能力。"];
-  const weaknesses = missedKeywords.length
+  const weaknesses = evaluation?.weaknesses?.length
+    ? evaluation.weaknesses
+    : missedKeywords.length
     ? missedKeywords.slice(0, 3).map((keyword) => `“${keyword}”暂无直接证据，建议面试中优先追问。`)
     : ["主要关键点均有覆盖，但仍需核验项目规模、个人贡献和结果真实性。"];
-  const risks = [
+  const risks = evaluation?.risks?.length
+    ? evaluation.risks
+    : [
     candidate.score < 70 ? "综合匹配分未达到高推荐区间，建议谨慎推进或增加业务复核。" : "需避免只看简历关键词命中，仍要确认候选人的真实贡献边界。",
     missedKeywords.length ? `待核验项集中在 ${missedKeywords.slice(0, 2).join("、")}，存在上手后能力落差风险。` : "若候选人案例结果无法量化，可能存在经验包装风险。",
   ];
@@ -1330,11 +1431,12 @@ function buildCandidateOverview(candidate: Candidate) {
     matched,
     missed,
     dimensions,
-    summary: `我先看岗位匹配度：${candidate.name} 综合匹配 ${candidate.score} 分，结论为“${candidate.conclusion}”。${matchedKeywords.length ? `已命中 ${matchedKeywords.slice(0, 3).join("、")} 等关键点` : "核心关键点直接证据不足"}，${missedKeywords.length ? `但 ${missedKeywords.slice(0, 2).join("、")} 仍需进一步核验。` : "整体证据较完整，适合进入深度面试。"}`,
+    summary: evaluation?.summary || `我先看岗位匹配度：${candidate.name} 综合匹配 ${candidate.score} 分，结论为“${candidate.conclusion}”。${matchedKeywords.length ? `已命中 ${matchedKeywords.slice(0, 3).join("、")} 等关键点` : "核心关键点直接证据不足"}，${missedKeywords.length ? `但 ${missedKeywords.slice(0, 2).join("、")} 仍需进一步核验。` : "整体证据较完整，适合进入深度面试。"}`,
     recommendation: candidate.reason,
     strengths,
     weaknesses,
     risks,
+    interviewFocuses: evaluation?.interviewFocuses?.length ? evaluation.interviewFocuses : candidate.keyPointAnalysis.map((item) => item.keyword).slice(0, 5),
   };
 }
 
@@ -1342,14 +1444,24 @@ function clampScore(value: number) {
   return Math.max(8, Math.min(100, Math.round(value)));
 }
 
-function getInterviewRecommendation(candidate: Candidate): { methodKey: InterviewMethodKey; reason: string } {
+function getInterviewRecommendation(candidate: Candidate, currentJob?: Job | null, interviewPlan?: CandidateInterviewPlan): { methodKey: InterviewMethodKey; reason: string } {
+  if (interviewPlan?.recommendedMethods?.length) {
+    return {
+      methodKey: interviewPlan.recommendedMethods[0].methodKey,
+      reason: interviewPlan.recommendedMethods[0].reason || interviewPlan.summaryReason,
+    };
+  }
   const missed = candidate.keyPointAnalysis.filter((item) => !item.matched);
   const missedText = missed.slice(0, 2).map((item) => item.keyword).join("、");
+  const jobText = `${currentJob?.title || ""} ${currentJob?.keywords || ""} ${currentJob?.description || ""}`;
   if (candidate.score >= 85) {
     return { methodKey: "star", reason: `匹配分 ${candidate.score} 较高，适合用 STAR 深挖项目真实性、个人贡献和结果指标。` };
   }
   if (missed.length >= 3) {
-    return { methodKey: "structured", reason: `关键考核点仍有 ${missed.length} 项待核验，建议用结构化问题统一补齐证据，尤其关注 ${missedText}。` };
+    return { methodKey: candidate.score >= 60 ? "behavioral" : "structured", reason: `关键考核点仍有 ${missed.length} 项待核验，建议优先验证 ${missedText} 等核心缺口。` };
+  }
+  if (/经理|总监|负责人|策略|体系|规划/.test(jobText)) {
+    return { methodKey: "case", reason: "岗位级别和职责更偏策略判断，建议优先通过案例分析验证分析框架与管理思维。" };
   }
   if (candidate.score < 65) {
     return { methodKey: "scenario", reason: `匹配分 ${candidate.score} 偏观察，简历证据不足时更适合用情景模拟看现场拆解和落地能力。` };
@@ -1357,7 +1469,10 @@ function getInterviewRecommendation(candidate: Candidate): { methodKey: Intervie
   return { methodKey: "behavioral", reason: `该候选人已有一定匹配证据，适合用行为面试验证过往经历是否真实、稳定且可复用。` };
 }
 
-function buildInterviewPack(candidate: Candidate, methodKey: InterviewMethodKey) {
+function buildInterviewPack(candidate: Candidate, methodKey: InterviewMethodKey, currentJob?: Job | null, interviewPlan?: CandidateInterviewPlan) {
+  if (interviewPlan) {
+    return buildInterviewPackFromPlan(candidate, methodKey, interviewPlan);
+  }
   const missed = candidate.keyPointAnalysis.filter((item) => !item.matched);
   const matched = candidate.keyPointAnalysis.filter((item) => item.matched);
   const primary = missed[0]?.keyword || matched[0]?.keyword || "岗位核心能力";
@@ -1440,6 +1555,35 @@ function buildInterviewPack(candidate: Candidate, methodKey: InterviewMethodKey)
   return packs[methodKey];
 }
 
+function buildInterviewPackFromPlan(candidate: Candidate, methodKey: InterviewMethodKey, interviewPlan: CandidateInterviewPlan) {
+  const method = interviewMethods.find((item) => item.key === methodKey);
+  const matchedQuestions = interviewPlan.questions.filter((item) => !item.methodKey || item.methodKey === methodKey);
+  const questions = (matchedQuestions.length ? matchedQuestions : interviewPlan.questions).map((item) => ({
+    ...item,
+  }));
+  const evaluationMethods = [
+    {
+      title: "通过面试的底线标准",
+      text: interviewPlan.evaluationGuide.baseline.join("；"),
+    },
+    {
+      title: "优先录用信号",
+      text: interviewPlan.evaluationGuide.positiveSignals.join("；"),
+    },
+    {
+      title: "一票否决项",
+      text: interviewPlan.evaluationGuide.vetoItems.join("；"),
+    },
+  ].filter((item) => item.text);
+  const matchedMethodReason = interviewPlan.recommendedMethods.find((item) => item.methodKey === methodKey)?.reason || interviewPlan.summaryReason;
+  return {
+    methodLabel: method?.label || "AI 面试方案",
+    focus: matchedMethodReason,
+    questions,
+    evaluationMethods,
+  };
+}
+
 function formatCandidateInterviewPack(candidate: Candidate, interviewPack: ReturnType<typeof buildInterviewPack>, recommendation: ReturnType<typeof getInterviewRecommendation>) {
   const header = [
     `候选人：${candidate.name}`,
@@ -1452,7 +1596,26 @@ function formatCandidateInterviewPack(candidate: Candidate, interviewPack: Retur
     `系统推荐依据：${recommendation.reason}`,
   ].join("\n");
   const questions = interviewPack.questions
-    .map((question, index) => `${index + 1}. ${question.title}\n问题：${question.text}\n追问：${question.probe}`)
+    .map((question, index) => [
+      `${index + 1}. ${question.title}`,
+      "question" in question
+        ? [
+          `考察能力：${question.competency}`,
+          `问题类型：${question.questionType}`,
+          `问题：${question.question}`,
+          `设计意图：${question.designIntent}`,
+          `优秀答案特征：${question.strongSignals.join("；")}`,
+          `警示信号：${question.warningSignals.join("；")}`,
+          `建议追问：\n${question.followUps.join("\n")}`,
+        ].join("\n")
+        : [
+          question.competency ? `考察能力：${question.competency}` : "",
+          `问题：${question.text}`,
+          question.starFocus?.length ? `STAR关注点：${question.starFocus.join("、")}` : "",
+          `追问：\n${normalizeProbeText(question.probe)}`,
+          question.evaluationSignals?.length ? `判断信号：${question.evaluationSignals.join("；")}` : "",
+        ].filter(Boolean).join("\n"),
+    ].filter(Boolean).join("\n"))
     .join("\n\n");
   const methods = interviewPack.evaluationMethods
     .map((method, index) => `${index + 1}. ${method.title}：${method.text}`)
@@ -1466,12 +1629,68 @@ type InterviewStage = (typeof interviewStages)[number];
 function InterviewsView({ jobs, selectedJobId, onJobChange, selectedMonth, onMonthChange, candidates, activeStage, onStageChange, onSaveStage }: { jobs: Job[]; selectedJobId: string; onJobChange: (jobId: string) => void; selectedMonth: string; onMonthChange: (month: string) => void; candidates: Candidate[]; activeStage: InterviewStage; onStageChange: (stage: InterviewStage) => void; onSaveStage: (candidateId: string, interviewStage: NonNullable<Candidate["interviewStage"]>, stageRecommendation: NonNullable<Candidate["stageRecommendation"]>, interviewResult: NonNullable<Candidate["interviewResult"]>, onboarded: NonNullable<Candidate["onboarded"]>, reportMonth: string, interviewReason: string, reasonTags: string[], interviewTimeline: NonNullable<Candidate["interviewTimeline"]>) => Promise<void> }) {
   const monthOptions = Array.from(new Set(candidates.map((candidate) => normalizeReportMonth(candidate.reportMonth || formatReportMonth())))).sort((a, b) => b.localeCompare(a, "zh-Hans-CN"));
   const showJobColumn = selectedJobId === "all";
+  const tableWrapRef = useRef<HTMLDivElement | null>(null);
+  const [tableScrollState, setTableScrollState] = useState({ clientWidth: 0, scrollWidth: 0, scrollLeft: 0 });
   const interviewCandidates = candidates
     .filter((candidate) => isInterviewCandidate(candidate))
     .filter((candidate) => selectedMonth === "all" || normalizeReportMonth(candidate.reportMonth || formatReportMonth()) === selectedMonth)
     .filter((candidate) => (candidate.interviewStage || "初试") === activeStage);
 
   const selectedJob = selectedJobId === "all" ? null : jobs.find((job) => job.id === selectedJobId) || null;
+  const maxTableScrollLeft = Math.max(tableScrollState.scrollWidth - tableScrollState.clientWidth, 0);
+
+  useEffect(() => {
+    const wrap = tableWrapRef.current;
+    if (!wrap) return;
+
+    let frame = 0;
+
+    const measure = () => {
+      const next = {
+        clientWidth: wrap.clientWidth,
+        scrollWidth: wrap.scrollWidth,
+        scrollLeft: wrap.scrollLeft,
+      };
+      setTableScrollState((prev) => (
+        prev.clientWidth === next.clientWidth
+        && prev.scrollWidth === next.scrollWidth
+        && prev.scrollLeft === next.scrollLeft
+      ) ? prev : next);
+    };
+
+    const scheduleMeasure = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(measure);
+    };
+
+    scheduleMeasure();
+
+    const resizeObserver = new ResizeObserver(scheduleMeasure);
+    resizeObserver.observe(wrap);
+    const table = wrap.querySelector(".interview-table");
+    if (table instanceof Element) {
+      resizeObserver.observe(table);
+    }
+
+    wrap.addEventListener("scroll", scheduleMeasure, { passive: true });
+    window.addEventListener("resize", scheduleMeasure);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      resizeObserver.disconnect();
+      wrap.removeEventListener("scroll", scheduleMeasure);
+      window.removeEventListener("resize", scheduleMeasure);
+    };
+  }, [activeStage, interviewCandidates.length, selectedJobId, selectedMonth, showJobColumn]);
+
+  const handleTableScrollbarChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const nextScrollLeft = Number(event.target.value);
+    if (tableWrapRef.current) {
+      tableWrapRef.current.scrollLeft = nextScrollLeft;
+    }
+    setTableScrollState((prev) => ({ ...prev, scrollLeft: nextScrollLeft }));
+  };
+
   return (
     <>
       <section className="card pad">
@@ -1505,8 +1724,8 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedMonth, onMon
           ))}
         </div>
       </section>
-      <section className="card">
-        <div className="table-wrap interview-table-wrap">
+      <section className="card interview-table-card">
+        <div className="table-wrap interview-table-wrap" ref={tableWrapRef}>
           {interviewCandidates.length ? (
             <table className="table interview-table">
               <thead><tr><th>候选人</th><th>统计月份</th>{showJobColumn && <th>岗位</th>}<th>来源</th><th>{activeStage}</th><th>{activeStage === "offer" ? "入职" : "面试结果"}</th><th>标签</th><th>备注</th><th>操作</th></tr></thead>
@@ -1518,6 +1737,21 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedMonth, onMon
             <div className="empty"><div><strong>暂无面试人选</strong><br />请先在“简历甄选”中点击“标记面试”。</div></div>
           )}
         </div>
+        {interviewCandidates.length > 0 && maxTableScrollLeft > 0 && (
+          <div className="interview-scrollbar-shell">
+            <span className="interview-scrollbar-label">左右滑动查看完整表格</span>
+            <input
+              aria-label="面试表格横向滚动"
+              className="interview-scrollbar"
+              type="range"
+              min={0}
+              max={maxTableScrollLeft}
+              step={1}
+              value={Math.min(tableScrollState.scrollLeft, maxTableScrollLeft)}
+              onChange={handleTableScrollbarChange}
+            />
+          </div>
+        )}
       </section>
     </>
   );
@@ -2040,15 +2274,18 @@ function buildJobAnalytics(jobs: Job[], candidates: Candidate[]) {
     .sort((a, b) => b.hiredCount - a.hiredCount || b.resumeCount - a.resumeCount);
 }
 
-function buildPendingOnboardReasonAnalytics(candidates: Candidate[]) {
+function buildPendingOnboardReasonAnalytics(candidates: Candidate[], jobs: Job[]) {
   const targetCandidates = candidates.filter((candidate) =>
     (candidate.interviewStage === "复试" && candidate.interviewResult !== "淘汰" && candidate.interviewResult !== "未到面")
     || (candidate.interviewStage === "offer" && candidate.onboarded !== "是"),
   );
 
-  const counter = new Map<string, number>();
+  const reasonCounter = new Map<string, number>();
+  const departmentCounter = new Map<string, Map<string, number>>();
 
   targetCandidates.forEach((candidate) => {
+    const job = jobs.find((item) => item.id === candidate.jobId);
+    const department = job?.dept || "未知部门";
     const tags = normalizeStageReasonTags(
       candidate.reasonTags?.length
         ? candidate.reasonTags
@@ -2058,11 +2295,25 @@ function buildPendingOnboardReasonAnalytics(candidates: Candidate[]) {
     );
 
     const normalizedTags = tags.length ? tags : ["其他"];
-    normalizedTags.forEach((tag) => counter.set(tag, (counter.get(tag) || 0) + 1));
+    const deptMap = departmentCounter.get(department) || new Map<string, number>();
+    normalizedTags.forEach((tag) => {
+      reasonCounter.set(tag, (reasonCounter.get(tag) || 0) + 1);
+      deptMap.set(tag, (deptMap.get(tag) || 0) + 1);
+    });
+    departmentCounter.set(department, deptMap);
   });
 
-  const rows = offerReasonTagOptions.map((label) => {
-    const count = counter.get(label) || 0;
+  const reasonColumns = offerReasonTagOptions;
+  const departmentRows = Array.from(departmentCounter.entries())
+    .map(([department, counts]) => ({
+      department,
+      counts: reasonColumns.map((label) => counts.get(label) || 0),
+      total: reasonColumns.reduce((sum, label) => sum + (counts.get(label) || 0), 0),
+    }))
+    .sort((a, b) => b.total - a.total || a.department.localeCompare(b.department, "zh-Hans-CN"));
+
+  const rows = reasonColumns.map((label) => {
+    const count = reasonCounter.get(label) || 0;
     return {
       label,
       count,
@@ -2076,11 +2327,16 @@ function buildPendingOnboardReasonAnalytics(candidates: Candidate[]) {
     share: total ? `${((row.count / total) * 100).toFixed(1)}%` : "0.0%",
   }));
 
+  const totalRow = {
+    department: "合计",
+    counts: reasonColumns.map((label) => reasonCounter.get(label) || 0),
+  };
+
   const chartData = normalizedRows
     .filter((row) => row.count > 0)
     .map((row) => ({ name: row.label, value: row.count }));
 
-  return { rows: normalizedRows, total, chartData };
+  return { rows: normalizedRows, total, chartData, reasonColumns, departmentRows, totalRow };
 }
 
 function extractReasonTags(candidates: Candidate[]) {
@@ -2299,20 +2555,21 @@ function buildFocusJobAnalysis(job: Job, candidates: Candidate[]) {
   const retestPassCount = candidates.filter((candidate) => candidate.interviewStage === "offer").length;
   const hiredCount = candidates.filter((candidate) => candidate.interviewStage === "offer" && candidate.onboarded !== "否").length;
   const salaryData = job.salaryData;
+  const validSalaryData = salaryData && salaryData.status !== "insufficient_data" ? salaryData : null;
   const keywordCount = splitKeywords(job.keywords).length;
   const jdComplexity = keywordCount >= 4 || job.description.length > 90 ? "较高" : keywordCount >= 2 ? "中等" : "基础";
-  const marketSignal = salaryData
-    ? `${salaryData.benchmarkRegion}${salaryData.jobFamily} 市场中位值约 ${salaryData.p50}k`
+  const marketSignal = validSalaryData
+    ? `${validSalaryData.benchmarkRegion}${validSalaryData.jobFamily} 市场中位值约 ${validSalaryData.p50}k`
     : "暂无薪酬调研数据";
-  const salaryGap = salaryData
-    ? compareSalaryRange(job.salaryRange, salaryData.suggestedLow, salaryData.suggestedHigh)
+  const salaryGap = validSalaryData
+    ? compareSalaryRange(job.salaryRange, validSalaryData.suggestedLow, validSalaryData.suggestedHigh)
     : "unknown";
 
   const factors = [
     keywordCount >= 4 ? "岗位关键词较多，说明画像更复合，通常会直接压缩可投递简历池。" : "岗位关键词相对集中，画像本身没有明显过宽问题。",
     salaryGap === "low" ? "当前薪资范围低于系统建议区间，可能影响简历量和 offer 接受率。" : salaryGap === "high" ? "当前薪资范围高于市场建议区间，对吸引简历有帮助，但需关注预算利用率。" : "当前薪资与市场建议区间基本接近，主要影响因素更可能来自 JD 和渠道质量。",
     resumeCount && invitedCount / Math.max(resumeCount, 1) < 0.4 ? "简历入库后推荐面试率偏低，说明简历质量或筛选条件匹配仍需优化。" : "简历到推荐面试的转化尚可，说明前端渠道与画像匹配度基本正常。",
-    salaryData?.advice.keywordPremiums.length ? `市场侧识别到 ${salaryData.advice.keywordPremiums[0]}` : "当前岗位还缺少市场溢价解释，可补充薪酬调研后再复盘。",
+    validSalaryData?.advice.keywordPremiums.length ? `市场侧识别到 ${validSalaryData.advice.keywordPremiums[0]}` : "当前岗位还缺少市场溢价解释，可补充薪酬调研后再复盘。",
   ];
 
   const suggestions = [
@@ -2332,8 +2589,8 @@ function buildFocusJobAnalysis(job: Job, candidates: Candidate[]) {
     marketSignal,
     factors,
     suggestions,
-    summary: salaryData
-      ? `${job.title} 当前在 ${job.location} 的市场建议区间更适合参考 ${salaryData.suggestedLow}-${salaryData.suggestedHigh}k。结合 JD 和简历转化看，当前岗位的核心影响因素主要集中在画像复杂度、薪资竞争力和面试前筛选效率。`
+    summary: validSalaryData
+      ? `${job.title} 当前在 ${job.location} 的市场建议区间更适合参考 ${validSalaryData.suggestedLow}-${validSalaryData.suggestedHigh}k。结合 JD 和简历转化看，当前岗位的核心影响因素主要集中在画像复杂度、薪资竞争力和面试前筛选效率。`
       : `${job.title} 当前已具备岗位 JD 和简历转化数据，但缺少市场薪酬对照。建议先补充薪酬调研，再做更完整的岗位复盘。`,
   };
 }
@@ -2350,22 +2607,55 @@ function compareSalaryRange(salaryRange: string, suggestedLow: number, suggested
   return "balanced";
 }
 
-function VoiceParseView({ jobs, currentJob, candidatesByJob, onToast }: { jobs: Job[]; currentJob: Job; candidatesByJob: AppState["candidates"]; onToast: (message: string) => void }) {
-  const [jobId, setJobId] = useState(currentJob.status === "招聘中" ? currentJob.id : jobs[0]?.id || "");
+function VoiceParseView({
+  jobs,
+  currentJob,
+  candidatesByJob,
+  voiceAnalysesByJob,
+  onStateChange,
+  onToast,
+}: {
+  jobs: Job[];
+  currentJob: Job;
+  candidatesByJob: AppState["candidates"];
+  voiceAnalysesByJob: AppState["voiceAnalyses"];
+  onStateChange: (next: AppState) => void;
+  onToast: (message: string) => void;
+}) {
+  const recordingJobs = jobs.filter((job) => job.status === "招聘中");
+  const [jobId, setJobId] = useState(currentJob.status === "招聘中" ? currentJob.id : recordingJobs[0]?.id || "");
+  const [libraryJobId, setLibraryJobId] = useState(currentJob.id || jobs[0]?.id || "");
   const candidates = candidatesByJob[jobId] || [];
   const [candidateId, setCandidateId] = useState(candidates[0]?.id || "");
   const [status, setStatus] = useState<VoiceSessionStatus>("idle");
   const [finalTranscript, setFinalTranscript] = useState("");
-  const [interimTranscript, setInterimTranscript] = useState("");
+  const [liveHint, setLiveHint] = useState("");
   const [manualNotes, setManualNotes] = useState("");
   const [copiedKey, setCopiedKey] = useState<"all" | "candidate" | "recruiter" | null>(null);
   const [sessionStartedAt, setSessionStartedAt] = useState<string>("");
-  const recognitionRef = useRef<BrowserSpeechRecognitionInstance | null>(null);
+  const [sessionId, setSessionId] = useState("");
+  const [segmentIndex, setSegmentIndex] = useState(0);
+  const [isUploadingChunk, setIsUploadingChunk] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [selectedHistoryId, setSelectedHistoryId] = useState("");
+  const [copiedHistory, setCopiedHistory] = useState(false);
+  const [deletingHistory, setDeletingHistory] = useState(false);
+  const [aiLiveState, setAiLiveState] = useState<VoiceAiLiveState | null>(null);
+  const [finalEvaluation, setFinalEvaluation] = useState<VoiceFinalEvaluation | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunkQueueRef = useRef<Blob[]>([]);
+  const flushTimerRef = useRef<number | null>(null);
+  const isFlushingRef = useRef(false);
   const shouldResumeRef = useRef(false);
 
   useEffect(() => {
-    if (!jobs.some((job) => job.id === jobId)) setJobId((currentJob.status === "招聘中" ? currentJob.id : jobs[0]?.id) || "");
-  }, [currentJob.id, currentJob.status, jobId, jobs]);
+    if (!recordingJobs.some((job) => job.id === jobId)) setJobId((currentJob.status === "招聘中" ? currentJob.id : recordingJobs[0]?.id) || "");
+  }, [currentJob.id, currentJob.status, jobId, recordingJobs]);
+
+  useEffect(() => {
+    if (!jobs.some((job) => job.id === libraryJobId)) setLibraryJobId(currentJob.id || jobs[0]?.id || "");
+  }, [currentJob.id, jobs, libraryJobId]);
 
   useEffect(() => {
     const nextCandidates = candidatesByJob[jobId] || [];
@@ -2374,23 +2664,38 @@ function VoiceParseView({ jobs, currentJob, candidatesByJob, onToast }: { jobs: 
     }
   }, [candidateId, candidatesByJob, jobId]);
 
+  useEffect(() => {
+    const records = voiceAnalysesByJob[libraryJobId] || [];
+    if (selectedHistoryId && records.some((item) => item.id === selectedHistoryId)) return;
+    if (selectedHistoryId) setSelectedHistoryId("");
+  }, [libraryJobId, selectedHistoryId, voiceAnalysesByJob]);
+
   useEffect(() => () => {
     shouldResumeRef.current = false;
-    recognitionRef.current?.stop();
+    if (flushTimerRef.current) window.clearInterval(flushTimerRef.current);
+    recorderRef.current?.stop();
+    streamRef.current?.getTracks().forEach((track) => track.stop());
   }, []);
 
-  const selectedJob = jobs.find((job) => job.id === jobId) || currentJob;
+  const selectedJob = recordingJobs.find((job) => job.id === jobId) || currentJob;
+  const librarySelectedJob = jobs.find((job) => job.id === libraryJobId) || selectedJob;
   const selectedCandidate = candidates.find((candidate) => candidate.id === candidateId) || null;
-  const transcript = [finalTranscript.trim(), interimTranscript.trim()].filter(Boolean).join("\n");
-  const analysis = selectedCandidate ? analyzeRealtimeVoice(selectedJob, selectedCandidate, [transcript, manualNotes].filter(Boolean).join("\n")) : null;
+  const transcript = finalTranscript.trim();
+  const fallbackAnalysis = selectedCandidate ? analyzeRealtimeVoice(selectedJob, selectedCandidate, [transcript, manualNotes].filter(Boolean).join("\n")) : null;
+  const analysis = selectedCandidate
+    ? buildVoiceRealtimeAnalysisFromAi(selectedJob, selectedCandidate, aiLiveState, finalEvaluation) || fallbackAnalysis
+    : null;
   const highlightTerms = useMemo(() => buildVoiceHighlightTerms(selectedJob, transcript, manualNotes), [manualNotes, selectedJob, transcript]);
-  const supportsSpeechRecognition = typeof window !== "undefined" && Boolean((window as Window & typeof globalThis & {
-    SpeechRecognition?: BrowserSpeechRecognitionConstructor;
-    webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
-  }).SpeechRecognition || (window as Window & typeof globalThis & {
-    SpeechRecognition?: BrowserSpeechRecognitionConstructor;
-    webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
-  }).webkitSpeechRecognition);
+  const supportsRecording = typeof window !== "undefined" && Boolean(window.MediaRecorder && navigator.mediaDevices?.getUserMedia);
+  const voiceHistory = useMemo(() => voiceAnalysesByJob[libraryJobId] || [], [libraryJobId, voiceAnalysesByJob]);
+  const selectedHistory = useMemo(() => voiceHistory.find((item) => item.id === selectedHistoryId) || null, [selectedHistoryId, voiceHistory]);
+  const historyCandidates = candidatesByJob[libraryJobId] || [];
+  const historyCandidate = selectedHistory ? historyCandidates.find((candidate) => candidate.id === selectedHistory.candidateId) || null : null;
+  const historyHighlightTerms = useMemo(
+    () => selectedHistory ? buildVoiceHighlightTerms(librarySelectedJob, selectedHistory.transcript, "") : [],
+    [librarySelectedJob, selectedHistory],
+  );
+  const shouldShowCurrentOutput = !!selectedCandidate && !!analysis && (!!transcript || !!manualNotes.trim() || status === "listening" || status === "paused" || status === "stopped");
 
   const markCopied = (key: "all" | "candidate" | "recruiter") => {
     setCopiedKey(key);
@@ -2404,85 +2709,99 @@ function VoiceParseView({ jobs, currentJob, candidatesByJob, onToast }: { jobs: 
     markCopied(key);
   };
 
-  const copyAnalysis = async () => {
-    if (!selectedCandidate || !analysis) return;
-    await copyText("all", formatRealtimeVoiceCopy({
-      job: selectedJob,
-      candidate: selectedCandidate,
-      analysis,
-      transcript,
-      manualNotes,
-      sessionStartedAt,
+  const copyHistoryDetail = async () => {
+    if (!selectedHistory || !historyCandidate) return;
+    await navigator.clipboard.writeText(formatRealtimeVoiceCopy({
+      job: librarySelectedJob,
+      candidate: historyCandidate,
+      analysis: selectedHistory,
+      transcript: selectedHistory.transcript,
+      manualNotes: "",
+      sessionStartedAt: selectedHistory.createdAt,
     }));
+    setCopiedHistory(true);
+    window.setTimeout(() => setCopiedHistory(false), 1600);
   };
 
-  const copyCandidateAssessment = async () => {
-    if (!selectedCandidate || !analysis) return;
-    await copyText("candidate", formatCandidateAssessmentCopy({
-      job: selectedJob,
-      candidate: selectedCandidate,
-      analysis,
-      transcript,
-      manualNotes,
-      sessionStartedAt,
-    }));
+  const appendTranscript = (text: string) => {
+    const next = text.trim();
+    if (!next) return;
+    setFinalTranscript((value) => `${value}${value ? "\n" : ""}${next}`.trim());
   };
 
-  const copyRecruiterAdvice = async () => {
-    if (!selectedCandidate || !analysis) return;
-    await copyText("recruiter", formatRecruiterAdviceCopy({
-      job: selectedJob,
-      candidate: selectedCandidate,
-      analysis,
-      transcript,
-      manualNotes,
-      sessionStartedAt,
-    }));
-  };
-
-  const ensureRecognition = () => {
-    if (recognitionRef.current) return recognitionRef.current;
-    const recognitionClass = (window as Window & typeof globalThis & {
-      SpeechRecognition?: BrowserSpeechRecognitionConstructor;
-      webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
-    }).SpeechRecognition || (window as Window & typeof globalThis & {
-      SpeechRecognition?: BrowserSpeechRecognitionConstructor;
-      webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
-    }).webkitSpeechRecognition;
-    if (!recognitionClass) return null;
-    const recognition = new recognitionClass();
-    recognition.lang = "zh-CN";
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.onresult = (event) => {
-      let nextFinal = "";
-      let nextInterim = "";
-      for (let index = event.resultIndex; index < event.results.length; index += 1) {
-        const text = event.results[index][0]?.transcript?.trim();
-        if (!text) continue;
-        if (event.results[index].isFinal) nextFinal += `${text}\n`;
-        else nextInterim += `${text}\n`;
-      }
-      if (nextFinal) setFinalTranscript((value) => `${value}${value && !value.endsWith("\n") ? "\n" : ""}${nextFinal}`.trim());
-      setInterimTranscript(nextInterim.trim());
+  const blobToBase64 = (blob: Blob) => new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      resolve(result.split(",")[1] || "");
     };
-    recognition.onerror = (event) => {
-      if (event.error === "not-allowed") onToast("浏览器未授权麦克风，请先允许录音权限");
-      else if (event.error !== "aborted") onToast(`录音转写中断：${event.error}`);
-    };
-    recognition.onend = () => {
-      if (shouldResumeRef.current) {
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+
+  const flushChunks = async () => {
+    if (isFlushingRef.current || !chunkQueueRef.current.length) return;
+    isFlushingRef.current = true;
+    setIsUploadingChunk(true);
+    setLiveHint("正在转写最新录音片段...");
+    const merged = new Blob(chunkQueueRef.current.splice(0, chunkQueueRef.current.length), {
+      type: recorderRef.current?.mimeType || "audio/webm",
+    });
+    try {
+      const audioBase64 = await blobToBase64(merged);
+      const result = await api.transcribeVoiceChunk({
+        audioBase64,
+        mimeType: merged.type || "audio/webm",
+        fileName: `voice-${Date.now()}.webm`,
+      });
+      const normalized = result.normalizedTranscript || result.transcript;
+      appendTranscript(normalized);
+      setLiveHint(result.normalizedTranscript ? "已完成实时整理" : "已完成实时转写");
+      if (selectedCandidate && sessionId && normalized.trim()) {
+        const nextSegmentIndex = segmentIndex + 1;
+        setSegmentIndex(nextSegmentIndex);
         try {
-          recognition.start();
-        } catch {
-          setStatus("paused");
+          const liveResult = await api.analyzeVoiceSegment({
+            sessionId,
+            segmentId: `seg_${Date.now()}_${nextSegmentIndex}`,
+            jobId,
+            candidateId: selectedCandidate.id,
+            segmentIndex: nextSegmentIndex,
+            rawTranscript: result.transcript,
+            normalizedTranscript: normalized,
+          });
+          setAiLiveState(liveResult);
+        } catch (error) {
+          onToast(error instanceof Error ? error.message : "实时 AI 分析失败");
         }
-        return;
       }
-      setStatus((current) => (current === "listening" ? "paused" : current));
+    } catch (error) {
+      onToast(error instanceof Error ? error.message : "实时转写失败");
+      setLiveHint("转写失败，请继续录音或稍后重试");
+    } finally {
+      isFlushingRef.current = false;
+      setIsUploadingChunk(false);
+    }
+  };
+
+  const startRecorder = async () => {
+    const stream = streamRef.current || await navigator.mediaDevices.getUserMedia({ audio: true });
+    streamRef.current = stream;
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus"
+      : MediaRecorder.isTypeSupported("audio/webm")
+        ? "audio/webm"
+        : "";
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    recorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) chunkQueueRef.current.push(event.data);
     };
-    recognitionRef.current = recognition;
-    return recognition;
+    recorderRef.current = recorder;
+    recorder.start(2000);
+    if (flushTimerRef.current) window.clearInterval(flushTimerRef.current);
+    flushTimerRef.current = window.setInterval(() => {
+      void flushChunks();
+    }, 3500);
   };
 
   const startSession = async () => {
@@ -2490,39 +2809,51 @@ function VoiceParseView({ jobs, currentJob, candidatesByJob, onToast }: { jobs: 
       onToast("请先选择人选");
       return;
     }
-    const recognition = ensureRecognition();
-    if (!recognition) {
-      onToast("当前浏览器不支持实时语音转写，建议使用最新版 Chrome");
+    if (!supportsRecording) {
+      onToast("当前浏览器不支持网页端录音，建议使用最新版 Chrome");
       return;
     }
     shouldResumeRef.current = true;
-    if (!sessionStartedAt) setSessionStartedAt(new Date().toLocaleString("zh-CN"));
+    setSelectedHistoryId("");
+    const nextSessionId = `voice_session_${Date.now()}`;
+    setSessionId(nextSessionId);
+    setSegmentIndex(0);
+    setAiLiveState(null);
+    setFinalEvaluation(null);
+    setSessionStartedAt(new Date().toLocaleString("zh-CN"));
     try {
-      recognition.start();
+      setFinalTranscript("");
+      setManualNotes("");
+      await startRecorder();
       setStatus("listening");
       setCopiedKey(null);
+      setLiveHint("正在录音，系统会自动分段转写...");
     } catch {
-      onToast("录音已在进行中，或浏览器尚未准备好");
+      onToast("录音启动失败，请检查麦克风权限");
     }
   };
 
   const pauseSession = () => {
     shouldResumeRef.current = false;
-    recognitionRef.current?.stop();
+    recorderRef.current?.requestData();
+    recorderRef.current?.pause();
+    window.setTimeout(() => { void flushChunks(); }, 160);
     setStatus("paused");
+    setLiveHint("已暂停，正在整理最后一段录音...");
   };
 
   const resumeSession = async () => {
-    const recognition = ensureRecognition();
-    if (!recognition) {
-      onToast("当前浏览器不支持实时语音转写");
+    const recorder = recorderRef.current;
+    if (!recorder) {
+      onToast("当前没有可继续的录音会话");
       return;
     }
     shouldResumeRef.current = true;
     try {
-      recognition.start();
+      recorder.resume();
       setStatus("listening");
       setCopiedKey(null);
+      setLiveHint("已继续录音");
     } catch {
       onToast("恢复录音失败，请稍后再试");
     }
@@ -2530,30 +2861,409 @@ function VoiceParseView({ jobs, currentJob, candidatesByJob, onToast }: { jobs: 
 
   const stopSession = () => {
     shouldResumeRef.current = false;
-    recognitionRef.current?.stop();
-    setInterimTranscript("");
+    if (flushTimerRef.current) {
+      window.clearInterval(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    recorderRef.current?.stop();
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
+    window.setTimeout(() => { void flushChunks(); }, 220);
     setStatus("stopped");
-    onToast("本次面试工具台已结束，可直接复制输出");
+    setLiveHint("本次录音已结束，正在完成最后整理...");
+    onToast("本次录音已结束，可保存到录音库或直接复制输出");
+    if (selectedCandidate && sessionId) {
+      window.setTimeout(() => {
+        void api.evaluateVoiceInterview({
+          sessionId,
+          jobId,
+          candidateId: selectedCandidate.id,
+        }).then((result) => {
+          setFinalEvaluation(result);
+          setLiveHint("已生成整场面试评估");
+        }).catch((error) => {
+          onToast(error instanceof Error ? error.message : "整场面试评估失败");
+        });
+      }, 600);
+    }
   };
 
   const clearSession = () => {
     shouldResumeRef.current = false;
-    recognitionRef.current?.stop();
+    if (flushTimerRef.current) {
+      window.clearInterval(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    recorderRef.current?.stop();
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    recorderRef.current = null;
+    streamRef.current = null;
+    chunkQueueRef.current = [];
+    isFlushingRef.current = false;
     setStatus("idle");
     setFinalTranscript("");
-    setInterimTranscript("");
+    setLiveHint("");
     setManualNotes("");
     setCopiedKey(null);
     setSessionStartedAt("");
+    setSessionId("");
+    setSegmentIndex(0);
+    setAiLiveState(null);
+    setFinalEvaluation(null);
   };
 
+  const saveToLibrary = async () => {
+    if (!selectedCandidate || !analysis) {
+      onToast("请先选择人选并生成解析结果");
+      return;
+    }
+    const mergedTranscript = [transcript, manualNotes.trim() ? `补充备注：\n${manualNotes.trim()}` : ""].filter(Boolean).join("\n\n").trim();
+    if (!mergedTranscript) {
+      onToast("当前没有可保存的录音内容");
+      return;
+    }
+    setSaving(true);
+    try {
+      const { state: nextState, analysis: saved } = await api.saveVoiceAnalysis({
+        jobId,
+        candidateId: selectedCandidate.id,
+        audioName: `${selectedCandidate.name}-${sessionStartedAt || new Date().toLocaleString("zh-CN")}`,
+        audioType: "audio/webm",
+        audioSize: null,
+        transcript: mergedTranscript,
+        summary: analysis.summary,
+        jobFitAdvice: analysis.jobFitAdvice,
+        communicationStrengths: analysis.communicationStrengths,
+        communicationRisks: analysis.communicationRisks,
+        recruiterSuggestions: analysis.recruiterSuggestions,
+        recruiterReview: analysis.recruiterReview,
+        recommendation: analysis.recommendation,
+      });
+      setLibraryJobId(jobId);
+      onStateChange(nextState);
+      setSelectedHistoryId(saved.id);
+      onToast("已保存到录音库");
+    } catch (error) {
+      onToast(error instanceof Error ? error.message : "保存录音库失败");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const removeHistory = async () => {
+    if (!selectedHistory) return;
+    if (!window.confirm("确认删除这条录音记录？删除后无法恢复。")) return;
+    setDeletingHistory(true);
+    try {
+      const { state: nextState } = await api.deleteVoiceAnalysis(selectedHistory.id);
+      onStateChange(nextState);
+      onToast("录音记录已删除");
+    } catch (error) {
+      onToast(error instanceof Error ? error.message : "删除录音记录失败");
+    } finally {
+      setDeletingHistory(false);
+    }
+  };
+
+  const copyBundle = async (
+    key: "all" | "candidate" | "recruiter",
+    mode: "all" | "candidate" | "recruiter",
+    sourceAnalysis: VoiceRealtimeAnalysis | VoiceAnalysis,
+    sourceCandidate: Candidate,
+    sourceTranscript: string,
+    sourceSessionStartedAt: string,
+    sourceManualNotes = "",
+  ) => {
+    const text = mode === "candidate"
+      ? formatCandidateAssessmentCopy({
+        job: selectedJob,
+        candidate: sourceCandidate,
+        analysis: sourceAnalysis,
+        transcript: sourceTranscript,
+        manualNotes: sourceManualNotes,
+        sessionStartedAt: sourceSessionStartedAt,
+      })
+      : mode === "recruiter"
+        ? formatRecruiterAdviceCopy({
+          job: selectedJob,
+          candidate: sourceCandidate,
+          analysis: sourceAnalysis,
+          transcript: sourceTranscript,
+          manualNotes: sourceManualNotes,
+          sessionStartedAt: sourceSessionStartedAt,
+        })
+        : formatRealtimeVoiceCopy({
+          job: selectedJob,
+          candidate: sourceCandidate,
+          analysis: sourceAnalysis,
+          transcript: sourceTranscript,
+          manualNotes: sourceManualNotes,
+          sessionStartedAt: sourceSessionStartedAt,
+        });
+    await copyText(key, text);
+  };
+
+  const renderAnalysisSections = ({
+    sourceAnalysis,
+    sourceTranscript,
+    sourceSessionStartedAt,
+    sourceCandidate,
+    sourceHighlightTerms,
+    sourceManualNotes = "",
+    readOnly = false,
+  }: {
+    sourceAnalysis: VoiceRealtimeAnalysis | VoiceAnalysis;
+    sourceTranscript: string;
+    sourceSessionStartedAt: string;
+    sourceCandidate: Candidate;
+    sourceHighlightTerms: string[];
+    sourceManualNotes?: string;
+    readOnly?: boolean;
+  }) => (
+    <div className="voice-analysis-content">
+      <div className="row-between voice-analysis-head">
+        <div>
+          <h3 className="card-title">{readOnly ? "录音库详情" : "单次输出结果"}</h3>
+          <p className="helper-text">{sourceSessionStartedAt ? `${readOnly ? "保存时间" : "开始时间"}：${sourceSessionStartedAt}` : "开始录音后，这里会自动根据转写内容输出评估与建议。"}</p>
+        </div>
+        <div className="voice-head-actions">
+          <Badge color={sourceAnalysis.recommendation === "建议推进" ? "green" : sourceAnalysis.recommendation === "建议复核" ? "gold" : "red"}>{sourceAnalysis.recommendation}</Badge>
+          {!readOnly && (
+            <button className="btn primary compact" type="button" onClick={saveToLibrary} disabled={saving || !sourceTranscript.trim()}>
+              {saving ? "保存中..." : "保存到录音库"}
+            </button>
+          )}
+          <button className="btn ghost compact" type="button" onClick={() => void copyBundle("all", "all", sourceAnalysis, sourceCandidate, sourceTranscript, sourceSessionStartedAt, sourceManualNotes)} disabled={!sourceTranscript.trim() && !sourceManualNotes.trim()}>
+            {copiedKey === "all" ? "已复制" : "复制全部"}
+          </button>
+        </div>
+      </div>
+      <section className="voice-section-panel">
+        <div className="row-between voice-section-head">
+          <div>
+            <h4>候选人评估</h4>
+            <p>聚焦候选人回答内容，快速提炼推荐理由、优劣势与岗位风险点。</p>
+          </div>
+          <button className="btn ghost compact" type="button" onClick={() => void copyBundle("candidate", "candidate", sourceAnalysis, sourceCandidate, sourceTranscript, sourceSessionStartedAt, sourceManualNotes)} disabled={!sourceTranscript.trim() && !sourceManualNotes.trim()}>
+            {copiedKey === "candidate" ? "已复制" : "复制候选人评估"}
+          </button>
+        </div>
+        <div className="voice-main-card">
+          <section className="voice-item-block voice-summary-block">
+            <div className="ai-label">AI 总结</div>
+            <p>{sourceAnalysis.summary}</p>
+          </section>
+          <section className="voice-item-block">
+            <strong>匹配建议</strong>
+            <p>{sourceAnalysis.jobFitAdvice}</p>
+          </section>
+          <section className="voice-item-block">
+            <strong>优势亮点</strong>
+            <ul>{sourceAnalysis.communicationStrengths.map((item) => <li key={item}>{item}</li>)}</ul>
+          </section>
+          <section className="voice-item-block risk">
+            <strong>风险点</strong>
+            <ul>{sourceAnalysis.communicationRisks.map((item) => <li key={item}>{item}</li>)}</ul>
+          </section>
+        </div>
+      </section>
+      <section className="voice-section-panel recruiter-panel">
+        <div className="row-between voice-section-head">
+          <div>
+            <h4>招聘者建议</h4>
+            <p>聚焦你的提问方式、信息采集完整度和追问深度，方便当场调整节奏。</p>
+          </div>
+          <button className="btn ghost compact" type="button" onClick={() => void copyBundle("recruiter", "recruiter", sourceAnalysis, sourceCandidate, sourceTranscript, sourceSessionStartedAt, sourceManualNotes)} disabled={!sourceTranscript.trim() && !sourceManualNotes.trim()}>
+            {copiedKey === "recruiter" ? "已复制" : "复制招聘者建议"}
+          </button>
+        </div>
+        <div className="voice-main-card recruiter-main-card">
+          <section className="voice-item-block">
+            <strong>沟通质检</strong>
+            <div className="review-list">
+              {sourceAnalysis.recruiterReview.map((item) => (
+                <article className="review-item" key={`${item.title}-${item.text}`}>
+                  <div className="row-between">
+                    <strong>{item.title}</strong>
+                    <Badge color={item.level === "良好" ? "green" : item.level === "注意" ? "gold" : "red"}>{item.level}</Badge>
+                  </div>
+                  <p>{item.text}</p>
+                </article>
+              ))}
+            </div>
+          </section>
+          <section className="voice-item-block">
+            <strong>优化建议</strong>
+            <ul>{sourceAnalysis.recruiterSuggestions.map((item) => <li key={item}>{item}</li>)}</ul>
+          </section>
+        </div>
+      </section>
+      <section className="voice-section-panel">
+        <div className="voice-section-head">
+          <div>
+            <h4>转写与补充</h4>
+            <p>{readOnly ? "这里展示该次已保存的录音转写与提炼内容，可随时回看。" : "该区内容支持保存到录音库，便于后续复盘查看。"}</p>
+          </div>
+        </div>
+        {sourceHighlightTerms.length > 0 && (
+          <div className="voice-highlight-bar">
+            <span className="meta">高亮关键词</span>
+            <div className="voice-highlight-chips">
+              {sourceHighlightTerms.map((term) => <span className="voice-highlight-chip" key={term}>{term}</span>)}
+            </div>
+          </div>
+        )}
+        <div className="resume-box spaced-small">
+          {sourceTranscript ? <HighlightedText text={sourceTranscript} terms={sourceHighlightTerms} /> : "录音开始后，这里会出现实时转写内容。"}
+        </div>
+        {!!sourceManualNotes.trim() && (
+          <div className="voice-note-box">
+            <strong>补充备注</strong>
+            <p><HighlightedText text={sourceManualNotes} terms={sourceHighlightTerms} /></p>
+          </div>
+        )}
+        <div className="voice-history-meta">
+          <span>关联人选：{sourceCandidate.name}</span>
+          <span>关联岗位：{selectedJob.title}</span>
+        </div>
+      </section>
+    </div>
+  );
+
+  const renderLiveCopilot = () => (
+    <section className="voice-section-panel">
+      <div className="voice-section-head">
+        <div>
+          <h4>DeepSeek 实时追问辅助</h4>
+          <p>每次只取最近 5 段转写做实时分析；结束后再拉取完整记录做整场评估。</p>
+        </div>
+      </div>
+      <div className="voice-main-card">
+        <section className="voice-item-block">
+          <strong>最新一段关键信息提炼</strong>
+          {aiLiveState ? (
+            <div className="spaced-small">
+              <p>核心观点：{aiLiveState.quickInsight.coreViewpoint}</p>
+              <p>信号判断：{aiLiveState.quickInsight.signalType}（{aiLiveState.quickInsight.signalReason}）</p>
+              <ul>{aiLiveState.quickInsight.keyEvidence.map((item) => <li key={item}>{item}</li>)}</ul>
+            </div>
+          ) : <p>录音后，系统会针对最新一段回答自动提炼关键信息。</p>}
+        </section>
+        <section className="voice-item-block">
+          <strong>建议下一问</strong>
+          {aiLiveState ? (
+            <div className="spaced-small">
+              <p>{aiLiveState.followUp.nextQuestion}</p>
+              <p>追问目的：{aiLiveState.followUp.objective}</p>
+              <div className="voice-history-meta">
+                <span>S：{aiLiveState.followUp.starAnchors.situation}</span>
+                <span>T：{aiLiveState.followUp.starAnchors.task}</span>
+                <span>A：{aiLiveState.followUp.starAnchors.action}</span>
+                <span>R：{aiLiveState.followUp.starAnchors.result}</span>
+              </div>
+            </div>
+          ) : <p>系统会基于候选人刚才的回答，自动生成自然衔接的深挖问题。</p>}
+        </section>
+        <section className="voice-item-block">
+          <strong>整场面试评估</strong>
+          {finalEvaluation ? (
+            <div className="spaced-small">
+              <p>{finalEvaluation.summary}</p>
+              <p>匹配度综合评分：{finalEvaluation.score}/100</p>
+              <ul>{finalEvaluation.strengths.map((item) => <li key={item}>{item}</li>)}</ul>
+            </div>
+          ) : <p>结束录音后，系统会自动基于完整转写历史生成整场评估报告。</p>}
+        </section>
+      </div>
+    </section>
+  );
+
   return (
-    <div className="voice-layout">
-      <section className="card pad voice-workbench">
+    <div className="voice-page">
+      <section className="card pad">
+        <div className="voice-library-head">
+          <div>
+            <h3 className="card-title">录音库</h3>
+          </div>
+          <div className="toolbar-right interview-filters">
+            <label className="interview-filter-field voice-library-filter">
+              <span>岗位</span>
+              <select value={libraryJobId} onChange={(event) => setLibraryJobId(event.target.value)}>
+                {jobs.map((job) => <option key={job.id} value={job.id}>{formatJobOption(job)}</option>)}
+              </select>
+            </label>
+            <div className="voice-library-stats">
+              <Badge color="green">{voiceHistory.length} 条录音</Badge>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="card interview-table-card voice-library-overview">
+        <div className="table-wrap interview-table-wrap voice-library-table-wrap">
+          {voiceHistory.length ? (
+            <table className="table interview-table voice-library-table">
+              <thead>
+                <tr>
+                  <th>人选</th>
+                  <th>岗位</th>
+                  <th>时间</th>
+                  <th>录音详情</th>
+                  <th>删除</th>
+                </tr>
+              </thead>
+              <tbody>
+                {voiceHistory.map((item) => {
+                  const itemCandidate = historyCandidates.find((candidate) => candidate.id === item.candidateId);
+                  return (
+                    <tr key={item.id} className={selectedHistoryId === item.id ? "voice-library-table-row active" : "voice-library-table-row"}>
+                      <td><strong>{itemCandidate?.name || "未匹配人选"}</strong></td>
+                      <td><strong>{librarySelectedJob.title}</strong></td>
+                      <td><span className="meta">{item.createdAt}</span></td>
+                      <td>
+                        <button className="btn compact ghost" type="button" onClick={() => setSelectedHistoryId(item.id)}>录音详情</button>
+                      </td>
+                      <td>
+                        <button
+                          className="btn compact danger"
+                          type="button"
+                          onClick={async () => {
+                            setSelectedHistoryId(item.id);
+                            if (!window.confirm("确认删除这条录音记录？删除后无法恢复。")) return;
+                            setDeletingHistory(true);
+                            try {
+                              const { state: nextState } = await api.deleteVoiceAnalysis(item.id);
+                              onStateChange(nextState);
+                              if (selectedHistoryId === item.id) setSelectedHistoryId("");
+                              onToast("录音记录已删除");
+                            } catch (error) {
+                              onToast(error instanceof Error ? error.message : "删除录音记录失败");
+                            } finally {
+                              setDeletingHistory(false);
+                            }
+                          }}
+                          disabled={deletingHistory}
+                        >
+                          删除
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          ) : (
+            <div className="empty"><div><strong>暂无录音记录</strong></div></div>
+          )}
+        </div>
+      </section>
+
+      <div className="voice-layout">
+        <section className="card pad voice-workbench">
         <div className="toolbar">
           <div>
             <h3 className="card-title">访音解析</h3>
-            <p className="helper-text">页面内直接开启单次面试转写，不入库、不留历史，只输出当场可复制的评估与建议。</p>
+            <p className="helper-text">页面内直接开启录音转写；单次解析可保存到录音库，便于后续按岗位与人选回看复盘。</p>
           </div>
           <div className="voice-session-meta">
             <Badge color={status === "listening" ? "green" : status === "paused" ? "gold" : "gray"}>
@@ -2594,7 +3304,7 @@ function VoiceParseView({ jobs, currentJob, candidatesByJob, onToast }: { jobs: 
           </section>
           <section className="voice-control-panel full">
             <div className="voice-control-actions">
-              <button className="btn primary" type="button" onClick={startSession} disabled={!supportsSpeechRecognition || !selectedCandidate || status === "listening"}>
+              <button className="btn primary" type="button" onClick={startSession} disabled={!supportsRecording || !selectedCandidate || status === "listening"}>
                 {status === "idle" ? "开始录音" : "重新开始"}
               </button>
               <button className="btn" type="button" onClick={pauseSession} disabled={status !== "listening"}>暂停</button>
@@ -2603,10 +3313,11 @@ function VoiceParseView({ jobs, currentJob, candidatesByJob, onToast }: { jobs: 
               <button className="btn ghost" type="button" onClick={clearSession}>清空</button>
             </div>
             <small className="helper-text">
-              {supportsSpeechRecognition
-                ? "建议使用最新版 Chrome。页面刷新后本次内容会丢失，不会写入 SQLite。"
-                : "当前浏览器不支持实时语音识别，建议使用最新版 Chrome 并允许麦克风权限。"}
+              {supportsRecording
+                ? "网页端直接录音；后端使用开源语音模型转文字，再由 DeepSeek 做轻量实时整理。确认有效后可一键写入 SQLite 录音库。"
+                : "当前浏览器不支持网页录音，建议使用最新版 Chrome 并允许麦克风权限。"}
             </small>
+            {liveHint ? <small className="helper-text">{liveHint}{isUploadingChunk ? "…" : ""}</small> : null}
           </section>
           <label className="form-field full">
             <span>实时转写</span>
@@ -2625,114 +3336,144 @@ function VoiceParseView({ jobs, currentJob, candidatesByJob, onToast }: { jobs: 
             />
           </label>
         </div>
-      </section>
-      <section className="card pad voice-analysis-panel">
-        {selectedCandidate && analysis ? (
-          <div className="voice-analysis-content">
-            <div className="row-between voice-analysis-head">
-              <div>
-                <h3 className="card-title">单次输出结果</h3>
-                <p className="helper-text">{sessionStartedAt ? `开始时间：${sessionStartedAt}` : "开始录音后，这里会自动根据转写内容输出评估与建议。"}</p>
-              </div>
-              <div className="voice-head-actions">
-                <Badge color={analysis.recommendation === "建议推进" ? "green" : analysis.recommendation === "建议复核" ? "gold" : "red"}>{analysis.recommendation}</Badge>
-                <button className="btn ghost compact" type="button" onClick={copyAnalysis} disabled={!transcript && !manualNotes}>{copiedKey === "all" ? "已复制" : "复制全部"}</button>
-              </div>
-            </div>
-            <section className="voice-section-panel">
-              <div className="row-between voice-section-head">
-                <div>
-                  <h4>候选人评估</h4>
-                  <p>聚焦候选人回答内容，快速提炼推荐理由、优劣势与岗位风险点。</p>
-                </div>
-                <button className="btn ghost compact" type="button" onClick={copyCandidateAssessment} disabled={!transcript && !manualNotes}>
-                  {copiedKey === "candidate" ? "已复制" : "复制候选人评估"}
-                </button>
-              </div>
-              <div className="voice-main-card">
-                <section className="voice-item-block voice-summary-block">
-                  <div className="ai-label">AI 总结</div>
-                  <p>{analysis.summary}</p>
-                </section>
-                <section className="voice-item-block">
-                  <strong>匹配建议</strong>
-                  <p>{analysis.jobFitAdvice}</p>
-                </section>
-                <section className="voice-item-block">
-                  <strong>优势亮点</strong>
-                  <ul>{analysis.communicationStrengths.map((item) => <li key={item}>{item}</li>)}</ul>
-                </section>
-                <section className="voice-item-block risk">
-                  <strong>风险点</strong>
-                  <ul>{analysis.communicationRisks.map((item) => <li key={item}>{item}</li>)}</ul>
-                </section>
-              </div>
-            </section>
-            <section className="voice-section-panel recruiter-panel">
-              <div className="row-between voice-section-head">
-                <div>
-                  <h4>招聘者建议</h4>
-                  <p>聚焦你的提问方式、信息采集完整度和追问深度，方便当场调整节奏。</p>
-                </div>
-                <button className="btn ghost compact" type="button" onClick={copyRecruiterAdvice} disabled={!transcript && !manualNotes}>
-                  {copiedKey === "recruiter" ? "已复制" : "复制招聘者建议"}
-                </button>
-              </div>
-              <div className="voice-main-card recruiter-main-card">
-                <section className="voice-item-block">
-                  <strong>沟通质检</strong>
-                  <div className="review-list">
-                    {analysis.recruiterReview.map((item) => (
-                      <article className="review-item" key={item.title}>
-                        <div className="row-between">
-                          <strong>{item.title}</strong>
-                          <Badge color={item.level === "良好" ? "green" : item.level === "注意" ? "gold" : "red"}>{item.level}</Badge>
-                        </div>
-                        <p>{item.text}</p>
-                      </article>
-                    ))}
-                  </div>
-                </section>
-                <section className="voice-item-block">
-                  <strong>优化建议</strong>
-                  <ul>{analysis.recruiterSuggestions.map((item) => <li key={item}>{item}</li>)}</ul>
-                </section>
-              </div>
-            </section>
-            <section className="voice-section-panel">
-              <div className="voice-section-head">
-                <div>
-                  <h4>转写与补充</h4>
-                  <p>该区内容只保留在当前页面，用完即可复制，不会入库保存。</p>
-                </div>
-              </div>
-              {highlightTerms.length > 0 && (
-                <div className="voice-highlight-bar">
-                  <span className="meta">高亮关键词</span>
-                  <div className="voice-highlight-chips">
-                    {highlightTerms.map((term) => <span className="voice-highlight-chip" key={term}>{term}</span>)}
-                  </div>
-                </div>
-              )}
-              <div className="resume-box spaced-small">
-                {transcript ? <HighlightedText text={transcript} terms={highlightTerms} /> : "录音开始后，这里会出现实时转写内容。"}
-              </div>
-              {manualNotes.trim() && (
-                <div className="voice-note-box">
-                  <strong>补充备注</strong>
-                  <p><HighlightedText text={manualNotes} terms={highlightTerms} /></p>
-                </div>
-              )}
-            </section>
-          </div>
+        </section>
+        <section className="card pad voice-analysis-panel">
+        {shouldShowCurrentOutput && selectedCandidate && analysis ? (
+          <>
+            {renderAnalysisSections({
+              sourceAnalysis: analysis,
+              sourceTranscript: transcript,
+              sourceSessionStartedAt: sessionStartedAt,
+              sourceCandidate: selectedCandidate,
+              sourceHighlightTerms: highlightTerms,
+              sourceManualNotes: manualNotes,
+            })}
+            {renderLiveCopilot()}
+          </>
+        ) : selectedHistory && historyCandidate ? (
+          renderAnalysisSections({
+            sourceAnalysis: selectedHistory,
+            sourceTranscript: selectedHistory.transcript,
+            sourceSessionStartedAt: selectedHistory.createdAt,
+            sourceCandidate: historyCandidate,
+            sourceHighlightTerms: historyHighlightTerms,
+            readOnly: true,
+          })
         ) : (
           <div className="voice-empty-state">
             <section className="empty voice-empty-card"><div><strong>候选人评估区</strong><br />先选择岗位和人选，再开启录音。系统会基于实时转写输出推荐理由、优势与风险点。</div></section>
             <section className="empty voice-empty-card"><div><strong>招聘者建议区</strong><br />会根据你的提问内容与沟通节奏，实时给出信息采集、追问深度与改进建议。</div></section>
           </div>
         )}
-      </section>
+        </section>
+      </div>
+      {selectedHistory && historyCandidate && (
+        <VoiceHistoryDetailModal
+          job={librarySelectedJob}
+          history={selectedHistory}
+          candidate={historyCandidate}
+          highlightTerms={historyHighlightTerms}
+          copied={copiedHistory}
+          deleting={deletingHistory}
+          onClose={() => setSelectedHistoryId("")}
+          onCopy={() => void copyHistoryDetail()}
+          onDelete={() => void removeHistory()}
+        />
+      )}
     </div>
+  );
+}
+
+function VoiceHistoryDetailModal({
+  job,
+  history,
+  candidate,
+  highlightTerms,
+  copied,
+  deleting,
+  onClose,
+  onCopy,
+  onDelete,
+}: {
+  job: Job;
+  history: VoiceAnalysis;
+  candidate: Candidate;
+  highlightTerms: string[];
+  copied: boolean;
+  deleting: boolean;
+  onClose: () => void;
+  onCopy: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <Modal
+      title="录音详情"
+      className="modal-wide voice-detail-modal"
+      onClose={onClose}
+      actions={(
+        <>
+          <button className="btn ghost" type="button" onClick={onCopy}>{copied ? "已复制" : "复制板块"}</button>
+          <button className="btn danger" type="button" onClick={onDelete} disabled={deleting}>{deleting ? "删除中..." : "删除录音"}</button>
+        </>
+      )}
+    >
+      <div className="modal-body voice-detail-body">
+        <section className="voice-detail-hero">
+          <div className="voice-detail-hero-meta">
+            <span>岗位：{job.title}</span>
+            <span>人选：{candidate.name}</span>
+            <span>时间：{history.createdAt}</span>
+          </div>
+          <div className="voice-detail-badges">
+            <Badge color={history.recommendation === "建议推进" ? "green" : history.recommendation === "建议复核" ? "gold" : "gray"}>{history.recommendation}</Badge>
+          </div>
+        </section>
+        <section className="voice-detail-grid">
+          <article className="voice-detail-card">
+            <strong>AI总结</strong>
+            <p>{history.summary}</p>
+          </article>
+          <article className="voice-detail-card">
+            <strong>匹配建议</strong>
+            <p>{history.jobFitAdvice}</p>
+          </article>
+        </section>
+        <section className="voice-detail-grid">
+          <article className="voice-detail-card">
+            <strong>候选人优势</strong>
+            <ul>{history.communicationStrengths.map((item) => <li key={item}>{item}</li>)}</ul>
+          </article>
+          <article className="voice-detail-card">
+            <strong>风险点</strong>
+            <ul>{history.communicationRisks.map((item) => <li key={item}>{item}</li>)}</ul>
+          </article>
+        </section>
+        <section className="voice-detail-card">
+          <strong>招聘者建议</strong>
+          <ul>{history.recruiterSuggestions.map((item) => <li key={item}>{item}</li>)}</ul>
+        </section>
+        <section className="voice-detail-card">
+          <strong>沟通质检</strong>
+          <div className="review-list">
+            {history.recruiterReview.map((item) => (
+              <article className="review-item" key={`${item.title}-${item.text}`}>
+                <div className="row-between">
+                  <strong>{item.title}</strong>
+                  <Badge color={item.level === "良好" ? "green" : item.level === "注意" ? "gold" : "gray"}>{item.level}</Badge>
+                </div>
+                <p>{item.text}</p>
+              </article>
+            ))}
+          </div>
+        </section>
+        <section className="voice-detail-card">
+          <strong>转写内容</strong>
+          <div className="resume-box spaced-small voice-library-detail-text">
+            <HighlightedText text={history.transcript} terms={highlightTerms} />
+          </div>
+        </section>
+      </div>
+    </Modal>
   );
 }
 
@@ -2745,25 +3486,48 @@ const salaryRegionOptions = ["北京", "上海", "深圳", "广州", "杭州", "
 const salaryExperienceOptions = ["无经验", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"] as const;
 const salaryIndustryOptions = ["互联网", "企业服务", "消费品/零售", "制造业", "金融", "教育", "医疗健康"] as const;
 const salaryEducationOptions = ["大专", "本科", "硕士"] as const;
+const salaryRoleOptions = ["HRBP", "招聘专员", "前端工程师", "产品经理", "销售经理", "运营经理"] as const;
 
 function SalaryView({
-  jobs,
-  currentJob,
-  onSelectJob,
+  data,
   onRefresh,
 }: {
-  jobs: Job[];
-  currentJob: Job;
-  onSelectJob: (id: string) => Promise<void>;
+  data: SalaryData | null;
   onRefresh: (filters: SalaryFilters) => Promise<void>;
 }) {
-  const data = currentJob.salaryData;
-  const [filters, setFilters] = useState<SalaryFilters>(() => buildSalaryFilters(currentJob, currentJob.salaryData));
+  const research = data ? {
+    dataWindow: data.research?.dataWindow || "历史缓存",
+    confidence: data.research?.confidence || "低",
+    confidenceReason: data.research?.confidenceReason || "当前数据缺少完整来源追溯，建议刷新薪酬大盘后再查看。", 
+    limitations: data.research?.limitations?.length ? data.research.limitations : ["当前缓存数据缺少完整局限性说明。"],
+    triangulation: {
+      requiredSources: data.research?.triangulation?.requiredSources ?? 3,
+      actualSources: data.research?.triangulation?.actualSources ?? data.research?.coreSources?.length ?? 0,
+      passed: data.research?.triangulation?.passed ?? false,
+      summary: data.research?.triangulation?.summary || "当前数据未完成三角验证，建议重新生成调研结果。",
+    },
+    metricSources: {
+      p25: data.research?.metricSources?.p25 || "当前缓存未提供 P25 来源说明，建议刷新薪酬大盘。",
+      p50: data.research?.metricSources?.p50 || "当前缓存未提供 P50 来源说明，建议刷新薪酬大盘。",
+      p75: data.research?.metricSources?.p75 || "当前缓存未提供 P75 来源说明，建议刷新薪酬大盘。",
+    },
+    methodology: data.research?.methodology?.length ? data.research.methodology : ["当前缓存未提供完整调研方法，建议刷新薪酬大盘。"],
+    coreSources: data.research?.coreSources?.length ? data.research.coreSources : ["当前缓存未提供核心来源。"],
+    validationSources: data.research?.validationSources?.length ? data.research.validationSources : ["当前缓存未提供验证来源。"],
+    sampleNotes: data.research?.sampleNotes?.length ? data.research.sampleNotes : ["当前缓存未提供样本说明。"],
+    evidence: data.research?.evidence || [],
+    disclaimer: data.research?.disclaimer || "当前数据来源信息不完整，建议重新刷新薪酬调研。",
+  } : null;
+  const [filters, setFilters] = useState<SalaryFilters>(() => buildSalaryFilters(data));
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    setFilters(buildSalaryFilters(currentJob, currentJob.salaryData));
-  }, [currentJob.id, currentJob.salaryData]);
+    setFilters((current) => ({
+      ...buildSalaryFilters(data),
+      ...current,
+      role: current.role || data?.filters.role || buildSalaryFilters(data).role,
+    }));
+  }, [data]);
 
   const applyRefresh = async () => {
     setLoading(true);
@@ -2779,17 +3543,23 @@ function SalaryView({
       <section className="card pad">
         <div className="toolbar salary-toolbar">
           <div>
-            <h3 className="card-title">{currentJob.title} · 薪酬调研</h3>
-            <p className="helper-text">按岗位、地区、经验、行业、学历组合查看本地薪酬基准，并生成建议区间与理由。</p>
+            <h3 className="card-title">薪酬调研</h3>
+            <p className="helper-text">作为独立调研工具，按岗位、地区、经验、行业、学历组合生成公开数据薪酬研究结果。</p>
           </div>
           <div className="toolbar-right">
-            <JobSearchSwitcher jobs={jobs} currentJob={currentJob} onChange={(id) => { void onSelectJob(id); }} />
             <button className="btn primary" onClick={applyRefresh} disabled={loading}>
               {loading ? "刷新中..." : data ? "刷新薪酬大盘" : "生成薪酬大盘"}
             </button>
           </div>
         </div>
         <div className="salary-filter-row">
+          <EditableOptionSwitcher
+            label="岗位"
+            value={filters.role}
+            options={[...salaryRoleOptions]}
+            placeholder="输入岗位名称"
+            onChange={(role) => setFilters({ ...filters, role })}
+          />
           <EditableOptionSwitcher
             label="地区"
             value={filters.region}
@@ -2822,7 +3592,48 @@ function SalaryView({
       {!data ? (
         <section className="card pad">
           <div className="empty">
-            <div><strong>当前岗位暂无薪酬大盘</strong><br />先选择筛选条件，再点击“生成薪酬大盘”。</div>
+            <div><strong>当前暂无薪酬大盘</strong><br />先填写岗位与筛选条件，再点击“生成薪酬大盘”。</div>
+          </div>
+        </section>
+      ) : data.status === "insufficient_data" ? (
+        <section className="card pad">
+          <div className="empty">
+            <div>
+              <strong>当前公开数据不足，无法生成高置信度报告</strong><br />
+              {data.errorMessage || "未满足至少 3 个独立招聘平台近 3 个月有效样本要求。"}
+            </div>
+          </div>
+          <div className="grid cols-2">
+            <section className="card pad">
+              <h3 className="card-title">检索说明</h3>
+              <div className="ai-point-card spaced-small">
+                <strong>调研方法</strong>
+                <ul>{research?.methodology.map((item) => <li key={item}>{item}</li>)}</ul>
+              </div>
+              <div className="ai-point-card spaced-small">
+                <strong>局限性说明</strong>
+                <ul>{research?.limitations.map((item) => <li key={item}>{item}</li>)}</ul>
+              </div>
+            </section>
+            <section className="card pad">
+              <h3 className="card-title">已检索到的公开样本</h3>
+              <div className="salary-evidence-list">
+                {research?.evidence.length ? research.evidence.map((item, index) => (
+                  <article className="salary-evidence-card" key={`${item.source}-${item.role}-${index}`}>
+                    <div className="salary-evidence-head">
+                      <strong>{item.source}</strong>
+                      <span>{item.publishWindow}</span>
+                    </div>
+                    <div className="salary-evidence-meta">
+                      <span>{item.role}</span>
+                      <span>{item.region}</span>
+                      <span>{item.experience}</span>
+                    </div>
+                    <p>{item.note}</p>
+                  </article>
+                )) : <div className="empty"><div>未检索到满足条件的公开招聘平台样本。</div></div>}
+              </div>
+            </section>
           </div>
         </section>
       ) : (
@@ -2893,6 +3704,88 @@ function SalaryView({
               </div>
             </section>
           </div>
+
+          <div className="grid cols-2">
+            <section className="card pad">
+              <div className="row-between">
+                <div>
+                  <h3 className="card-title">数据来源与调研方法</h3>
+                  <p className="helper-text">{research?.dataWindow} · 置信度 {research?.confidence}</p>
+                </div>
+                <Badge color="green">{research?.confidence}</Badge>
+              </div>
+              <div className="salary-disclaimer salary-disclaimer-soft">
+                <strong>置信度说明：</strong>{research?.confidenceReason}
+              </div>
+              <div className="salary-metric-trace-grid">
+                <article className="salary-trace-card">
+                  <strong>P25 来源</strong>
+                  <p>{research?.metricSources.p25}</p>
+                </article>
+                <article className="salary-trace-card">
+                  <strong>P50 来源</strong>
+                  <p>{research?.metricSources.p50}</p>
+                </article>
+                <article className="salary-trace-card">
+                  <strong>P75 来源</strong>
+                  <p>{research?.metricSources.p75}</p>
+                </article>
+              </div>
+              <div className="salary-triangulation-card">
+                <strong>三角验证</strong>
+                <p>{research?.triangulation.summary}</p>
+                <div className="salary-evidence-meta">
+                  <span>要求来源数 {research?.triangulation.requiredSources}</span>
+                  <span>实际来源数 {research?.triangulation.actualSources}</span>
+                  <span>{research?.triangulation.passed ? "已通过交叉验证" : "未满足交叉验证"}</span>
+                </div>
+              </div>
+              <div className="ai-grid spaced-small">
+                <section className="ai-point-card">
+                  <strong>核心来源</strong>
+                  <ul>{research?.coreSources.map((item) => <li key={item}>{item}</li>)}</ul>
+                </section>
+                <section className="ai-point-card">
+                  <strong>验证来源</strong>
+                  <ul>{research?.validationSources.map((item) => <li key={item}>{item}</li>)}</ul>
+                </section>
+              </div>
+              <div className="ai-point-card spaced-small">
+                <strong>调研方法</strong>
+                <ul>{research?.methodology.map((item) => <li key={item}>{item}</li>)}</ul>
+              </div>
+              <div className="ai-point-card spaced-small">
+                <strong>样本说明</strong>
+                <ul>{research?.sampleNotes.map((item) => <li key={item}>{item}</li>)}</ul>
+              </div>
+              <div className="ai-point-card spaced-small">
+                <strong>局限性说明</strong>
+                <ul>{research?.limitations.map((item) => <li key={item}>{item}</li>)}</ul>
+              </div>
+            </section>
+
+            <section className="card pad">
+              <h3 className="card-title">代表性样本依据</h3>
+              <div className="salary-evidence-list">
+                {research?.evidence.map((item, index) => (
+                  <article className="salary-evidence-card" key={`${item.source}-${item.role}-${index}`}>
+                    <div className="salary-evidence-head">
+                      <strong>{item.source}</strong>
+                      <span>{item.publishWindow}</span>
+                    </div>
+                    <div className="salary-evidence-meta">
+                      <span>{item.role}</span>
+                      <span>{item.region}</span>
+                      <span>{item.experience}</span>
+                      <span>{item.salaryRange}</span>
+                    </div>
+                    <p>{item.note}</p>
+                  </article>
+                ))}
+              </div>
+              <div className="salary-disclaimer">{research?.disclaimer}</div>
+            </section>
+          </div>
         </>
       )}
     </>
@@ -2916,6 +3809,7 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
   const [copilotLoading, setCopilotLoading] = useState<null | "jd" | "questions">(null);
   const [copilotError, setCopilotError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [titlesCopied, setTitlesCopied] = useState(false);
   const interviewQuestions = generatedQuestions.length ? generatedQuestions : buildJobQuestions(form);
 
   async function submit(event: FormEvent) {
@@ -2954,6 +3848,24 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
                 </ul>
               </div>
             ) : null}
+            {result.sourcingTitles.length ? (
+              <div className="tool-block">
+                <div className="row-between tool-heading-row">
+                  <span className="tool-label">社交渠道主动搜寻标题</span>
+                  <button className="btn ghost compact" type="button" onClick={() => copySourcingTitles(result.sourcingTitles)}>
+                    {titlesCopied ? "已复制" : "复制标题"}
+                  </button>
+                </div>
+                <div className="sourcing-title-list">
+                  {result.sourcingTitles.map((item, index) => (
+                    <article className="sourcing-title-item" key={`${item}-${index}`}>
+                      <span>{index + 1}</span>
+                      <p>{item}</p>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </>
         ),
       });
@@ -2987,6 +3899,24 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
                 </div>
                 {renderJdDescription(description)}
               </div>
+              {result.sourcingTitles.length ? (
+                <div className="tool-block">
+                  <div className="row-between tool-heading-row">
+                    <span className="tool-label">社交渠道主动搜寻标题</span>
+                    <button className="btn ghost compact" type="button" onClick={() => copySourcingTitles(result.sourcingTitles)}>
+                      {titlesCopied ? "已复制" : "复制标题"}
+                    </button>
+                  </div>
+                  <div className="sourcing-title-list">
+                    {result.sourcingTitles.map((item, index) => (
+                      <article className="sourcing-title-item" key={`${item}-${index}`}>
+                        <span>{index + 1}</span>
+                        <p>{item}</p>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </>
           ),
         });
@@ -3002,6 +3932,14 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
     await navigator.clipboard.writeText(formatInterviewQuestions(form, interviewQuestions));
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
+  };
+
+  const copySourcingTitles = async (titles: string[]) => {
+    const content = titles.map((item, index) => `${index + 1}. ${item}`).join("\n");
+    if (!content) return;
+    await navigator.clipboard.writeText(content);
+    setTitlesCopied(true);
+    window.setTimeout(() => setTitlesCopied(false), 1600);
   };
 
   return (
@@ -3046,7 +3984,7 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
               <div className="job-tool-head">
                 <div className="job-tool-summary">
                   <h4>推荐面试问题</h4>
-                  <p>围绕关键词、经验要求与岗位职责，调用模型生成结构化面试追问。</p>
+                  <p>围绕岗位关键词与核心职责，调用 DeepSeek 生成 STAR 行为面试问题与深度追问。</p>
                 </div>
                 <div className="job-tool-actions">
                   <button type="button" className="btn ghost" onClick={refreshInterviewQuestions} disabled={copilotLoading !== null}>
@@ -3061,8 +3999,26 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
                   {interviewQuestions.map((question, index) => (
                     <article className="question-item" key={question.title}>
                       <strong>{index + 1}. {question.title}</strong>
+                      {question.competency ? <div className="question-chip-row"><span className="question-chip">{question.competency}</span></div> : null}
                       <p>{question.text}</p>
-                      <span>{question.probe}</span>
+                      {question.starFocus?.length ? (
+                        <div className="question-meta-group">
+                          <span className="question-probe-label">STAR关注点</span>
+                          <div className="question-chip-row">
+                            {question.starFocus.map((item) => <span className="question-chip soft" key={item}>{item}</span>)}
+                          </div>
+                        </div>
+                      ) : null}
+                      <span className="question-probe-label">追问</span>
+                      <span className="question-probe-text">{normalizeProbeText(question.probe)}</span>
+                      {question.evaluationSignals?.length ? (
+                        <div className="question-meta-group">
+                          <span className="question-probe-label">判断信号</span>
+                          <ul className="question-signal-list">
+                            {question.evaluationSignals.map((item) => <li key={item}>{item}</li>)}
+                          </ul>
+                        </div>
+                      ) : null}
                     </article>
                   ))}
                 </div>
@@ -3082,13 +4038,22 @@ function ResumeModal({ job, onClose, onSaved }: { job: Job; onClose: () => void;
   const [resumeText, setResumeText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
   async function submit(event: FormEvent) {
-    event.preventDefault(); setLoading(true);
-    const payload: ResumeUploadPayload = { name, source, resumeText, files: await Promise.all(files.map(fileToPayload)) };
-    const result = await api.uploadResumes(job.id, payload);
-    onSaved(result.state);
+    event.preventDefault();
+    setLoading(true);
+    setError("");
+    try {
+      const payload: ResumeUploadPayload = { name, source, resumeText, files: await Promise.all(files.map(fileToPayload)) };
+      const result = await api.uploadResumes(job.id, payload);
+      onSaved(result.state);
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "简历分析失败，请稍后重试");
+    } finally {
+      setLoading(false);
+    }
   }
-  return <Modal title="上传/录入简历" onClose={onClose}><form onSubmit={submit}><div className="modal-body form-grid"><Input label="候选人姓名（文本录入时必填）" value={name} onChange={setName} /><label className="form-field"><span>来源渠道</span><select value={source} onChange={(event) => setSource(event.target.value)}><option value="BOSS">BOSS</option><option value="智联">智联</option><option value="猎聘">猎聘</option><option value="内推">内推</option><option value="其他">其他</option></select></label><label className="form-field full"><span>上传简历文件（支持单个或多个）</span><input className="file-input" type="file" multiple accept=".txt,.md,.pdf,.doc,.docx,.rtf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.heic,.heif,image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => setFiles(Array.from(event.target.files || []))} /><small className="helper-text">文件原件会写入 SQLite。TXT/Markdown 可读取正文；PDF、Word、图片会先基于文件名和补充文本分析。</small></label><label className="form-field full"><span>简历文本</span><textarea value={resumeText} onChange={(event) => setResumeText(event.target.value)} placeholder="可直接粘贴简历文本；若同时上传文件，会作为补充文本参与分析" /></label></div><div className="modal-foot"><button className="btn" type="button" onClick={onClose}>取消</button><button className="btn primary" disabled={loading}>{loading ? "分析中..." : "分析并生成候选人"}</button></div></form></Modal>;
+  return <Modal title="上传/录入简历" onClose={onClose}><form onSubmit={submit}><div className="modal-body form-grid"><Input label="候选人姓名（文本录入时必填）" value={name} onChange={setName} /><label className="form-field"><span>来源渠道</span><select value={source} onChange={(event) => setSource(event.target.value)}><option value="BOSS">BOSS</option><option value="智联">智联</option><option value="猎聘">猎聘</option><option value="内推">内推</option><option value="其他">其他</option></select></label><label className="form-field full"><span>上传简历文件（支持单个或多个）</span><input className="file-input" type="file" multiple accept=".txt,.md,.pdf,.doc,.docx,.rtf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.heic,.heif,.csv,.json,.xml,.html,.htm,image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => setFiles(Array.from(event.target.files || []))} /><small className="helper-text">文件原件会写入 SQLite。系统会优先提取 PDF / Word / 图片 / TXT 等文件正文，并结合 DeepSeek 清洗整理后保存到简历原文。</small></label><label className="form-field full"><span>简历文本</span><textarea value={resumeText} onChange={(event) => setResumeText(event.target.value)} placeholder="可直接粘贴简历文本；若同时上传文件，会作为补充文本参与识别、整理与分析" /></label>{error ? <div className="tool-error full">{error}</div> : null}</div><div className="modal-foot"><button className="btn" type="button" onClick={onClose}>取消</button><button className="btn primary" disabled={loading}>{loading ? "分析中..." : "分析并生成候选人"}</button></div></form></Modal>;
 }
 
 async function fileToPayload(file: File) {
@@ -3388,14 +4353,52 @@ function statusColor(status: Job["status"]) { return status === "招聘中" ? "g
 function scoreColor(score: number) { return score >= 85 ? "green" : score >= 70 ? "gold" : score >= 60 ? "gray" : "red"; }
 function buildJobQuestions(job: JobPayload) {
   const keywords = splitKeywords(job.keywords).slice(0, 4);
-  return (keywords.length ? keywords : ["业务理解", "项目推动", "团队协作"]).map((keyword) => ({
-    title: `${keyword}能力验证`,
-    text: `请分享一个你在“${keyword}”相关场景中主导或深度参与的案例：目标、动作和结果分别是什么？`,
-    probe: "追问：你如何衡量最终效果？如果资源不足，你会如何调整推进方式？",
-  }));
+  const [first, second, third] = keywords.length ? keywords : ["业务理解", "项目推动", "团队协作"];
+  return [
+    {
+      title: `${first}能力验证`,
+      text: `请讲一个你过去亲自处理“${first}”相关问题的具体事例，说明当时的业务情境、你的任务目标、你采取的关键行动，以及最终取得的结果。`,
+      probe: "追问1：在这个案例里，你个人承担的关键责任是什么？\n追问2：如果当时条件更复杂，你会怎么调整你的做法？",
+      competency: `${first}相关核心能力`,
+      starFocus: ["情境澄清", "行动拆解", "结果量化"],
+      evaluationSignals: ["能清楚说明个人职责边界", "行动步骤具体可复述", "结果有明确量化或业务影响"],
+    },
+    {
+      title: `${second || first}场景深挖`,
+      text: `请分享一次你在“${second || first}”相关场景中推动复杂事项落地的过往案例，请按背景、挑战、行动和结果完整说明。`,
+      probe: "追问1：过程中最大的阻力或冲突来自哪里？\n追问2：你是如何影响关键相关方并达成一致的？",
+      competency: `${second || first}与协同推动能力`,
+      starFocus: ["任务定义", "行动拆解", "复盘反思"],
+      evaluationSignals: ["能说明关键阻力来源", "有跨团队推动动作", "能解释最终如何达成一致"],
+    },
+    {
+      title: `${third || second || first}问题分析`,
+      text: `请讲一个你在“${third || second || first}”相关工作中，面对信息不完整或目标不够清晰，仍然成功推进事情的真实案例。`,
+      probe: "追问1：你当时最先确认的关键事实是什么？\n追问2：你是如何判断优先级并做出取舍的？",
+      competency: `${third || second || first}问题分析能力`,
+      starFocus: ["情境澄清", "任务定义", "行动拆解"],
+      evaluationSignals: ["能先讲清楚问题背景", "判断逻辑清晰", "取舍依据具体合理"],
+    },
+    {
+      title: "结果复盘与优化",
+      text: "请分享一个你通过复盘与优化，把原本效果一般的工作明显改善的真实事例。请说明问题起点、你的改进动作以及结果变化。",
+      probe: "追问1：你具体调整了哪些机制、流程或沟通方式？\n追问2：最终结果是如何被量化或验证的？",
+      competency: "复盘优化与持续改进能力",
+      starFocus: ["行动拆解", "结果量化", "复盘反思"],
+      evaluationSignals: ["能讲清优化前后的差异", "改进动作有针对性", "结果变化可以被验证"],
+    },
+    {
+      title: "岗位适配代表案例",
+      text: `结合 ${job.title || "该岗位"} 的职责，请讲一个最能体现你适合该岗位的过往案例，重点说明你在其中的角色、关键贡献和业务结果。`,
+      probe: "追问1：这个案例里哪项能力最能证明你能胜任当前岗位？\n追问2：如果换到更复杂的业务环境，你会如何复制这次成功经验？",
+      competency: "岗位适配与综合胜任力",
+      starFocus: ["任务定义", "行动拆解", "结果量化"],
+      evaluationSignals: ["案例与岗位职责高度相关", "个人贡献突出", "经验具备迁移复用价值"],
+    },
+  ];
 }
 
-function formatInterviewQuestions(job: JobPayload, questions: ReturnType<typeof buildJobQuestions>) {
+function formatInterviewQuestions(job: JobPayload, questions: InterviewQuestionItem[]) {
   const header = [
     `职位：${job.title || "未填写"}`,
     `部门：${job.dept || "未填写"}`,
@@ -3405,9 +4408,24 @@ function formatInterviewQuestions(job: JobPayload, questions: ReturnType<typeof 
     `关键考核点：${job.keywords || "未填写"}`,
   ].join("\n");
   const body = questions
-    .map((question, index) => `${index + 1}. ${question.title}\n问题：${question.text}\n追问：${question.probe}`)
+    .map((question, index) => [
+      `${index + 1}. ${question.title}`,
+      question.competency ? `考察能力：${question.competency}` : "",
+      `问题：${question.text}`,
+      question.starFocus?.length ? `STAR关注点：${question.starFocus.join("、")}` : "",
+      `追问：\n${normalizeProbeText(question.probe)}`,
+      question.evaluationSignals?.length ? `判断信号：${question.evaluationSignals.join("；")}` : "",
+    ].filter(Boolean).join("\n"))
     .join("\n\n");
   return `${header}\n\n推荐面试问题：\n${body}`;
+}
+
+function normalizeProbeText(probe: string) {
+  return probe
+    .replace(/追问(\d+)[：:]/g, "追问$1：")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
 }
 
 function buildVoiceHighlightTerms(job: Job, transcript: string, manualNotes: string) {
@@ -3538,6 +4556,129 @@ function analyzeRealtimeVoice(job: Job, candidate: Candidate, rawText: string): 
   };
 }
 
+function buildVoiceRealtimeAnalysisFromAi(
+  job: Job,
+  candidate: Candidate,
+  liveState: VoiceAiLiveState | null,
+  finalEvaluation: VoiceFinalEvaluation | null,
+): VoiceRealtimeAnalysis | null {
+  if (!liveState && !finalEvaluation) return null;
+
+  const summary = finalEvaluation?.summary || liveState?.quickInsight.coreViewpoint || `${candidate.name} 正在进行面试沟通分析。`;
+  const jobFitAdvice = finalEvaluation
+    ? `已验证：${finalEvaluation.passedKeywords.join("、") || "暂无"}；待验证：${finalEvaluation.pendingKeywords.join("、") || "暂无"}。`
+    : `当前建议围绕 ${liveState?.followUp.uncoveredKeywords.join("、") || job.keywords || job.title} 继续深挖。`;
+  const communicationStrengths = finalEvaluation?.strengths?.length
+    ? finalEvaluation.strengths
+    : (liveState?.quickInsight.signalType === "加分信号"
+      ? liveState.quickInsight.keyEvidence.slice(0, 3)
+      : ["当前还需要更多正向证据来支撑推进判断。"]);
+  const communicationRisks = finalEvaluation?.risks?.length
+    ? finalEvaluation.risks
+    : (liveState?.quickInsight.signalType === "风险信号"
+      ? [...liveState.quickInsight.followUpDirection.slice(0, 2), liveState.quickInsight.signalReason].filter(Boolean)
+      : ["当前暂无明显风险，但仍需继续验证关键案例。"]);
+  const recruiterCoach = finalEvaluation?.recruiterCoach || null;
+  const recruiterSuggestions = recruiterCoach
+    ? buildRecruiterSuggestionList(recruiterCoach)
+    : [
+      liveState?.followUp.nextQuestion || "继续追问候选人最近提到的案例细节。",
+      liveState?.followUp.backupQuestion || "如回答模糊，继续追问个人角色和量化结果。",
+      ...(finalEvaluation?.interviewerAdvice.nextRoundFocus || []),
+    ].filter(Boolean).slice(0, 5);
+  const recruiterReview: VoiceRealtimeAnalysis["recruiterReview"] = recruiterCoach
+    ? buildRecruiterReviewList(recruiterCoach)
+    : [
+      {
+        title: "实时追问方向",
+        level: liveState?.quickInsight.signalType === "风险信号" ? "注意" : "良好",
+        text: liveState?.followUp.objective || "建议继续围绕岗位关键点做深入验证。",
+      },
+      {
+        title: "已覆盖考核点",
+        level: liveState?.followUp.coveredKeywords.length ? "良好" : "待优化",
+        text: liveState?.followUp.coveredKeywords.join("、") || "当前还未形成足够的已覆盖考核点。",
+      },
+      {
+        title: "待深挖考核点",
+        level: liveState?.followUp.uncoveredKeywords.length ? "注意" : "良好",
+        text: liveState?.followUp.uncoveredKeywords.join("、") || "当前暂无明显缺口，可继续核验案例真实性。",
+      },
+    ];
+  const recommendation: VoiceRecommendation = finalEvaluation
+    ? finalEvaluation.score >= 75 ? "建议推进" : finalEvaluation.score >= 60 ? "建议复核" : "暂缓推进"
+    : (liveState?.quickInsight.signalType === "加分信号" ? "建议复核" : "暂缓推进");
+
+  return {
+    summary,
+    jobFitAdvice,
+    communicationStrengths,
+    communicationRisks,
+    recruiterSuggestions,
+    recruiterReview,
+    recommendation,
+  };
+}
+
+function buildRecruiterSuggestionList(report: VoiceRecruiterCoachReport) {
+  const core = report.conciseImprovements.filter(Boolean);
+  if (core.length) return core.slice(0, 5);
+
+  return [
+    report.opening.suggestion,
+    ...report.informationCompleteness.suggestionLines,
+    ...report.rhythm.advice,
+  ].filter(Boolean).slice(0, 5);
+}
+
+function buildRecruiterReviewList(report: VoiceRecruiterCoachReport): VoiceRealtimeAnalysis["recruiterReview"] {
+  return [
+    {
+      title: `开场与破冰 · ${report.opening.score}分`,
+      level: mapVoiceScoreToLevel(report.opening.score),
+      text: [
+        report.opening.evidence.length ? `依据：${report.opening.evidence.join("；")}` : "",
+        report.opening.issues.length ? `问题：${report.opening.issues.join("；")}` : "",
+        report.opening.suggestion ? `建议：${report.opening.suggestion}` : "",
+      ].filter(Boolean).join(" "),
+    },
+    {
+      title: `信息采集完整度 · ${report.informationCompleteness.score}分`,
+      level: mapVoiceScoreToLevel(report.informationCompleteness.score),
+      text: [
+        report.informationCompleteness.missingItems.length ? `缺失项：${report.informationCompleteness.missingItems.join("；")}` : "本场基础信息采集较完整。",
+        report.informationCompleteness.suggestionLines.length ? `补充话术：${report.informationCompleteness.suggestionLines.join("；")}` : "",
+      ].filter(Boolean).join(" "),
+    },
+    {
+      title: `追问深度 · ${report.followUpDepth.score}分`,
+      level: mapVoiceScoreToLevel(report.followUpDepth.score),
+      text: [
+        report.followUpDepth.goodExamples.length ? `亮点：${report.followUpDepth.goodExamples.join("；")}` : "",
+        report.followUpDepth.missedOpportunities.length
+          ? `待补深挖：${report.followUpDepth.missedOpportunities.map((item) => `${item.moment}；建议问法：${item.suggestion}`).join(" | ")}`
+          : "",
+      ].filter(Boolean).join(" "),
+    },
+    {
+      title: `沟通节奏 · ${report.rhythm.score}分`,
+      level: mapVoiceScoreToLevel(report.rhythm.score),
+      text: [
+        `主题跳跃度：${report.rhythm.topicJumpLevel}`,
+        `讲话占比：${report.rhythm.interviewerTalkRatio}`,
+        `时间分配：${report.rhythm.timeAllocation}`,
+        report.rhythm.advice.length ? `优化建议：${report.rhythm.advice.join("；")}` : "",
+      ].filter(Boolean).join("；"),
+    },
+  ];
+}
+
+function mapVoiceScoreToLevel(score: number): VoiceReviewLevel {
+  if (score >= 85) return "良好";
+  if (score >= 70) return "注意";
+  return "待优化";
+}
+
 function formatCandidateAssessmentCopy({
   job,
   candidate,
@@ -3655,35 +4796,16 @@ function formatRealtimeVoiceCopy({
   return lines.join("\n");
 }
 
-function buildSalaryFilters(job: Job, salaryData: SalaryData | null): SalaryFilters {
+function buildSalaryFilters(salaryData: SalaryData | null): SalaryFilters {
   return {
-    region: salaryData?.filters.region || (salaryRegionOptions.includes(job.location as (typeof salaryRegionOptions)[number]) ? job.location : "北京"),
-    experience: salaryData?.filters.experience || guessSalaryExperience(job.experience),
-    industry: salaryData?.filters.industry || inferSalaryIndustry(job),
+    role: salaryData?.filters.role || "HRBP",
+    region: salaryData?.filters.region || "北京",
+    experience: salaryData?.filters.experience || "3-5年",
+    industry: salaryData?.filters.industry || "企业服务",
     education: salaryEducationOptions.includes((salaryData?.filters.education || "本科") as (typeof salaryEducationOptions)[number])
       ? (salaryData?.filters.education || "本科")
       : "本科",
   };
-}
-
-function guessSalaryExperience(value: string) {
-  if (/无经验|应届|校招/.test(value)) return "无经验";
-  if (/1-3/.test(value)) return "1-3年";
-  if (/3-5/.test(value)) return "3-5年";
-  if (/5-10/.test(value)) return "5-10年";
-  if (/10/.test(value)) return "10年以上";
-  return "3-5年";
-}
-
-function inferSalaryIndustry(job: Job) {
-  const text = `${job.dept} ${job.title} ${job.description}`;
-  if (/产品|前端|开发|数字化|平台|技术|互联网/i.test(text)) return "互联网";
-  if (/消费|零售/i.test(text)) return "消费品/零售";
-  if (/制造|工厂|供应链/i.test(text)) return "制造业";
-  if (/金融|投资|银行/i.test(text)) return "金融";
-  if (/教育|培训/i.test(text)) return "教育";
-  if (/医疗|医药|健康/i.test(text)) return "医疗健康";
-  return "企业服务";
 }
 
 function downloadJson(state: AppState) { const url = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type: "application/json" })); const link = document.createElement("a"); link.href = url; link.download = `xiaosongshu-${Date.now()}.json`; link.click(); URL.revokeObjectURL(url); }

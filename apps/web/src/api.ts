@@ -1,4 +1,4 @@
-import type { AppState, CandidateTimeline, Job, ResumeFilePayload, SalaryFilters } from "./types";
+import type { AppState, CandidateInterviewPlan, CandidateTimeline, Job, ResumeFilePayload, SalaryFilters, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceSegmentInsight, VoiceTranscriptResult } from "./types";
 
 async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   const headers = options.body ? { "Content-Type": "application/json", ...(options.headers || {}) } : options.headers;
@@ -8,7 +8,14 @@ async function request<T>(url: string, options: RequestInit = {}): Promise<T> {
   });
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `请求失败：${response.status}`);
+    let message = text || `请求失败：${response.status}`;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed?.message) message = String(parsed.message);
+    } catch {
+      message = text || `请求失败：${response.status}`;
+    }
+    throw new Error(message);
   }
   return response.json() as Promise<T>;
 }
@@ -26,11 +33,25 @@ export const api = {
   uploadResumes: (jobId: string, payload: ResumeUploadPayload) =>
     request<{ state: AppState }>(`/api/jobs/${jobId}/resumes`, { method: "POST", body: JSON.stringify(payload) }),
   markInterview: (id: string) => request<AppState>(`/api/candidates/${id}/mark-interview`, { method: "POST" }),
+  generateCandidateInterviewPlan: (id: string) =>
+    request<{ interviewPlan: CandidateInterviewPlan; state: AppState }>(`/api/candidates/${id}/interview-plan`, { method: "POST", body: JSON.stringify({ candidateId: id }) }),
   updateInterviewStage: (id: string, payload: InterviewStagePayload) =>
     request<AppState>(`/api/candidates/${id}/interview-stage`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteCandidate: (id: string) => request<AppState>(`/api/candidates/${id}`, { method: "DELETE" }),
   refreshSalary: (jobId: string, filters: SalaryFilters) =>
     request<{ state: AppState }>(`/api/jobs/${jobId}/salary/refresh`, { method: "POST", body: JSON.stringify(filters) }),
+  researchSalary: (filters: SalaryFilters) =>
+    request<{ salaryData: import("./types").SalaryData }>("/api/salary/research", { method: "POST", body: JSON.stringify(filters) }),
+  transcribeVoiceChunk: (payload: VoiceChunkPayload) =>
+    request<VoiceTranscriptResult>("/api/voice/transcribe", { method: "POST", body: JSON.stringify(payload) }),
+  analyzeVoiceSegment: (payload: VoiceSegmentAnalyzePayload) =>
+    request<{ quickInsight: VoiceSegmentInsight; followUp: VoiceFollowUpPlan }>("/api/voice/analyze-segment", { method: "POST", body: JSON.stringify(payload) }),
+  evaluateVoiceInterview: (payload: VoiceFinalEvaluatePayload) =>
+    request<VoiceFinalEvaluation>("/api/voice/final-evaluate", { method: "POST", body: JSON.stringify(payload) }),
+  saveVoiceAnalysis: (payload: VoiceAnalysisPayload) =>
+    request<{ state: AppState; analysis: VoiceAnalysis }>("/api/voice-analyses", { method: "POST", body: JSON.stringify(payload) }),
+  deleteVoiceAnalysis: (id: string) =>
+    request<{ state: AppState }>(`/api/voice-analyses/${id}`, { method: "DELETE" }),
 };
 
 export type JobPayload = Pick<Job, "title" | "dept" | "location" | "experience" | "level" | "salaryRange" | "keywords" | "description" | "status">;
@@ -43,7 +64,15 @@ export interface JobCopilotResult {
   recommendedTitle: string;
   optimizedDescription: string;
   actionSuggestions: string[];
-  interviewQuestions: Array<{ title: string; text: string; probe: string }>;
+  sourcingTitles: string[];
+  interviewQuestions: Array<{
+    title: string;
+    text: string;
+    probe: string;
+    competency?: string;
+    starFocus?: string[];
+    evaluationSignals?: string[];
+  }>;
 }
 
 export interface ResumeUploadPayload {
@@ -62,4 +91,42 @@ export interface InterviewStagePayload {
   interviewReason: string;
   reasonTags: string[];
   interviewTimeline: CandidateTimeline;
+}
+
+export interface VoiceChunkPayload {
+  audioBase64: string;
+  mimeType: string;
+  fileName?: string;
+}
+
+export interface VoiceSegmentAnalyzePayload {
+  sessionId: string;
+  segmentId: string;
+  jobId: string;
+  candidateId: string;
+  segmentIndex: number;
+  rawTranscript: string;
+  normalizedTranscript: string;
+}
+
+export interface VoiceFinalEvaluatePayload {
+  sessionId: string;
+  jobId: string;
+  candidateId: string;
+}
+
+export interface VoiceAnalysisPayload {
+  jobId: string;
+  candidateId: string;
+  audioName: string;
+  audioType?: string | null;
+  audioSize?: number | null;
+  transcript: string;
+  summary: string;
+  jobFitAdvice: string;
+  communicationStrengths: string[];
+  communicationRisks: string[];
+  recruiterSuggestions: string[];
+  recruiterReview: Array<{ title: string; level: "良好" | "注意" | "待优化"; text: string }>;
+  recommendation: VoiceAnalysis["recommendation"];
 }

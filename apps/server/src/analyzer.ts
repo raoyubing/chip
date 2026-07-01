@@ -85,11 +85,19 @@ function buildPersonalInterviewQuestions(
     probe: item.matched
       ? "追问：这个结果如何量化？如果扩大到更复杂团队，你会怎么复制？"
       : "追问：如果入职后必须快速补齐这一点，你的前 30 天行动计划是什么？",
+    competency: `${item.keyword}相关能力`,
+    starFocus: item.matched ? ["任务定义", "行动拆解", "结果量化"] : ["情境澄清", "行动拆解", "复盘反思"],
+    evaluationSignals: item.matched
+      ? ["能讲清个人贡献", "结果可量化或可验证", "经验具备可复制性"]
+      : ["能提出明确补齐路径", "行动计划具体", "有清晰优先级判断"],
   }));
   questions.push({
     title: `${job.title} 岗位适配`,
     text: "基于你对该岗位的理解，你认为当前最关键的业务挑战是什么？你会如何切入？",
     probe: `追问：如果最终结论是“${conclusion}”，你认为自己最能支撑这个判断的证据是什么？`,
+    competency: "岗位理解与综合适配能力",
+    starFocus: ["情境澄清", "任务定义", "行动拆解"],
+    evaluationSignals: ["能准确理解岗位挑战", "切入路径有逻辑", "能给出支持结论的直接证据"],
   });
   return questions;
 }

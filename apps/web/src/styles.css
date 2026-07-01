@@ -186,6 +186,7 @@ button {
   flex: 1;
   min-width: 0;
   padding: 24px 28px 36px;
+  overflow-x: hidden;
 }
 
 .topbar {
@@ -361,6 +362,8 @@ textarea:focus {
 .content {
   display: grid;
   gap: 18px;
+  min-width: 0;
+  overflow-x: hidden;
 }
 
 .grid {
@@ -388,6 +391,7 @@ textarea:focus {
 }
 
 .card {
+  min-width: 0;
   background: var(--card);
   border: 1px solid rgba(220, 229, 225, 0.8);
   border-radius: var(--radius);
@@ -794,8 +798,9 @@ textarea:focus {
 
 .pending-onboard-table th:first-child,
 .pending-onboard-table td:first-child {
-  min-width: 88px;
-  text-align: left;
+  min-width: 132px;
+  text-align: center;
+  font-weight: 800;
 }
 
 .pending-onboard-table th:not(:first-child) {
@@ -806,6 +811,11 @@ textarea:focus {
   word-break: break-word;
   overflow-wrap: anywhere;
   line-height: 1.35;
+}
+
+.pending-onboard-table tfoot td {
+  background: rgba(15, 76, 58, 0.06);
+  font-weight: 800;
 }
 
 .pending-onboard-chart-wrap {
@@ -1452,7 +1462,82 @@ textarea:focus {
 }
 
 .interview-table-wrap {
+  width: 100%;
   padding-top: 12px;
+  padding-bottom: 8px;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  box-sizing: border-box;
+  scrollbar-gutter: stable both-edges;
+}
+
+.interview-table {
+  width: max-content;
+  min-width: 1680px;
+}
+
+.interview-table-card {
+  display: grid;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.interview-scrollbar-shell {
+  display: grid;
+  gap: 8px;
+  padding: 0 18px 16px;
+}
+
+.interview-scrollbar-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.interview-scrollbar {
+  width: 100%;
+  min-height: auto;
+  padding: 0;
+  appearance: none;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+.interview-scrollbar:focus {
+  box-shadow: none;
+}
+
+.interview-scrollbar::-webkit-slider-runnable-track {
+  height: 8px;
+  background: rgba(15, 76, 58, 0.12);
+  border-radius: 999px;
+}
+
+.interview-scrollbar::-webkit-slider-thumb {
+  width: 72px;
+  height: 16px;
+  margin-top: -4px;
+  appearance: none;
+  background: linear-gradient(180deg, #2e7d59 0%, #0f4c3a 100%);
+  border: 0;
+  border-radius: 999px;
+  box-shadow: 0 8px 18px rgba(15, 76, 58, 0.18);
+}
+
+.interview-scrollbar::-moz-range-track {
+  height: 8px;
+  background: rgba(15, 76, 58, 0.12);
+  border-radius: 999px;
+}
+
+.interview-scrollbar::-moz-range-thumb {
+  width: 72px;
+  height: 16px;
+  background: linear-gradient(180deg, #2e7d59 0%, #0f4c3a 100%);
+  border: 0;
+  border-radius: 999px;
+  box-shadow: 0 8px 18px rgba(15, 76, 58, 0.18);
 }
 
 .interview-table td:first-child strong,
@@ -1684,11 +1769,143 @@ textarea:focus {
   gap: 18px;
 }
 
+.voice-page {
+  display: grid;
+  gap: 18px;
+}
+
 .voice-layout {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 18px;
   align-items: start;
+}
+
+.voice-library-overview {
+  display: grid;
+  gap: 14px;
+}
+
+.voice-library-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.voice-library-filter {
+  min-width: 280px;
+}
+
+.voice-library-stats {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--green-900);
+  font-weight: 700;
+}
+
+.voice-library-table-wrap {
+  padding-top: 8px;
+}
+
+.voice-library-table {
+  min-width: 980px;
+}
+
+.voice-library-table th {
+  color: var(--green-900);
+}
+
+.voice-library-table-row.active {
+  background: #f4faf6;
+}
+
+.voice-library-summary {
+  margin: 0;
+  color: #44534e;
+  line-height: 1.6;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.voice-library-table td:nth-child(4) {
+  min-width: 140px;
+}
+
+.voice-library-table td:nth-child(5) {
+  min-width: 110px;
+}
+
+.voice-detail-modal .modal-head h3 {
+  color: var(--green-900);
+}
+
+.voice-detail-body {
+  display: grid;
+  gap: 14px;
+}
+
+.voice-detail-hero {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 16px 18px;
+  background: var(--green-50);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+}
+
+.voice-detail-hero-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--green-900);
+  font-weight: 700;
+}
+
+.voice-detail-badges {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.voice-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.voice-detail-card {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+}
+
+.voice-detail-card strong {
+  color: var(--green-900);
+}
+
+.voice-detail-card p,
+.voice-detail-card ul {
+  margin: 0;
+  color: #44534e;
+  line-height: 1.7;
+}
+
+.voice-detail-card ul {
+  padding-left: 18px;
+}
+
+.voice-library-detail-text {
+  max-height: 320px;
+  overflow: auto;
 }
 
 .voice-workbench,
@@ -1758,6 +1975,7 @@ textarea:focus {
 .voice-analysis-content {
   display: grid;
   gap: 14px;
+  min-height: 100%;
 }
 
 .voice-empty-state {
@@ -1820,6 +2038,7 @@ textarea:focus {
 .voice-head-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -1921,6 +2140,23 @@ textarea:focus {
 .review-item p {
   margin: 0;
   color: #44534e;
+  line-height: 1.65;
+}
+
+.voice-history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.voice-history-empty {
+  padding: 18px 16px;
+  color: var(--muted);
+  background: #ffffff;
+  border: 1px dashed #c7ddd0;
+  border-radius: 14px;
   line-height: 1.65;
 }
 
@@ -2370,6 +2606,40 @@ textarea:focus {
   line-height: 1.7;
 }
 
+.sourcing-title-list {
+  display: grid;
+  gap: 10px;
+}
+
+.sourcing-title-item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  background: #f7fbf8;
+  border: 1px solid #dbe8e1;
+  border-radius: 10px;
+}
+
+.sourcing-title-item span {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--green-700);
+  font-size: 12px;
+  font-weight: 800;
+  background: #e8f0ed;
+  border-radius: 999px;
+}
+
+.sourcing-title-item p {
+  margin: 0;
+  color: #33413c;
+  line-height: 1.7;
+}
+
 .jd-preview {
   display: grid;
   gap: 12px;
@@ -2504,6 +2774,21 @@ textarea:focus {
   line-height: 1.55;
 }
 
+.interview-method-ai {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  background: #f7faf8;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.interview-method-ai p {
+  margin: 0;
+  color: #44534e;
+  line-height: 1.65;
+}
+
 .question-list,
 .evaluation-list {
   display: grid;
@@ -2518,6 +2803,10 @@ textarea:focus {
   border-radius: 10px;
 }
 
+.question-item {
+  border: 1px solid #dbe8e1;
+}
+
 .question-item p,
 .evaluation-item p {
   margin: 6px 0 0;
@@ -2528,6 +2817,98 @@ textarea:focus {
 .question-item span {
   color: var(--muted);
   font-size: 12px;
+}
+
+.question-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.question-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  color: var(--green-700);
+  font-size: 12px;
+  font-weight: 700;
+  background: #e8f0ed;
+  border-radius: 999px;
+}
+
+.question-chip.soft {
+  color: #4d6259;
+  background: #f2f7f4;
+}
+
+.question-meta-group {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.question-meta-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.question-probe-label {
+  display: inline-block;
+  margin-top: 10px;
+  color: var(--green-700) !important;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.question-probe-text {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted) !important;
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.question-signal-list {
+  margin: 0;
+  padding-left: 18px;
+  color: #51645d;
+  line-height: 1.7;
+}
+
+.question-signal-list.warning li::marker {
+  color: #b56b3b;
+}
+
+.compact-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.risk-review-item {
+  background: #fffdf8;
+  border: 1px solid #efe2c6;
+}
+
+.risk-review-list {
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.risk-review-row {
+  display: grid;
+  gap: 6px;
+}
+
+.risk-review-row p,
+.risk-review-row small {
+  margin: 0;
+  color: #5a5a52;
+  line-height: 1.6;
 }
 
 .analysis-list {
@@ -2719,13 +3100,106 @@ textarea:focus {
 
 .salary-filter-row {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   margin-top: 16px;
 }
 
 .salary-advice-card {
   align-content: start;
+}
+
+.salary-metric-trace-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.salary-trace-card,
+.salary-triangulation-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  background: var(--green-50);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.salary-trace-card strong,
+.salary-triangulation-card strong {
+  color: var(--green-900);
+}
+
+.salary-trace-card p,
+.salary-triangulation-card p {
+  margin: 0;
+  color: #33413c;
+  line-height: 1.7;
+}
+
+.salary-triangulation-card {
+  margin-top: 12px;
+}
+
+.salary-evidence-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.salary-evidence-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  background: var(--green-50);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+
+.salary-evidence-head,
+.salary-evidence-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.salary-evidence-head strong {
+  color: var(--green-900);
+}
+
+.salary-evidence-head span,
+.salary-evidence-meta span,
+.salary-disclaimer {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.salary-evidence-meta span {
+  padding: 4px 8px;
+  background: #ffffff;
+  border: 1px solid rgba(220, 229, 225, 0.9);
+  border-radius: 999px;
+}
+
+.salary-evidence-card p {
+  margin: 0;
+  color: #33413c;
+  line-height: 1.7;
+}
+
+.salary-disclaimer {
+  margin-top: 12px;
+  padding: 12px 14px;
+  background: rgba(15, 76, 58, 0.05);
+  border-radius: 12px;
+  line-height: 1.7;
+}
+
+.salary-disclaimer-soft {
+  margin-top: 12px;
+  margin-bottom: 12px;
 }
 
 .salary-metric {
