@@ -578,16 +578,30 @@ function parseCandidateInterviewPlan(raw: unknown): CandidateInterviewPlan | und
         }))
         .filter((item) => item.methodKey && item.label)
       : [];
+    const focusDirections = Array.isArray(parsed.focusDirections)
+      ? parsed.focusDirections
+        .map((item) => ({
+          title: String(item?.title || "").trim(),
+          gapReason: String(item?.gapReason || "").trim(),
+        }))
+        .filter((item) => item.title && item.gapReason)
+      : [];
     const questions = Array.isArray(parsed.questions)
       ? parsed.questions.map((item) => ({
         title: String(item?.title || "").trim(),
         question: String(item?.question || "").trim(),
         competency: String(item?.competency || "").trim(),
         questionType: String(item?.questionType || "行为型").trim() as CandidateInterviewPlan["questions"][number]["questionType"],
+        directionTitle: String(item?.directionTitle || "").trim() || undefined,
+        cutInPoint: String(item?.cutInPoint || "").trim() || undefined,
         designIntent: String(item?.designIntent || "").trim(),
         strongSignals: Array.isArray(item?.strongSignals) ? item.strongSignals.map((text) => String(text).trim()).filter(Boolean) : [],
         warningSignals: Array.isArray(item?.warningSignals) ? item.warningSignals.map((text) => String(text).trim()).filter(Boolean) : [],
         followUps: Array.isArray(item?.followUps) ? item.followUps.map((text) => String(text).trim()).filter(Boolean) : [],
+        judgmentSuggestion: String(item?.judgmentSuggestion || "").trim() || undefined,
+        isStressScenario: Boolean(item?.isStressScenario),
+        scenario: String(item?.scenario || "").trim() || undefined,
+        evaluationFocus: Array.isArray(item?.evaluationFocus) ? item.evaluationFocus.map((text) => String(text).trim()).filter(Boolean) : [],
         methodKey: item?.methodKey ? String(item.methodKey) as CandidateInterviewPlan["questions"][number]["methodKey"] : undefined,
       })).filter((item) => item.title && item.question)
       : [];
@@ -609,6 +623,7 @@ function parseCandidateInterviewPlan(raw: unknown): CandidateInterviewPlan | und
     const summaryReason = String(parsed.summaryReason || "").trim();
     if (!recommendedMethods.length && !questions.length && !summaryReason) return undefined;
     return {
+      focusDirections,
       recommendedMethods,
       summaryReason,
       questions,

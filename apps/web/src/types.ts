@@ -103,14 +103,24 @@ export interface CandidateInterviewPlanQuestion {
   question: string;
   competency: string;
   questionType: "行为型" | "情景型" | "认知型";
+  directionTitle?: string;
+  cutInPoint?: string;
   designIntent: string;
   strongSignals: string[];
   warningSignals: string[];
   followUps: string[];
+  judgmentSuggestion?: string;
+  isStressScenario?: boolean;
+  scenario?: string;
+  evaluationFocus?: string[];
   methodKey?: InterviewMethodKey;
 }
 
 export interface CandidateInterviewPlan {
+  focusDirections: Array<{
+    title: string;
+    gapReason: string;
+  }>;
   recommendedMethods: Array<{
     methodKey: InterviewMethodKey;
     label: string;

@@ -52,6 +52,8 @@ const whisperModelId = process.env.WHISPER_MODEL_ID || "Xenova/whisper-tiny";
 const whisperTargetLanguage = process.env.WHISPER_LANGUAGE || "zh";
 const whisperChunkLength = Number(process.env.WHISPER_CHUNK_LENGTH || 20);
 const whisperStrideLength = Number(process.env.WHISPER_STRIDE_LENGTH || 4);
+const voiceTranscribeBackend = process.env.VOICE_TRANSCRIBE_BACKEND || "python";
+const huggingFaceEndpoint = process.env.HF_ENDPOINT || "https://hf-mirror.com";
 
 await server.register(cors, { origin: true });
 await server.register(sensible);
@@ -717,23 +719,28 @@ async function generateCandidateInterviewPlan(candidate: Candidate, job: Job): P
   const matched = candidate.keyPointAnalysis.filter((item) => item.matched).map((item) => item.keyword);
   const missed = candidate.keyPointAnalysis.filter((item) => !item.matched).map((item) => item.keyword);
   const summary = candidate.evaluation?.summary || candidate.reason;
+  const resumeExcerpt = buildResumeAssessmentExcerpt(candidate.resumeText);
   const prompt = [
-    "你是一名严谨的招聘面试设计专家，负责为候选人制定科学的面试方案。",
+    "【角色设定】",
+    "你是一位拥有15年以上高端岗位招聘经验的资深面试官，长期负责集团/头部企业的高管及核心岗位面试工作。",
+    "你擅长通过非直接、侧面的提问方式，在不暴露真实考察意图的前提下，深挖候选人的真实能力边界与潜在风险点。",
+    "你的面试风格温和但极具穿透力，善于通过细节追问区分“主导”与“参与”、“真正落地”与“听说而已”。",
     "",
     "【岗位信息】",
     `- 职位名称：${job.title}`,
-    `- 关键词：${job.keywords}`,
-    `- 职位描述：${job.description}`,
+    `- 岗位关键描述词：${job.keywords}`,
+    `- 岗位JD：${job.description}`,
     "",
     "【候选人信息】",
     `- 姓名：${candidate.name}`,
     `- 简历摘要：${summary}`,
+    `- 简历原文摘录：${resumeExcerpt}`,
     `- 匹配度评分：${candidate.score}`,
     `- 已命中关键点：${matched.length ? matched.join("、") : "暂无明确命中"}`,
     `- 未命中关键点：${missed.length ? missed.join("、") : "暂无明显缺口"}`,
     "",
-    "【核心任务】",
-    "请根据以上信息，完成以下四项输出：",
+    "请根据给到的岗位名称、岗位JD与岗位关键描述词，以及人选的简历进行针对性的综合分析。",
+    "本次面试重点考察方向，请从JD与简历的差异点中提取3-5个方向。",
     "",
     "一、面试方法推荐",
     "根据页面展示的五个面试方法：结构化面试、行为面试、STAR深挖、情景模拟、案例分析。",
@@ -745,9 +752,36 @@ async function generateCandidateInterviewPlan(candidate: Candidate, job: Job): P
     "5. 如果岗位级别较高或需要战略思维 → 追加【案例分析】",
     "请输出推荐组合，并给出理由。",
     "",
-    "二、针对性面试问题（3-5个）",
-    "请围绕【未命中关键点】和【风险点】，设计 3-5 个适配推荐方法的深度面试问题。",
-    "每个问题必须包含：title, question, competency, questionType(行为型/情景型/认知型), designIntent, strongSignals(string[]), warningSignals(string[]), followUps(string[])。",
+    "二、针对性面试问题设计",
+    "请针对每一个考察方向，分别设计 3-5 个面试问题。",
+    "所有问题必须满足以下要求：",
+    "1. 禁止直接提问，不要使用“请介绍一下你在XX方面的经验”“请问你对XX了解多少”“请结合你的经历谈谈XX”“你认为做好XX需要具备哪些能力”等无效问法。",
+    "2. 每个问题都要从候选人简历中的具体信息、行业普遍痛点、职业转型经历等角度侧面切入，让候选人在业务描述中自然暴露真实深度。",
+    "3. 追问链路设计必须多样化，禁止在所有问题中重复使用同一追问句式。",
+    "4. 每个问题至少搭配 2 个追问，且追问角度必须从下列角度库中轮换组合，不允许所有问题都使用同一组追问逻辑。",
+    "【追问角度库】",
+    "数据来源型：这个数据是怎么统计出来的？当时有系统记录还是手工台账？",
+    "决策逻辑型：当时有几个备选方案？为什么选了这一个，放弃了其他？",
+    "角色确认型：这个决策是您做的还是向上汇报后由上级定的？",
+    "阻力应对型：推的过程中谁反对最激烈？您是怎么跟他谈的？",
+    "时间线型：从启动到落地花了多久？哪个阶段花的时间最长？为什么？",
+    "失败反思型：如果让您重做一遍，哪个环节您会调整？",
+    "验证追问型：您刚才提到了XX，能具体展开说一下当时是怎么操作的？",
+    "外部视角型：当时跟您配合的部门/外部机构是哪家？他们当时提出了什么不同意见？",
+    "标准判断型：您当时判断“做成了”的标准是什么？谁定的这个标准？",
+    "政策/环境关联型：这件事放在当年那个政策环境下，跟现在比有什么不同？如果现在做，您的思路会变吗？",
+    "前置信号型：回头复盘时，其实最早出现什么信号时您就已经有预感了？",
+    "资源约束型：如果当时没有XX资源（人/钱/时间），您会怎么绕过去？",
+    "情绪/冲突记录型：您提到当时压力很大，具体是哪件事让您觉得最难扛？后来怎么过去的？",
+    "5. 追问组合必须轮换搭配，例如：",
+    "问题1可用“数据来源型 + 角色确认型 + 阻力应对型”",
+    "问题2可用“时间线型 + 决策逻辑型 + 失败反思型”",
+    "问题3可用“外部视角型 + 前置信号型 + 资源约束型”",
+    "请确保不同问题的追问角度明显不同，避免模板化重复。",
+    "6. 问题设计必须能够区分主导者、参与者、听闻者三类角色差异。",
+    "7. 每个问题必须结合该候选人简历中的特定信息作为切入点，而不是通用问题。",
+    "8. 针对每个考察方向，至少设计 1 个情景施压题，用于考察面对两难矛盾或危机时的判断力与行动力。",
+    "每个问题必须包含：directionTitle, title, cutInPoint, question, competency, questionType(行为型/情景型/认知型), designIntent, followUps(string[]), strongSignals(string[]), warningSignals(string[]), judgmentSuggestion, isStressScenario(boolean), scenario, evaluationFocus(string[])。",
     "",
     "三、面试评估指引",
     "请输出 evaluationGuide，包含：baseline(string[])、positiveSignals(string[])、vetoItems(string[])。",
@@ -761,9 +795,12 @@ async function generateCandidateInterviewPlan(candidate: Candidate, job: Job): P
     "- 问题必须针对需要验证的点，而非重复简历已有信息",
     "- 判断标准必须具体、可操作，避免模糊评价",
     "- 风险提示必须有据可依，不危言耸听",
+    "- 问题必须口语化、自然，像聊天而不是考试",
+    "- 不同问题的问法、切入口、追问角度必须明显变化，避免出现一眼可见的模板化重复",
     "",
     "请严格输出 JSON，不要输出 markdown，不要输出额外解释。",
-    "JSON 顶层字段必须为：recommendedMethods, summaryReason, questions, evaluationGuide, riskReview。",
+    "JSON 顶层字段必须为：focusDirections, recommendedMethods, summaryReason, questions, evaluationGuide, riskReview。",
+    "focusDirections 每项必须包含：title, gapReason。",
     "recommendedMethods 每项必须包含：methodKey, label, reason。",
     "methodKey 只能是：structured, behavioral, star, scenario, case。",
     "riskReview 每项必须包含：dimension, level, reason, validationTips。",
@@ -788,6 +825,10 @@ async function generateCandidateInterviewPlan(candidate: Candidate, job: Job): P
     if (!content) return fallback;
     const parsed = safeJsonParse(content);
     const schema = z.object({
+      focusDirections: z.array(z.object({
+        title: z.string().min(1),
+        gapReason: z.string().min(1),
+      })).min(3).max(5),
       recommendedMethods: z.array(z.object({
         methodKey: z.enum(["structured", "behavioral", "star", "scenario", "case"]),
         label: z.string().min(1),
@@ -795,7 +836,9 @@ async function generateCandidateInterviewPlan(candidate: Candidate, job: Job): P
       })).min(1).max(3),
       summaryReason: z.string().default(""),
       questions: z.array(z.object({
+        directionTitle: z.string().min(1).default(""),
         title: z.string().min(1),
+        cutInPoint: z.string().min(1).default(""),
         question: z.string().min(1),
         competency: z.string().min(1),
         questionType: z.enum(["行为型", "情景型", "认知型"]),
@@ -803,8 +846,12 @@ async function generateCandidateInterviewPlan(candidate: Candidate, job: Job): P
         strongSignals: z.array(z.string()).default([]),
         warningSignals: z.array(z.string()).default([]),
         followUps: z.array(z.string()).default([]),
+        judgmentSuggestion: z.string().default(""),
+        isStressScenario: z.boolean().optional().default(false),
+        scenario: z.string().default(""),
+        evaluationFocus: z.array(z.string()).default([]),
         methodKey: z.enum(["structured", "behavioral", "star", "scenario", "case"]).optional(),
-      })).min(3).max(5),
+      })).min(6).max(24),
       evaluationGuide: z.object({
         baseline: z.array(z.string()).default([]),
         positiveSignals: z.array(z.string()).default([]),
@@ -819,6 +866,10 @@ async function generateCandidateInterviewPlan(candidate: Candidate, job: Job): P
     });
     const result = schema.parse(parsed);
     return {
+      focusDirections: result.focusDirections.map((item) => ({
+        title: item.title.trim(),
+        gapReason: item.gapReason.trim(),
+      })),
       recommendedMethods: result.recommendedMethods.map((item) => ({
         methodKey: item.methodKey,
         label: item.label.trim(),
@@ -830,10 +881,16 @@ async function generateCandidateInterviewPlan(candidate: Candidate, job: Job): P
         question: item.question.trim(),
         competency: item.competency.trim(),
         questionType: item.questionType,
+        directionTitle: item.directionTitle.trim(),
+        cutInPoint: item.cutInPoint.trim(),
         designIntent: item.designIntent.trim(),
         strongSignals: item.strongSignals.map((text) => text.trim()).filter(Boolean).slice(0, 3),
         warningSignals: item.warningSignals.map((text) => text.trim()).filter(Boolean).slice(0, 3),
         followUps: item.followUps.map((text) => text.trim()).filter(Boolean).slice(0, 3),
+        judgmentSuggestion: item.judgmentSuggestion.trim(),
+        isStressScenario: item.isStressScenario,
+        scenario: item.scenario.trim(),
+        evaluationFocus: item.evaluationFocus.map((text) => text.trim()).filter(Boolean).slice(0, 4),
         methodKey: item.methodKey,
       })),
       evaluationGuide: {
@@ -858,25 +915,103 @@ function buildFallbackInterviewPlan(candidate: Candidate, job: Job): CandidateIn
   const matched = candidate.keyPointAnalysis.filter((item) => item.matched).map((item) => item.keyword);
   const missed = candidate.keyPointAnalysis.filter((item) => !item.matched).map((item) => item.keyword);
   const methodKeys = inferInterviewMethodCombo(candidate, job, missed.length);
+  const focusAreas = (missed.length ? missed : candidate.evaluation?.interviewFocuses?.length ? candidate.evaluation.interviewFocuses : matched).slice(0, 4);
   const recommendedMethods = methodKeys.map((methodKey) => ({
     methodKey,
     label: interviewMethodLabelMap[methodKey],
     reason: buildInterviewMethodReason(methodKey, candidate, job, missed, matched),
   }));
-  const focusAreas = (missed.length ? missed : candidate.evaluation?.interviewFocuses?.length ? candidate.evaluation.interviewFocuses : matched).slice(0, 4);
-  const questions = focusAreas.slice(0, 4).map((focus, index) => ({
-    title: `问题${index + 1}`,
-    question: `请结合你过往最有代表性的经历，详细说明你在“${focus}”上的实际场景、关键动作、结果以及你的个人贡献。`,
-    competency: focus,
-    questionType: (methodKeys.includes("scenario") && index === focusAreas.length - 1 ? "情景型" : "行为型") as "行为型" | "情景型" | "认知型",
-    designIntent: `简历中关于“${focus}”的证据仍不完整，需要通过具体案例验证真实能力边界与可迁移性。`,
-    strongSignals: ["能清晰拆解背景、动作与结果", "能说明个人贡献而非团队泛化表述", "结果可量化或可被追溯验证"],
-    warningSignals: ["回答停留在概念层，缺少具体案例", "无法说明本人到底做了什么", "结果描述模糊，无法提供可验证证据"],
-    followUps: [`请补充你在“${focus}”中亲自负责的部分。`, "如果重做一次，你会保留什么、调整什么？", "最终结果如何衡量，谁能验证这一结果？"],
-    methodKey: methodKeys[0],
+  const focusDirections = focusAreas.slice(0, 4).map((focus) => ({
+    title: focus,
+    gapReason: `当前简历中关于“${focus}”的直接证据不够完整，需要通过侧面追问确认真实深度、个人贡献与结果边界。`,
   }));
+  const fallbackAngles = [
+    {
+      title: "前置信号型 + 角色确认型 + 阻力应对型",
+      questionBuilder: (focus: string) => `我看到你在“${focus}”这段经历里最后拿到了结果。回头看，其实最早出现什么信号时，你心里已经觉得这件事不能再按老办法做了？`,
+      cutInBuilder: (focus: string) => `从简历中与“${focus}”相关的成果描述切入，先看候选人是否能回到问题刚露头的时刻，而不是直接背结果。`,
+      followUps: ["这个判断最早是你提出来的，还是先有人提醒了你？", "当时谁最不认同你的判断？你是怎么把这件事往前推的？", "如果当时你判断错了，最大的代价会落在哪一块？"],
+      evaluationFocus: ["前置信号识别", "真实角色确认", "阻力处理"],
+    },
+    {
+      title: "时间线型 + 决策逻辑型 + 失败反思型",
+      questionBuilder: (focus: string) => `如果把“${focus}”那件事按时间线摊开看，从真正启动到最后落地，中间哪一段最难啃？你当时为什么会那样安排顺序？`,
+      cutInBuilder: (focus: string) => `从项目推进节奏切入，验证候选人是否真正理解先后顺序、取舍逻辑和关键瓶颈。`,
+      followUps: ["你当时其实有几个备选推进方案？最后为什么选了这一条？", "哪个阶段花的时间最长，背后卡点是什么？", "如果重做一次，你会把哪一步前置或后移？为什么？"],
+      evaluationFocus: ["时间线复盘", "决策逻辑", "失败反思"],
+    },
+    {
+      title: "外部视角型 + 数据来源型 + 标准判断型",
+      questionBuilder: (focus: string) => `你简历里提到“${focus}”这块成果挺亮眼。我更好奇的是，当时跟你配合最紧的部门或外部机构，最开始是不是也认可你这套做法？`,
+      cutInBuilder: (focus: string) => `从外部协同方的反馈切入，验证成果不是自说自话，而是能被协作方与数据共同支撑。`,
+      followUps: ["他们当时提过什么不同意见？你后来怎么处理的？", "你刚提到的那个数据，当时是系统口径还是人工整理出来的？", "你们最后判断这件事算做成了，标准是谁定的？"],
+      evaluationFocus: ["外部协同", "数据来源", "成功标准"],
+    },
+    {
+      title: "资源约束型 + 政策环境关联型 + 验证追问型",
+      questionBuilder: (focus: string) => `如果把你做“${focus}”那段经历放回当时的环境里看，假设少掉一个关键资源，这件事你最先会改哪一步，而不是硬扛着往前推？`,
+      cutInBuilder: (focus: string) => `从资源不足和环境约束切入，观察候选人是否具备真实的一线调整能力。`,
+      followUps: ["如果当时没有足够的人/时间/预算，你会怎么绕过去？", "这件事放在当年的环境下和现在比，处理方式会有什么不同？", "你刚刚提到那一步动作，能不能具体展开说说当时是怎么做的？"],
+      evaluationFocus: ["资源受限应对", "环境适应", "动作细节还原"],
+    },
+  ];
+  const questions = focusDirections.flatMap((direction, index) => {
+    const primaryAngle = fallbackAngles[index % fallbackAngles.length];
+    const secondaryAngle = fallbackAngles[(index + 1) % fallbackAngles.length];
+    const stressAngle = fallbackAngles[(index + 2) % fallbackAngles.length];
+    return [
+      {
+        title: `${direction.title}侧面深挖`,
+        question: primaryAngle.questionBuilder(direction.title),
+        competency: direction.title,
+        questionType: "行为型" as const,
+        directionTitle: direction.title,
+        cutInPoint: primaryAngle.cutInBuilder(direction.title),
+        designIntent: `通过“${primaryAngle.title}”这一组追问逻辑，观察候选人是否能脱离模板答案，真正回到当时的业务现场。`,
+        strongSignals: ["能回到当时具体场景，不急着背结果", "能讲清个人判断、动作和取舍", "追问后信息前后一致且可验证"],
+        warningSignals: ["回答仍停留在大词和方法论", "追问后开始模糊角色边界", "核心数据、节点、协同对象说不清"],
+        followUps: primaryAngle.followUps,
+        judgmentSuggestion: "如果候选人能自然顺着不同追问角度往下展开，且不需要反复提醒就能回到细节，通常说明真实参与深度更高。",
+        evaluationFocus: primaryAngle.evaluationFocus,
+        methodKey: methodKeys[0],
+      },
+      {
+        title: `${direction.title}非模板验证`,
+        question: secondaryAngle.questionBuilder(direction.title),
+        competency: direction.title,
+        questionType: "认知型" as const,
+        directionTitle: direction.title,
+        cutInPoint: secondaryAngle.cutInBuilder(direction.title),
+        designIntent: `换一组“${secondaryAngle.title}”追问角度，避免同一候选人在同类问题上形成答题惯性。`,
+        strongSignals: ["换角度后仍能快速对齐事实和时间线", "能解释为什么那样决策", "复盘时能说明调整空间"],
+        warningSignals: ["换个角度就答散了", "只能重复前一个问题里的表述", "无法解释为什么不是另一种做法"],
+        followUps: secondaryAngle.followUps,
+        judgmentSuggestion: "若候选人面对不同追问组合仍能保持一致且具体，说明其对经历掌控度较高；若切角度后明显失真，建议继续核验。",
+        evaluationFocus: secondaryAngle.evaluationFocus,
+        methodKey: methodKeys.includes("star") ? "star" : methodKeys[0],
+      },
+      {
+        title: `${direction.title}情景施压题`,
+        question: `如果你刚接手“${direction.title}”相关工作，就发现短期目标、专业判断和资源现实三件事彼此冲突，你通常先动哪一层，而不是三件事一起抓？`,
+        competency: direction.title,
+        questionType: "情景型" as const,
+        directionTitle: direction.title,
+        cutInPoint: `围绕“${direction.title}”设计两难情境，并借用“${stressAngle.title}”的追问角度观察候选人的真实判断顺序。`,
+        designIntent: "考察候选人在现实约束下是否仍能做出优先级判断，而不是给出四平八稳的标准答案。",
+        strongSignals: ["先拆冲突，再排优先级", "既考虑风险也考虑推进节奏", "能给出向上沟通和落地动作的顺序"],
+        warningSignals: ["只讲原则，不讲动作", "一味强调个人立场，没有业务平衡", "听上去正确但没有真实落地路径"],
+        followUps: stressAngle.followUps,
+        judgmentSuggestion: "若候选人能在施压场景中保持结构化表达，并给出兼顾业务与专业的动作顺序，是明显加分信号。",
+        isStressScenario: true,
+        scenario: `围绕“${direction.title}”的两难场景：短期结果压力、资源不足与专业判断冲突同时出现。`,
+        evaluationFocus: ["优先级判断", "压力下决策", "资源协调", "风险意识"],
+        methodKey: methodKeys.includes("scenario") ? "scenario" : methodKeys[0],
+      },
+    ];
+  });
 
   return {
+    focusDirections,
     recommendedMethods,
     summaryReason: recommendedMethods.map((item) => `${item.label}：${item.reason}`).join("；"),
     questions,
@@ -1530,29 +1665,39 @@ function clampScoreValue(score: number) {
 }
 
 async function transcribeVoiceChunk(audioBase64: string, mimeType: string, fileName = "voice-chunk.webm") {
-  const audio = await decodeAudioTo16kMono(audioBase64, mimeType, fileName);
-  const transcriber = await getWhisperTranscriber();
-  if (!transcriber) {
-    throw server.httpErrors.serviceUnavailable("本地语音转写模型初始化失败，请稍后再试。");
+  const inputBuffer = Buffer.from(audioBase64, "base64");
+  const wavBuffer = await convertAudioToWavBuffer(inputBuffer, mimeType, fileName);
+
+  if (voiceTranscribeBackend === "js" || voiceTranscribeBackend === "auto") {
+    const transcriber = await getWhisperTranscriber();
+    if (transcriber) {
+      try {
+        const audio = decodeWavBufferTo16kMono(wavBuffer);
+        const result = await transcriber(audio, {
+          chunk_length_s: whisperChunkLength,
+          stride_length_s: whisperStrideLength,
+          language: whisperTargetLanguage,
+          task: "transcribe",
+          return_timestamps: false,
+        }) as { text?: string };
+        const transcript = (result.text || "").replace(/\s+/g, " ").trim();
+        if (transcript) return transcript;
+      } catch (error) {
+        requestLog("voice_transcribe_error", {
+          message: error instanceof Error ? error.message : String(error),
+          mimeType,
+          fileName,
+        });
+      }
+    }
   }
 
-  try {
-    const result = await transcriber(audio, {
-      chunk_length_s: whisperChunkLength,
-      stride_length_s: whisperStrideLength,
-      language: whisperTargetLanguage,
-      task: "transcribe",
-      return_timestamps: false,
-    }) as { text?: string };
-    return (result.text || "").replace(/\s+/g, " ").trim();
-  } catch (error) {
-    requestLog("voice_transcribe_error", {
-      message: error instanceof Error ? error.message : String(error),
-      mimeType,
-      fileName,
-    });
-    throw server.httpErrors.badGateway("本地语音转写失败，请稍后重试。");
+  if (voiceTranscribeBackend === "python" || voiceTranscribeBackend === "auto") {
+    const pythonTranscript = await transcribeVoiceChunkWithPython(wavBuffer);
+    if (pythonTranscript !== null) return pythonTranscript;
   }
+
+  throw server.httpErrors.serviceUnavailable("本地语音转写模型暂时不可用，请确认 Python 转写环境已安装后重试。");
 }
 
 async function normalizeVoiceTranscript(transcript: string) {
@@ -1638,9 +1783,7 @@ async function getTransformersModule() {
   return transformersModulePromise;
 }
 
-async function decodeAudioTo16kMono(audioBase64: string, mimeType: string, fileName: string) {
-  const inputBuffer = Buffer.from(audioBase64, "base64");
-  const wavBuffer = await convertAudioToWavBuffer(inputBuffer, mimeType, fileName);
+function decodeWavBufferTo16kMono(wavBuffer: Buffer) {
   const wav = new wavefile.WaveFile(new Uint8Array(wavBuffer));
   wav.toBitDepth("32f");
   wav.toSampleRate(16000);
@@ -1648,11 +1791,80 @@ async function decodeAudioTo16kMono(audioBase64: string, mimeType: string, fileN
   return samples instanceof Float32Array ? samples : Float32Array.from(samples);
 }
 
+async function transcribeVoiceChunkWithPython(wavBuffer: Buffer) {
+  const pythonBinary = resolvePythonBinary();
+  const scriptPath = resolve(process.cwd(), "src/transcribe_audio.py");
+  if (!pythonBinary || !existsSync(scriptPath)) {
+    requestLog("python_voice_transcribe_unavailable", {
+      pythonBinary: pythonBinary || "",
+      scriptPath,
+    });
+    return null;
+  }
+
+  const tempBase = resolve(process.cwd(), `.voice-py-${Date.now()}-${nanoid(6)}`);
+  const inputPath = `${tempBase}.wav`;
+  const outputPath = `${tempBase}.json`;
+  const { writeFile, unlink } = await import("node:fs/promises");
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const execFileAsync = promisify(execFile);
+
+  await writeFile(inputPath, wavBuffer);
+  try {
+    const result = await withTimeout(
+      execFileAsync(pythonBinary, [scriptPath, inputPath, outputPath], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          HF_ENDPOINT: huggingFaceEndpoint,
+        },
+        maxBuffer: 8 * 1024 * 1024,
+      }),
+      120000,
+      "Python 语音转写超时",
+    );
+    const parsed = safeJsonParse(result.stdout || "{}");
+    const schema = z.object({
+      transcript: z.string().default(""),
+    });
+    return schema.parse(parsed).transcript.trim();
+  } catch (error) {
+    requestLog("python_voice_transcribe_error", {
+      message: error instanceof Error ? error.message : String(error),
+      pythonBinary,
+      scriptPath,
+      huggingFaceEndpoint,
+    });
+    return null;
+  } finally {
+    await Promise.all([
+      unlink(inputPath).catch(() => undefined),
+      unlink(outputPath).catch(() => undefined),
+    ]);
+  }
+}
+
+function resolvePythonBinary() {
+  const candidates = [
+    process.env.XIAOSONGSHU_PYTHON_BIN,
+    resolve(process.cwd(), ".venv/bin/python"),
+    resolve(process.cwd(), ".venv/bin/python3"),
+  ].filter(Boolean) as string[];
+
+  for (const candidate of candidates) {
+    if (candidate.includes("/") ? existsSync(candidate) : true) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 async function convertAudioToWavBuffer(inputBuffer: Buffer, mimeType: string, fileName: string) {
   const extension = inferAudioExtension(mimeType, fileName);
   const tempBase = resolve(process.cwd(), `.voice-${Date.now()}-${nanoid(6)}`);
   const inputPath = `${tempBase}.${extension}`;
-  const outputPath = `${tempBase}.wav`;
+  const outputPath = extension === "wav" ? `${tempBase}.converted.wav` : `${tempBase}.wav`;
   const { writeFile, unlink } = await import("node:fs/promises");
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");

@@ -7,6 +7,8 @@ apps/server/data/*.sqlite-*
 apps/server/data/uploads/*
 !apps/server/data/uploads/.gitkeep
 apps/server/.venv/
+.codex-artifacts/
+apps/server/.voice-*
 playwright-report/
 test-results/
 .DS_Store

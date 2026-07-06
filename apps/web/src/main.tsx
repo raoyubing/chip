@@ -52,6 +52,8 @@ const durationPyramidWidths = ["100%", "86%", "74%", "62%"];
 
 function App() {
   const [state, setState] = useState<AppState | null>(null);
+  const [bootStatus, setBootStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [bootError, setBootError] = useState("");
   const [activeView, setActiveView] = useState<View>("dashboard");
   const [activeInterviewStage, setActiveInterviewStage] = useState<InterviewStage>("初试");
   const [activeInterviewJobId, setActiveInterviewJobId] = useState<string>("all");
@@ -62,7 +64,7 @@ function App() {
   const [toast, setToast] = useState("");
 
   useEffect(() => {
-    api.state().then(setState).catch((error) => showToast(`加载失败：${error.message}`));
+    void loadState();
   }, []);
 
   useEffect(() => {
@@ -72,6 +74,34 @@ function App() {
   }, [toast]);
 
   const showToast = (message: string) => setToast(message);
+
+  const normalizeBootError = (error: unknown) => {
+    const message = error instanceof Error ? error.message : "";
+    if (!message) return "本地 SQLite 服务连接失败，请稍后重试。";
+    if (/fetch|network|failed to fetch|load failed/i.test(message)) {
+      return "本地 SQLite 服务未启动，或前端暂时无法连接后端。";
+    }
+    if (/请求失败：5\d\d/.test(message) || /本地服务.*5175|本地服务暂时不可用/.test(message)) {
+      return "本地 Node + SQLite 服务未启动，或 `5175` 端口暂时不可用。";
+    }
+    return message;
+  };
+
+  async function loadState() {
+    setBootStatus("loading");
+    setBootError("");
+    try {
+      const next = await api.state();
+      setState(next);
+      setBootStatus("ready");
+    } catch (error) {
+      setState(null);
+      const message = normalizeBootError(error);
+      setBootError(message);
+      setBootStatus("error");
+      showToast(message);
+    }
+  }
 
   const currentJob = useMemo(() => {
     if (!state) return null;
@@ -178,8 +208,67 @@ function App() {
     }
   }, [activeInterviewJobId, ongoingJobs]);
 
-  if (!state || !currentJob) {
+  if (bootStatus === "loading") {
     return <div className="loading">正在连接本地 SQLite 服务...</div>;
+  }
+
+  if (bootStatus === "error") {
+    return (
+      <div className="loading-shell">
+        <section className="loading-panel">
+          <div className="brand loading-brand">
+            <div className="brand-mark"><SquirrelLogo /></div>
+            <div><h1>小松鼠</h1><p>Recruitment Workbench</p></div>
+          </div>
+          <div className="loading-copy">
+            <strong>本地服务暂时没有连上</strong>
+            <p>{bootError || "请先启动本地 Node + SQLite 服务，然后点击重试。"}</p>
+            <small>如果前端已打开但页面不显示，通常是后端服务没有启动，或 `5175` 端口暂时不可用。</small>
+          </div>
+          <div className="loading-actions">
+            <button className="btn primary" type="button" onClick={() => void loadState()}>重新连接</button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  if (!state) {
+    return (
+      <div className="loading-shell">
+        <section className="loading-panel">
+          <div className="loading-copy">
+            <strong>数据暂时不可用</strong>
+            <p>状态初始化未完成，请点击重试重新加载。</p>
+          </div>
+          <div className="loading-actions">
+            <button className="btn primary" type="button" onClick={() => void loadState()}>重新加载</button>
+          </div>
+        </section>
+      </div>
+    );
+  }
+
+  if (!currentJob) {
+    return (
+      <div className="loading-shell">
+        <section className="loading-panel">
+          <div className="brand loading-brand">
+            <div className="brand-mark"><SquirrelLogo /></div>
+            <div><h1>小松鼠</h1><p>Recruitment Workbench</p></div>
+          </div>
+          <div className="loading-copy">
+            <strong>职位池还是空的</strong>
+            <p>本地服务已连接成功，但当前还没有职位数据。</p>
+            <small>你可以先重置示例数据，或在数据库中新增一个职位后再进入工作台。</small>
+          </div>
+          <div className="loading-actions">
+            <button className="btn" type="button" onClick={() => void loadState()}>刷新状态</button>
+            <button className="btn primary" type="button" onClick={resetDemo}>载入示例数据</button>
+          </div>
+        </section>
+      </div>
+    );
   }
 
   const title = views.find(([view]) => view === activeView)?.[1] || "工作台概览";
@@ -205,17 +294,15 @@ function App() {
       <main className="main">
         <header className="topbar">
           <div><p className="eyebrow">Recruitment Workbench</p><h2>{title}</h2></div>
-          <div className="user-panel">
-            {showJobSwitcher && (
+          {showJobSwitcher && (
+            <div className="topbar-actions">
               <JobSearchSwitcher
                 jobs={ongoingJobs}
                 currentJob={currentJob.status === "招聘中" ? currentJob : ongoingJobs[0] || null}
                 onChange={changeJob}
               />
-            )}
-            <div className="avatar">{state.currentUser.slice(0, 1)}</div>
-            <div><strong>{state.currentUser}</strong><span>HR 负责人</span></div>
-          </div>
+            </div>
+          )}
         </header>
 
         <section className="content">
@@ -1103,7 +1190,8 @@ function JobsView({
 }
 
 function CandidatesView({ candidates, selectedId, onSelect, onUpload, onMark, onDelete, currentJob, onStateChange }: { candidates: Candidate[]; selectedId: string | null; onSelect: (id: string) => void; onUpload: () => void; onMark: (id: string) => void; onDelete: () => void; currentJob: Job; onStateChange: (state: AppState) => void }) {
-  const selected = candidates.find((candidate) => candidate.id === selectedId) || candidates[0] || null;
+  const sortedCandidates = useMemo(() => [...candidates].sort((left, right) => right.score - left.score), [candidates]);
+  const selected = sortedCandidates.find((candidate) => candidate.id === selectedId) || sortedCandidates[0] || null;
   const [detailTab, setDetailTab] = useState<CandidateDetailTab>("overview");
 
   useEffect(() => {
@@ -1117,7 +1205,7 @@ function CandidatesView({ candidates, selectedId, onSelect, onUpload, onMark, on
 
   return <>
     <section className="card pad"><div className="toolbar"><div><h3 className="card-title">{currentJob.title} · 简历甄选</h3><p className="helper-text">按当前职位查看候选人，并基于岗位关键考核点生成分析。</p></div><div className="toolbar-right"><button className="btn primary" onClick={onUpload}>上传/录入简历</button></div></div></section>
-    <div className="candidate-layout"><section className="card pad">{candidates.length ? <div className="candidate-list">{candidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} selected={candidate.id === selected?.id} onSelect={() => selectCandidate(candidate.id)} onOpenResume={() => selectCandidate(candidate.id, "resume")} />)}</div> : <div className="empty"><div><strong>暂无简历</strong><br />点击“上传/录入简历”添加候选人。</div></div>}</section><section key={selected?.id || "empty"} className="card pad candidate-detail-card">{selected ? <CandidateDetail candidate={selected} activeTab={detailTab} onTabChange={setDetailTab} onMark={onMark} onDelete={onDelete} onStateChange={onStateChange} currentJob={currentJob} /> : <div className="empty"><div><strong>暂无候选人详情</strong><br />上传或录入简历后可查看甄选结论。</div></div>}</section></div>
+    <div className="candidate-layout"><section className="card pad">{sortedCandidates.length ? <div className="candidate-list">{sortedCandidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} selected={candidate.id === selected?.id} onSelect={() => selectCandidate(candidate.id)} onOpenResume={() => selectCandidate(candidate.id, "resume")} />)}</div> : <div className="empty"><div><strong>暂无简历</strong><br />点击“上传/录入简历”添加候选人。</div></div>}</section><section key={selected?.id || "empty"} className="card pad candidate-detail-card">{selected ? <CandidateDetail candidate={selected} activeTab={detailTab} onTabChange={setDetailTab} onMark={onMark} onDelete={onDelete} onStateChange={onStateChange} currentJob={currentJob} /> : <div className="empty"><div><strong>暂无候选人详情</strong><br />上传或录入简历后可查看甄选结论。</div></div>}</section></div>
   </>;
 }
 
@@ -1301,6 +1389,16 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete, 
             <div className="interview-method-summary"><strong>{interviewPack.methodLabel}</strong><span>{interviewPack.focus}</span></div>
             <div className="recommendation-note"><strong>系统推荐：{interviewMethods.find((method) => method.key === recommendation.methodKey)?.label}</strong><span>{recommendation.reason}</span></div>
             {interviewPlan?.recommendedMethods?.length ? <div className="interview-method-ai"><strong>推荐组合</strong><div className="question-chip-row">{interviewPlan.recommendedMethods.map((method) => <span key={method.methodKey} className={`question-chip ${method.methodKey === methodKey ? "" : "soft"}`}>{method.label}</span>)}</div><p>{interviewPlan.summaryReason}</p></div> : null}
+            {interviewPlan?.focusDirections?.length ? (
+              <div className="interview-focus-grid">
+                {interviewPlan.focusDirections.map((direction) => (
+                  <article className="interview-focus-card" key={direction.title}>
+                    <strong>{direction.title}</strong>
+                    <p>{direction.gapReason}</p>
+                  </article>
+                ))}
+              </div>
+            ) : null}
             {planError ? <div className="tool-error">{planError}</div> : null}
             <div className="question-list spaced-small">
               {interviewPack.questions.map((question, index) => (
@@ -1311,7 +1409,21 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete, 
                       <div className="question-chip-row">
                         <span className="question-chip">{question.competency}</span>
                         <span className="question-chip soft">{question.questionType}</span>
+                        {question.directionTitle ? <span className="question-chip soft">{question.directionTitle}</span> : null}
+                        {question.isStressScenario ? <span className="question-chip warning">情景施压题</span> : null}
                       </div>
+                      {question.cutInPoint ? (
+                        <div className="question-meta-group">
+                          <span className="question-probe-label">切入点</span>
+                          <span className="question-probe-text">{question.cutInPoint}</span>
+                        </div>
+                      ) : null}
+                      {question.scenario ? (
+                        <div className="question-meta-group">
+                          <span className="question-probe-label">情景设定</span>
+                          <span className="question-probe-text">{question.scenario}</span>
+                        </div>
+                      ) : null}
                       <p>{question.question}</p>
                       <div className="question-meta-grid">
                         <div className="question-meta-group">
@@ -1333,6 +1445,20 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete, 
                       </div>
                       <span className="question-probe-label">建议追问</span>
                       <span className="question-probe-text">{question.followUps.join("\n")}</span>
+                      {question.evaluationFocus?.length ? (
+                        <div className="question-meta-group">
+                          <span className="question-probe-label">考察要点</span>
+                          <div className="question-chip-row">
+                            {question.evaluationFocus.map((item) => <span className="question-chip soft" key={item}>{item}</span>)}
+                          </div>
+                        </div>
+                      ) : null}
+                      {question.judgmentSuggestion ? (
+                        <div className="question-meta-group">
+                          <span className="question-probe-label">判断建议</span>
+                          <span className="question-probe-text">{question.judgmentSuggestion}</span>
+                        </div>
+                      ) : null}
                     </>
                   ) : (
                     <>
@@ -1600,13 +1726,18 @@ function formatCandidateInterviewPack(candidate: Candidate, interviewPack: Retur
       `${index + 1}. ${question.title}`,
       "question" in question
         ? [
+          question.directionTitle ? `考察方向：${question.directionTitle}` : "",
           `考察能力：${question.competency}`,
           `问题类型：${question.questionType}`,
+          question.cutInPoint ? `切入点：${question.cutInPoint}` : "",
+          question.scenario ? `情景设定：${question.scenario}` : "",
           `问题：${question.question}`,
           `设计意图：${question.designIntent}`,
           `优秀答案特征：${question.strongSignals.join("；")}`,
           `警示信号：${question.warningSignals.join("；")}`,
           `建议追问：\n${question.followUps.join("\n")}`,
+          question.evaluationFocus?.length ? `考察要点：${question.evaluationFocus.join("；")}` : "",
+          question.judgmentSuggestion ? `判断建议：${question.judgmentSuggestion}` : "",
         ].join("\n")
         : [
           question.competency ? `考察能力：${question.competency}` : "",
