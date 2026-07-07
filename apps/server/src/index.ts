@@ -4,6 +4,7 @@ import sensible from "@fastify/sensible";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
 import Fastify, { type FastifyRequest } from "fastify";
 import { nanoid } from "nanoid";
+import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import wavefile from "wavefile";
 import { z } from "zod";
@@ -58,6 +59,29 @@ const whisperChunkLength = Number(process.env.WHISPER_CHUNK_LENGTH || 20);
 const whisperStrideLength = Number(process.env.WHISPER_STRIDE_LENGTH || 4);
 const whisperModelDownloadCommand = "pnpm --filter @xiaosongshu/server download:whisper-model";
 const salarySearchTimeoutMs = Number(process.env.SALARY_SEARCH_TIMEOUT_MS || 8000);
+const bossScraperEnabled = readBooleanEnv(process.env.BOSS_SCRAPER_ENABLED, true);
+const bossScraperDir = resolveServerPath(process.env.BOSS_SCRAPER_DIR || "tools/boss-zhipin-scraper");
+const bossScraperScriptPath = resolveServerPath(process.env.BOSS_SCRAPER_SCRIPT_PATH || "tools/boss-zhipin-scraper/scripts/boss_cdp_raw.py");
+const bossScraperPython = process.env.BOSS_SCRAPER_PYTHON
+  ? resolveCommandOrServerPath(process.env.BOSS_SCRAPER_PYTHON)
+  : resolveServerPath(".venv/bin/python");
+const bossScraperOutputDir = resolveServerPath(process.env.BOSS_SCRAPER_OUTPUT_DIR || "data/salary-scraper");
+const bossScraperCdpPort = Number(process.env.BOSS_SCRAPER_CDP_PORT || 9222);
+const bossScraperPages = clampInteger(Number(process.env.BOSS_SCRAPER_PAGES || 1), 1, 10);
+const bossScraperTimeoutMs = Number(process.env.BOSS_SCRAPER_TIMEOUT_MS || 180000);
+const bossScraperIndustryCodes: Record<string, string> = {
+  "互联网": "100020",
+  "互联网/AI": "100020",
+  "AI": "100020",
+  "移动互联网": "100019",
+  "计算机软件": "100021",
+  "软件": "100021",
+  "电子商务": "100001",
+  "电商": "100001",
+  "游戏": "100002",
+  "社交网络": "100003",
+  "社交网络与媒体": "100003",
+};
 
 await server.register(cors, { origin: true });
 await server.register(sensible);
@@ -2243,6 +2267,27 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, errorMessa
   }
 }
 
+function readBooleanEnv(value: string | undefined, defaultValue: boolean) {
+  if (value === undefined || value === "") return defaultValue;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "true") return true;
+  if (normalized === "false") return false;
+  return defaultValue;
+}
+
+function resolveServerPath(value: string) {
+  return resolve(serverRoot, value);
+}
+
+function resolveCommandOrServerPath(value: string) {
+  return /[\\/]/.test(value) || value.startsWith(".") ? resolve(serverRoot, value) : value;
+}
+
+function clampInteger(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return min;
+  return Math.max(min, Math.min(max, Math.trunc(value)));
+}
+
 function mergeInterviewTimeline(
   candidate: Candidate,
   body: {
@@ -2355,6 +2400,7 @@ interface SalaryRangeSample {
 interface SalarySearchSample {
   platform: string;
   domain: string;
+  sourceKind?: "boss-scraper" | "public-search";
   title: string;
   link: string;
   snippet: string;
@@ -2366,6 +2412,7 @@ interface SalarySearchEvidence {
   queryBase: string;
   samples: SalarySearchSample[];
   distinctPlatforms: string[];
+  sourceNotes: string[];
 }
 
 async function generateSalaryData(job: Job, filters: SalaryFilters): Promise<SalaryData> {
@@ -2381,11 +2428,11 @@ function buildSalaryDataFromBossZhilianEvidence(
   const validSamples = getValidSalarySamples(searchEvidence);
   const validPlatforms = Array.from(new Set(validSamples.map((item) => item.platform)));
 
-  if (validPlatforms.length < salaryResearchPlatforms.length || validSamples.length < 2) {
+  if (validSamples.length < 2) {
     return buildInsufficientSalaryData(
       job,
       filters,
-      "BOSS直聘和智联招聘至少各需要 1 条可解析薪资样本，当前公开搜索样本不足，无法生成综合报告。",
+      "至少需要 2 条可解析薪资样本，当前公开搜索样本不足，无法生成综合报告。",
       searchEvidence,
     );
   }
@@ -2401,10 +2448,16 @@ function buildSalaryDataFromBossZhilianEvidence(
   const suggestedLow = sanitizeKNumber(Math.max(quantile(lowValues, 0.35), anchor * 0.9));
   const suggestedHigh = sanitizeKNumber(Math.max(suggestedLow, Math.min(Math.max(quantile(highValues, 0.65), anchor * 1.08), anchor * 1.22)));
   const sampleCounts = countSamplesByPlatform(validSamples);
-  const confidence = validSamples.length >= 8 ? "中" : "低";
-  const confidenceReason = validSamples.length >= 8
-    ? "BOSS直聘和智联招聘均检索到可解析薪资样本，样本量达到基础参考要求；但当前仍基于公开搜索标题/摘要解析，未登录平台读取详情页，因此置信度保持为中。"
-    : "BOSS直聘和智联招聘均有可解析薪资样本，但样本量偏少，适合作为招聘沟通参考，不建议作为最终定薪依据。";
+  const hasBossScraperSamples = validSamples.some((item) => item.sourceKind === "boss-scraper");
+  const dataWindow = hasBossScraperSamples ? "BOSS直聘 CDP 抓取 + 智联招聘公开搜索结果" : "BOSS直聘/智联招聘公开搜索结果";
+  const bossSourceLabel = hasBossScraperSamples ? "BOSS直聘 CDP 明文薪资样本" : "BOSS直聘公开搜索样本";
+  const hasAllPlatforms = validPlatforms.length >= salaryResearchPlatforms.length;
+  const confidence = hasAllPlatforms && validSamples.length >= 8 ? "中" : "低";
+  const confidenceReason = hasAllPlatforms && validSamples.length >= 8
+    ? `${bossSourceLabel}和智联招聘公开样本均已覆盖，样本量达到基础参考要求；但智联侧仍基于公开搜索标题/摘要解析，因此置信度保持为中。`
+    : hasAllPlatforms
+      ? `${bossSourceLabel}和智联招聘均有可解析薪资样本，但样本量偏少，适合作为招聘沟通参考，不建议作为最终定薪依据。`
+      : `当前仅覆盖 ${validPlatforms.join("、")} 的可解析薪资样本，未完成 BOSS直聘和智联招聘双平台交叉验证，因此置信度为低。`;
   const metricSourceSummary = buildSalaryMetricSourceSummary(validSamples, sampleCounts);
 
   return {
@@ -2424,12 +2477,12 @@ function buildSalaryDataFromBossZhilianEvidence(
     industryComparison: buildIndustryComparisonFromBenchmark(p50, filters),
     updatedAt: new Date().toLocaleDateString("zh-CN"),
     insights: [
-      { title: "双平台综合", text: `当前综合 ${formatSampleCounts(sampleCounts)} 的可解析薪资样本，市场中位值约为 ${p50}k。` },
+      { title: hasAllPlatforms ? "双平台综合" : "单平台参考", text: `当前综合 ${formatSampleCounts(sampleCounts)} 的可解析薪资样本，市场中位值约为 ${p50}k。` },
       { title: "建议锚点", text: `${filters.region}${filters.role} 建议以 ${anchor}k 作为沟通锚点，常规报价可控制在 ${suggestedLow}-${suggestedHigh}k。` },
       { title: "预算风险", text: `若预算低于 ${p25}k，在当前 ${filters.experience}、${filters.industry} 条件下，候选人转化可能承压。` },
     ],
     advice: {
-      summary: `${filters.role} 在 ${filters.region}、${filters.experience}、${filters.industry}、${filters.education} 条件下，综合 BOSS直聘与智联招聘公开样本后，市场中位值约 ${p50}k，建议报价区间为 ${suggestedLow}-${suggestedHigh}k。`,
+      summary: `${filters.role} 在 ${filters.region}、${filters.experience}、${filters.industry}、${filters.education} 条件下，综合 ${validPlatforms.join("、")} 可解析样本后，市场中位值约 ${p50}k，建议报价区间为 ${suggestedLow}-${suggestedHigh}k。`,
       reasons: [
         `样本来源：${formatSampleCounts(sampleCounts)}，仅保留能从标题或摘要中解析出月薪区间的公开搜索结果。`,
         `P25/P50/P75 分别来自样本薪资中点的分位统计，避免单个高薪或低薪样本过度影响结论。`,
@@ -2440,19 +2493,25 @@ function buildSalaryDataFromBossZhilianEvidence(
         : ["当前岗位暂无明显额外关键词溢价，建议按 BOSS直聘与智联招聘综合样本区间沟通。"],
     },
     research: {
-      dataWindow: "BOSS直聘/智联招聘公开搜索结果",
+      dataWindow,
       confidence,
       confidenceReason,
       limitations: [
-        "当前通过公开搜索索引返回的标题和摘要解析薪资，不登录平台、不抓取需要登录或反爬保护的详情页。",
+        hasBossScraperSamples
+          ? "BOSS直聘样本通过本地已登录 Chrome CDP 调用搜索 API 获取；智联招聘样本仍来自公开搜索标题和摘要解析。"
+          : "当前通过公开搜索索引返回的标题和摘要解析薪资，不登录平台、不抓取需要登录或反爬保护的详情页。",
         "招聘网站薪资口径可能包含 13 薪/14 薪、底薪+绩效、年薪等差异；当前统一折算为税前月薪 k。",
-        "公开搜索结果可能受搜索引擎索引更新时间影响，不能完全代表平台实时全量岗位。",
+        hasBossScraperSamples
+          ? "BOSS直聘 CDP 抓取依赖本机专用 Chrome 登录态；智联公开搜索结果可能受搜索引擎索引更新时间影响。"
+          : "公开搜索结果可能受搜索引擎索引更新时间影响，不能完全代表平台实时全量岗位。",
       ],
       triangulation: {
         requiredSources: 2,
         actualSources: validPlatforms.length,
-        passed: validPlatforms.length >= salaryResearchPlatforms.length,
-        summary: `已综合 ${validPlatforms.join("、")} 两个平台的可解析薪资样本。`,
+        passed: hasAllPlatforms,
+        summary: hasAllPlatforms
+          ? `已综合 ${validPlatforms.join("、")} 两个平台的可解析薪资样本。`
+          : `当前仅拿到 ${validPlatforms.join("、")} 的可解析薪资样本，未完成双平台交叉验证。`,
       },
       metricSources: {
         p25: `P25(${p25}K)：${metricSourceSummary}`,
@@ -2460,16 +2519,22 @@ function buildSalaryDataFromBossZhilianEvidence(
         p75: `P75(${p75}K)：${metricSourceSummary}`,
       },
       methodology: [
-        "分别检索 BOSS直聘和智联招聘公开搜索结果。",
+        hasBossScraperSamples
+          ? "通过 boss-zhipin-scraper 连接本地已登录 Chrome CDP，抓取 BOSS直聘搜索 API 返回的明文薪资列表。"
+          : "检索 BOSS直聘公开搜索结果。",
+        "检索智联招聘公开搜索结果。",
         "从标题与摘要中解析月薪区间，剔除无法稳定识别薪资的结果。",
         "以薪资区间中点计算 P25/P50/P75，并结合岗位关键词溢价生成建议报价区间。",
       ],
-      coreSources: validPlatforms,
-      validationSources: validPlatforms,
+      coreSources: formatSalaryCoreSources(validPlatforms, hasBossScraperSamples),
+      validationSources: formatSalaryCoreSources(validPlatforms, hasBossScraperSamples),
       sampleNotes: [
         formatSampleCounts(sampleCounts),
         `检索词：${searchEvidence.queryBase}`,
-        "未从公开摘要中解析出薪资的结果仅作为样本不足说明，不参与分位数计算。",
+        ...searchEvidence.sourceNotes.slice(0, 3),
+        hasAllPlatforms
+          ? "未从公开摘要中解析出薪资的结果仅作为样本不足说明，不参与分位数计算。"
+          : "当前未覆盖的平台会在后续刷新时继续尝试；本次结果按低置信度单平台样本展示。",
       ],
       evidence: validSamples.slice(0, 10).map((item) => ({
         source: item.platform,
@@ -2480,7 +2545,11 @@ function buildSalaryDataFromBossZhilianEvidence(
         publishWindow: item.publishWindow || "公开搜索结果",
         note: `${item.snippet}（${item.link}）`,
       })),
-      disclaimer: "当前薪酬调研基于 BOSS直聘与智联招聘公开搜索标题/摘要解析结果，适合招聘预算参考；正式定薪前建议结合平台后台、HRBP 经验和实际候选人反馈复核。",
+      disclaimer: hasAllPlatforms
+        ? hasBossScraperSamples
+          ? "当前薪酬调研基于 BOSS直聘 CDP 明文薪资样本与智联招聘公开搜索摘要解析结果，适合招聘预算参考；正式定薪前建议结合平台后台、HRBP 经验和实际候选人反馈复核。"
+          : "当前薪酬调研基于 BOSS直聘与智联招聘公开搜索标题/摘要解析结果，适合招聘预算参考；正式定薪前建议结合平台后台、HRBP 经验和实际候选人反馈复核。"
+        : "当前薪酬调研未完成 BOSS直聘与智联招聘双平台交叉验证，仅适合作为低置信度参考；正式定薪前建议补充另一平台后台数据、HRBP 经验和实际候选人反馈。",
     },
   };
 }
@@ -2927,6 +2996,7 @@ async function collectSalarySearchEvidence(job: Job, filters: SalaryFilters): Pr
   const platforms = salaryResearchPlatforms;
   const queryBase = `${filters.region} ${filters.role} ${filters.industry} ${filters.experience} ${filters.education} 招聘 薪资`;
   const samples: SalarySearchSample[] = [];
+  const sourceNotes: string[] = [];
   const seen = new Set<string>();
   const queryVariants = [
     queryBase,
@@ -2934,7 +3004,16 @@ async function collectSalarySearchEvidence(job: Job, filters: SalaryFilters): Pr
     `${filters.region} ${job.title} ${filters.industry} 招聘`,
   ];
 
-  await Promise.all(platforms.map(async (platform) => {
+  const bossScraperSamples = await collectBossSalarySamplesWithScraper(job, filters);
+  bossScraperSamples.sourceNotes.forEach((note) => sourceNotes.push(note));
+  bossScraperSamples.samples.forEach((sample) => addSalarySearchSample(samples, seen, sample));
+  const hasBossScraperSalary = bossScraperSamples.samples.some((sample) => Boolean(sample.salaryRange));
+
+  const publicSearchPlatforms = hasBossScraperSalary
+    ? platforms.filter((platform) => platform.name !== "BOSS直聘")
+    : platforms;
+
+  await Promise.all(publicSearchPlatforms.map(async (platform) => {
     for (const query of queryVariants) {
       if (samples.filter((item) => item.platform === platform.name).length >= 8) break;
       const rssUrl = `https://cn.bing.com/search?format=rss&q=${encodeURIComponent(`site:${platform.domain} ${query}`)}`;
@@ -2956,6 +3035,7 @@ async function collectSalarySearchEvidence(job: Job, filters: SalaryFilters): Pr
           samples.push({
             platform: platform.name,
             domain: platform.domain,
+            sourceKind: "public-search",
             ...item,
             salaryRange: extractSalaryRangeFromText(text),
           });
@@ -2975,7 +3055,204 @@ async function collectSalarySearchEvidence(job: Job, filters: SalaryFilters): Pr
     queryBase,
     samples,
     distinctPlatforms,
+    sourceNotes,
   };
+}
+
+function addSalarySearchSample(samples: SalarySearchSample[], seen: Set<string>, sample: SalarySearchSample) {
+  const identity = `${sample.platform}:${sample.link || sample.title}`;
+  if (seen.has(identity)) return;
+  seen.add(identity);
+  samples.push(sample);
+}
+
+async function collectBossSalarySamplesWithScraper(
+  job: Job,
+  filters: SalaryFilters,
+): Promise<{ samples: SalarySearchSample[]; sourceNotes: string[] }> {
+  if (!bossScraperEnabled) {
+    return { samples: [], sourceNotes: ["BOSS直聘 CDP 抓取未启用，已降级使用公开搜索结果。"] };
+  }
+
+  if (!existsSync(bossScraperScriptPath)) {
+    requestLog("boss_scraper_missing", {
+      scriptPath: bossScraperScriptPath,
+      installCommand: "pnpm download:boss-scraper",
+    });
+    return { samples: [], sourceNotes: ["BOSS直聘 CDP 抓取工具未安装，已降级使用公开搜索结果。"] };
+  }
+
+  const { execFile } = await import("node:child_process");
+  const { mkdir, readFile } = await import("node:fs/promises");
+  const { promisify } = await import("node:util");
+  const execFileAsync = promisify(execFile);
+  const keyword = buildBossScraperKeyword(job, filters);
+  const experienceCode = getBossExperienceCode(filters.experience);
+  const degreeCode = getBossDegreeCode(filters.education);
+  const industryCode = getBossIndustryCode(filters.industry);
+
+  await mkdir(bossScraperOutputDir, { recursive: true });
+
+  const pythonBin = existsSync(bossScraperPython) ? bossScraperPython : "python3";
+  const runScraper = async (useIndustry: boolean): Promise<{ samples: SalarySearchSample[]; sourceNotes: string[] }> => {
+    const outputPath = resolve(bossScraperOutputDir, `boss_jobs_${Date.now()}_${nanoid(8)}.json`);
+    const args = [
+      bossScraperScriptPath,
+      "--keyword",
+      keyword,
+      "--city",
+      filters.region,
+      "--pages",
+      String(bossScraperPages),
+      "--no-detail",
+      "--output",
+      outputPath,
+      "--cdp-port",
+      String(bossScraperCdpPort),
+    ];
+    if (experienceCode) args.push("--experience", experienceCode);
+    if (degreeCode) args.push("--degree", degreeCode);
+    if (useIndustry && industryCode) args.push("--industry", industryCode);
+
+    let execError: unknown = null;
+    try {
+      await execFileAsync(pythonBin, args, {
+        cwd: bossScraperDir,
+        timeout: bossScraperTimeoutMs,
+        maxBuffer: 1024 * 1024 * 12,
+        env: process.env,
+      });
+    } catch (error) {
+      execError = error;
+    }
+
+    try {
+      const payload = JSON.parse(await readFile(outputPath, "utf-8")) as {
+        scraped_at?: string;
+        jobs?: unknown[];
+      };
+      const scrapedAt = payload.scraped_at || new Date().toISOString();
+      const samples = (Array.isArray(payload.jobs) ? payload.jobs : [])
+        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object")
+        .map((item) => bossScraperJobToSalarySample(item, scrapedAt))
+        .filter((item): item is SalarySearchSample => Boolean(item));
+
+      return {
+        samples,
+        sourceNotes: [
+          execError
+            ? `BOSS直聘通过 boss-zhipin-scraper CDP 工具保留 ${samples.length} 条列表样本；抓取进程后续异常退出，已使用已落盘样本。`
+            : `BOSS直聘通过 boss-zhipin-scraper CDP 工具抓取 ${samples.length} 条列表样本。`,
+        ],
+      };
+    } catch (error) {
+      requestLog("boss_scraper_collect_error", {
+        message: execError instanceof Error ? execError.message : error instanceof Error ? error.message : String(error),
+        scriptPath: bossScraperScriptPath,
+        cdpPort: bossScraperCdpPort,
+        industryCode: useIndustry ? industryCode : undefined,
+      });
+      return {
+        samples: [],
+        sourceNotes: ["BOSS直聘 CDP 抓取失败，可能未安装工具、Python 依赖缺失，或专用 Chrome 未登录；已降级使用公开搜索结果。"],
+      };
+    }
+  };
+
+  const industryResult = await runScraper(Boolean(industryCode));
+  const industrySalarySamples = industryResult.samples.filter((sample) => Boolean(sample.salaryRange));
+  if (industryCode && industrySalarySamples.length < 2) {
+    const relaxedResult = await runScraper(false);
+    return {
+      samples: relaxedResult.samples,
+      sourceNotes: [
+        `BOSS直聘行业筛选已尝试选择 ${filters.industry}（industry=${industryCode}），但可解析薪资样本不足，已自动放宽行业筛选。`,
+        ...relaxedResult.sourceNotes,
+      ],
+    };
+  }
+
+  return {
+    samples: industryResult.samples,
+    sourceNotes: industryCode
+      ? [
+        `BOSS直聘行业筛选已选择 ${filters.industry}（industry=${industryCode}）。`,
+        ...industryResult.sourceNotes,
+      ]
+      : industryResult.sourceNotes,
+  };
+}
+
+function bossScraperJobToSalarySample(job: Record<string, unknown>, scrapedAt: string): SalarySearchSample | null {
+  const title = String(job.title || "").trim();
+  const salary = String(job.salary || "").trim();
+  const link = String(job.job_link || "").trim();
+  if (!title && !link) return null;
+  const company = String(job.boss_name || "").trim();
+  const location = String(job.location || "").trim();
+  const tags = String(job.tags || "").trim();
+  const skills = String(job.skills || job.job_labels || "").trim();
+  const companyScale = String(job.company_scale || "").trim();
+  const companyIndustry = String(job.company_industry || "").trim();
+  const scrapedDate = new Date(scrapedAt);
+  const scrapedStamp = Number.isNaN(scrapedDate.getTime()) ? formatDateStamp() : formatDateStamp(scrapedDate);
+  const snippet = [
+    company ? `公司：${company}` : "",
+    companyIndustry ? `行业：${companyIndustry}` : "",
+    salary ? `薪资：${salary}` : "",
+    location ? `地点：${location}` : "",
+    tags ? `要求：${tags}` : "",
+    skills ? `技能：${skills}` : "",
+    companyScale ? `规模：${companyScale}` : "",
+  ].filter(Boolean).join("；");
+
+  return {
+    platform: "BOSS直聘",
+    domain: "zhipin.com",
+    sourceKind: "boss-scraper",
+    title: company ? `${title} - ${company}` : title,
+    link: link || `zhipin://job/${String(job.job_id || title)}`,
+    snippet,
+    publishWindow: `CDP抓取 ${scrapedStamp}`,
+    salaryRange: extractSalaryRangeFromText(salary || `${title} ${snippet}`),
+  };
+}
+
+function buildBossScraperKeyword(job: Job, filters: SalaryFilters) {
+  const role = filters.role.trim() || job.title.trim();
+  if (role) return role;
+  return normalizeKeywords(job.keywords)[0] || "招聘";
+}
+
+function getBossExperienceCode(value: string) {
+  const map: Record<string, string> = {
+    无经验: "101",
+    "1年以内": "103",
+    "1-3年": "104",
+    "3-5年": "105",
+    "5-10年": "106",
+    "10年以上": "107",
+  };
+  return map[value] || "";
+}
+
+function getBossDegreeCode(value: string) {
+  const map: Record<string, string> = {
+    大专: "202",
+    本科: "203",
+    硕士: "204",
+    博士: "205",
+  };
+  return map[value] || "";
+}
+
+function getBossIndustryCode(value: string) {
+  const normalized = value.trim();
+  if (!normalized) return "";
+  const directCode = bossScraperIndustryCodes[normalized];
+  if (directCode) return directCode;
+  const matchedEntry = Object.entries(bossScraperIndustryCodes).find(([label]) => normalized.includes(label) || label.includes(normalized));
+  return matchedEntry?.[1] || "";
 }
 
 function parseBingRssItems(xml: string) {
@@ -3076,6 +3353,12 @@ function formatSampleCounts(counts: Record<string, number>) {
     .join("、");
 }
 
+function formatSalaryCoreSources(platforms: string[], hasBossScraperSamples: boolean) {
+  return platforms.map((platform) => (
+    platform === "BOSS直聘" && hasBossScraperSamples ? "BOSS直聘（boss-zhipin-scraper CDP）" : platform
+  ));
+}
+
 function buildSalaryMetricSourceSummary(samples: Array<SalarySearchSample & { salaryRange: SalaryRangeSample }>, counts: Record<string, number>) {
   const ranges = samples
     .slice(0, 6)
@@ -3142,6 +3425,7 @@ function buildInsufficientSalaryData(
   message: string,
   searchEvidence?: SalarySearchEvidence,
 ): SalaryData {
+  const hasBossScraperSamples = Boolean(searchEvidence?.samples.some((item) => item.sourceKind === "boss-scraper"));
   return {
     status: "insufficient_data",
     errorMessage: message,
@@ -3168,12 +3452,14 @@ function buildInsufficientSalaryData(
       keywordPremiums: [],
     },
     research: {
-      dataWindow: "BOSS直聘/智联招聘公开搜索结果",
+      dataWindow: hasBossScraperSamples ? "BOSS直聘 CDP 抓取 + 智联招聘公开搜索结果" : "BOSS直聘/智联招聘公开搜索结果",
       confidence: "低",
       confidenceReason: "当前 BOSS直聘或智联招聘的公开搜索结果不足，无法完成双平台交叉验证。",
       limitations: [
         "当前要求 BOSS直聘与智联招聘均存在可解析薪资样本。",
-        "当前实现只使用公开搜索标题/摘要，不登录平台、不抓取需要权限的详情页。",
+        hasBossScraperSamples
+          ? "BOSS直聘已接入 boss-zhipin-scraper CDP 抓取；智联招聘仍使用公开搜索标题/摘要解析。"
+          : "当前实现只使用公开搜索标题/摘要，不登录平台、不抓取需要权限的详情页。",
       ],
       triangulation: {
         requiredSources: 2,
@@ -3187,15 +3473,24 @@ function buildInsufficientSalaryData(
         p75: message,
       },
       methodology: [
-        "分别检索 BOSS直聘和智联招聘公开搜索结果。",
+        hasBossScraperSamples
+          ? "通过 boss-zhipin-scraper 连接本地已登录 Chrome CDP 抓取 BOSS直聘列表薪资。"
+          : "检索 BOSS直聘公开搜索结果。",
+        "检索智联招聘公开搜索结果。",
         "从搜索结果标题与摘要中解析月薪区间。",
         "未满足双平台均有可解析薪资样本时直接返回公开数据不足。",
       ],
-      coreSources: searchEvidence?.distinctPlatforms.length ? searchEvidence.distinctPlatforms : [],
+      coreSources: searchEvidence?.distinctPlatforms.length ? formatSalaryCoreSources(searchEvidence.distinctPlatforms, hasBossScraperSamples) : [],
       validationSources: [],
       sampleNotes: searchEvidence?.samples.length
-        ? searchEvidence.samples.slice(0, 6).map((item) => `${item.platform}：${item.title}`)
-        : ["未检索到满足条件的公开招聘平台样本。"],
+        ? [
+            ...searchEvidence.sourceNotes.slice(0, 3),
+            ...searchEvidence.samples.slice(0, 6).map((item) => `${item.platform}：${item.title}`),
+          ]
+        : [
+            ...(searchEvidence?.sourceNotes || []).slice(0, 3),
+            "未检索到满足条件的公开招聘平台样本。",
+          ],
       evidence: (searchEvidence?.samples || []).slice(0, 8).map((item) => ({
         source: item.platform,
         role: item.title,
@@ -3263,6 +3558,7 @@ const experienceMultipliers: Record<string, number> = {
 
 const industryMultipliers: Record<string, number> = {
   互联网: 1.12,
+  "互联网/AI": 1.12,
   "消费品/零售": 0.94,
   制造业: 0.91,
   金融: 1.08,

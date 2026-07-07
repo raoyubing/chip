@@ -31,6 +31,8 @@ pnpm deploy:run 'pnpm --filter @xiaosongshu/server download:whisper-model'
 pnpm deploy:run 'pnpm --filter @xiaosongshu/server demo:load -- --reset'
 ```
 
+BOSS直聘薪酬抓取依赖 `boss-zhipin-scraper` 和本地已登录 Chrome CDP。普通 Docker 部署默认 `BOSS_SCRAPER_ENABLED=false`，会降级使用公开搜索结果；如要在服务器启用，需要先配置 Chrome、Python 依赖和登录态。
+
 ## 远程发布
 
 复制 `ci/example.json` 为 `ci/dev.json`，填好服务器地址、部署目录和分支后执行：

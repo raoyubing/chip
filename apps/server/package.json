@@ -9,6 +9,9 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "download:whisper-model": "tsx src/scripts/download-whisper-model.ts",
+    "download:boss-scraper": "bash scripts/install-boss-scraper.sh",
+    "boss-scraper:check": "bash scripts/run-boss-scraper.sh --check",
+    "boss-scraper:setup-chrome": "bash scripts/run-boss-scraper.sh --setup-chrome",
     "demo:load": "tsx src/scripts/load-demo-data.ts"
   },
   "dependencies": {

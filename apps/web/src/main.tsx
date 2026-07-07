@@ -1044,7 +1044,7 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
           </div>
           <div className="analytics-issue-card">
             <strong>标准标签建议</strong>
-        <div className="analytics-tag-list">
+            <div className="analytics-tag-list">
               {generalReasonTagOptions.map((item) => <span key={item}>{item}</span>)}
             </div>
           </div>
@@ -1561,19 +1561,19 @@ function buildCandidateOverview(candidate: Candidate) {
   const strengths = evaluation?.strengths?.length
     ? evaluation.strengths
     : matchedKeywords.length
-    ? matchedKeywords.slice(0, 3).map((keyword) => `简历已覆盖“${keyword}”，可作为面试重点深挖。`)
-    : ["简历信息仍偏概括，需要通过面试补充验证核心能力。"];
+      ? matchedKeywords.slice(0, 3).map((keyword) => `简历已覆盖“${keyword}”，可作为面试重点深挖。`)
+      : ["简历信息仍偏概括，需要通过面试补充验证核心能力。"];
   const weaknesses = evaluation?.weaknesses?.length
     ? evaluation.weaknesses
     : missedKeywords.length
-    ? missedKeywords.slice(0, 3).map((keyword) => `“${keyword}”暂无直接证据，建议面试中优先追问。`)
-    : ["主要关键点均有覆盖，但仍需核验项目规模、个人贡献和结果真实性。"];
+      ? missedKeywords.slice(0, 3).map((keyword) => `“${keyword}”暂无直接证据，建议面试中优先追问。`)
+      : ["主要关键点均有覆盖，但仍需核验项目规模、个人贡献和结果真实性。"];
   const risks = evaluation?.risks?.length
     ? evaluation.risks
     : [
-    candidate.score < 70 ? "综合匹配分未达到高推荐区间，建议谨慎推进或增加业务复核。" : "需避免只看简历关键词命中，仍要确认候选人的真实贡献边界。",
-    missedKeywords.length ? `待核验项集中在 ${missedKeywords.slice(0, 2).join("、")}，存在上手后能力落差风险。` : "若候选人案例结果无法量化，可能存在经验包装风险。",
-  ];
+      candidate.score < 70 ? "综合匹配分未达到高推荐区间，建议谨慎推进或增加业务复核。" : "需避免只看简历关键词命中，仍要确认候选人的真实贡献边界。",
+      missedKeywords.length ? `待核验项集中在 ${missedKeywords.slice(0, 2).join("、")}，存在上手后能力落差风险。` : "若候选人案例结果无法量化，可能存在经验包装风险。",
+    ];
   return {
     matched,
     missed,
@@ -3412,111 +3412,111 @@ function VoiceParseView({
 
       <div className="voice-layout">
         <section className="card pad voice-workbench">
-        <div className="toolbar">
-          <div>
-            <h3 className="card-title">访音解析</h3>
-            <p className="helper-text">页面内直接开启录音转写；单次解析可保存到录音库，便于后续按岗位与人选回看复盘。</p>
-          </div>
-          <div className="voice-session-meta">
-            <Badge color={status === "listening" ? "green" : status === "paused" ? "gold" : "gray"}>
-              {status === "idle" ? "未开始" : status === "listening" ? "录音中" : status === "paused" ? "已暂停" : "已结束"}
-            </Badge>
-          </div>
-        </div>
-        <div className="voice-form">
-          <label className="form-field">
-            <span>关联岗位</span>
-            <select value={jobId} onChange={(event) => setJobId(event.target.value)} disabled={status === "listening"}>
-              {jobs.map((job) => <option key={job.id} value={job.id}>{formatJobOption(job)}</option>)}
-            </select>
-          </label>
-          <label className="form-field">
-            <span>关联人选</span>
-            <select value={candidateId} onChange={(event) => setCandidateId(event.target.value)} disabled={!candidates.length || status === "listening"}>
-              {candidates.length ? candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>) : <option value="">暂无候选人</option>}
-            </select>
-          </label>
-          <section className="voice-candidate-brief full">
-            <span className="meta">当前人选摘要</span>
-            {selectedCandidate ? (
-              <>
-                <div className="voice-candidate-head">
-                  <strong>{selectedCandidate.name}</strong>
-                  <Badge color={scoreColor(selectedCandidate.score)}>{selectedCandidate.conclusion}</Badge>
-                </div>
-                <p>{selectedCandidate.reason}</p>
-                <div className="candidate-profile-tags">
-                  <span>岗位：{selectedJob.title}</span>
-                  <span>关键考核点：{selectedJob.keywords || "未填写"}</span>
-                </div>
-              </>
-            ) : (
-              <p>当前岗位下暂无候选人，可先去“简历甄选”录入简历。</p>
-            )}
-          </section>
-          <section className="voice-control-panel full">
-            <div className="voice-control-actions">
-              <button className="btn primary" type="button" onClick={startSession} disabled={!supportsRecording || !selectedCandidate || status === "listening"}>
-                {status === "idle" ? "开始录音" : "重新开始"}
-              </button>
-              <button className="btn" type="button" onClick={pauseSession} disabled={status !== "listening"}>暂停</button>
-              <button className="btn" type="button" onClick={resumeSession} disabled={status !== "paused"}>继续</button>
-              <button className="btn" type="button" onClick={stopSession} disabled={status !== "listening" && status !== "paused"}>结束</button>
-              <button className="btn ghost" type="button" onClick={clearSession}>清空</button>
+          <div className="toolbar">
+            <div>
+              <h3 className="card-title">访音解析</h3>
+              <p className="helper-text">页面内直接开启录音转写；单次解析可保存到录音库，便于后续按岗位与人选回看复盘。</p>
             </div>
-            <small className="helper-text">
-              {supportsRecording
-                ? "网页端直接录音；后端使用开源语音模型转文字，再由 DeepSeek 做轻量实时整理。确认有效后可一键写入 SQLite 录音库。"
-                : "当前浏览器不支持网页录音，建议使用最新版 Chrome 并允许麦克风权限。"}
-            </small>
-            {liveHint ? <small className="helper-text">{liveHint}{isUploadingChunk ? "…" : ""}</small> : null}
-          </section>
-          <label className="form-field full">
-            <span>实时转写</span>
-            <textarea
-              value={transcript}
-              readOnly
-              placeholder="点击“开始录音”后，这里会实时出现转写内容。"
-            />
-          </label>
-          <label className="form-field full">
-            <span>补充备注</span>
-            <textarea
-              value={manualNotes}
-              onChange={(event) => setManualNotes(event.target.value)}
-              placeholder="可手动补充候选人未被准确识别的关键信息，分析区会同步更新。"
-            />
-          </label>
-        </div>
+            <div className="voice-session-meta">
+              <Badge color={status === "listening" ? "green" : status === "paused" ? "gold" : "gray"}>
+                {status === "idle" ? "未开始" : status === "listening" ? "录音中" : status === "paused" ? "已暂停" : "已结束"}
+              </Badge>
+            </div>
+          </div>
+          <div className="voice-form">
+            <label className="form-field">
+              <span>关联岗位</span>
+              <select value={jobId} onChange={(event) => setJobId(event.target.value)} disabled={status === "listening"}>
+                {jobs.map((job) => <option key={job.id} value={job.id}>{formatJobOption(job)}</option>)}
+              </select>
+            </label>
+            <label className="form-field">
+              <span>关联人选</span>
+              <select value={candidateId} onChange={(event) => setCandidateId(event.target.value)} disabled={!candidates.length || status === "listening"}>
+                {candidates.length ? candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>) : <option value="">暂无候选人</option>}
+              </select>
+            </label>
+            <section className="voice-candidate-brief full">
+              <span className="meta">当前人选摘要</span>
+              {selectedCandidate ? (
+                <>
+                  <div className="voice-candidate-head">
+                    <strong>{selectedCandidate.name}</strong>
+                    <Badge color={scoreColor(selectedCandidate.score)}>{selectedCandidate.conclusion}</Badge>
+                  </div>
+                  <p>{selectedCandidate.reason}</p>
+                  <div className="candidate-profile-tags">
+                    <span>岗位：{selectedJob.title}</span>
+                    <span>关键考核点：{selectedJob.keywords || "未填写"}</span>
+                  </div>
+                </>
+              ) : (
+                <p>当前岗位下暂无候选人，可先去“简历甄选”录入简历。</p>
+              )}
+            </section>
+            <section className="voice-control-panel full">
+              <div className="voice-control-actions">
+                <button className="btn primary" type="button" onClick={startSession} disabled={!supportsRecording || !selectedCandidate || status === "listening"}>
+                  {status === "idle" ? "开始录音" : "重新开始"}
+                </button>
+                <button className="btn" type="button" onClick={pauseSession} disabled={status !== "listening"}>暂停</button>
+                <button className="btn" type="button" onClick={resumeSession} disabled={status !== "paused"}>继续</button>
+                <button className="btn" type="button" onClick={stopSession} disabled={status !== "listening" && status !== "paused"}>结束</button>
+                <button className="btn ghost" type="button" onClick={clearSession}>清空</button>
+              </div>
+              <small className="helper-text">
+                {supportsRecording
+                  ? "网页端直接录音；后端使用开源语音模型转文字，再由 DeepSeek 做轻量实时整理。确认有效后可一键写入 SQLite 录音库。"
+                  : "当前浏览器不支持网页录音，建议使用最新版 Chrome 并允许麦克风权限。"}
+              </small>
+              {liveHint ? <small className="helper-text">{liveHint}{isUploadingChunk ? "…" : ""}</small> : null}
+            </section>
+            <label className="form-field full">
+              <span>实时转写</span>
+              <textarea
+                value={transcript}
+                readOnly
+                placeholder="点击“开始录音”后，这里会实时出现转写内容。"
+              />
+            </label>
+            <label className="form-field full">
+              <span>补充备注</span>
+              <textarea
+                value={manualNotes}
+                onChange={(event) => setManualNotes(event.target.value)}
+                placeholder="可手动补充候选人未被准确识别的关键信息，分析区会同步更新。"
+              />
+            </label>
+          </div>
         </section>
         <section className="card pad voice-analysis-panel">
-        {shouldShowCurrentOutput && selectedCandidate && analysis ? (
-          <>
-            {renderAnalysisSections({
-              sourceAnalysis: analysis,
-              sourceTranscript: transcript,
-              sourceSessionStartedAt: sessionStartedAt,
-              sourceCandidate: selectedCandidate,
-              sourceHighlightTerms: highlightTerms,
-              sourceManualNotes: manualNotes,
-            })}
-            {renderLiveCopilot()}
-          </>
-        ) : selectedHistory && historyCandidate ? (
-          renderAnalysisSections({
-            sourceAnalysis: selectedHistory,
-            sourceTranscript: selectedHistory.transcript,
-            sourceSessionStartedAt: selectedHistory.createdAt,
-            sourceCandidate: historyCandidate,
-            sourceHighlightTerms: historyHighlightTerms,
-            readOnly: true,
-          })
-        ) : (
-          <div className="voice-empty-state">
-            <section className="empty voice-empty-card"><div><strong>候选人评估区</strong><br />先选择岗位和人选，再开启录音。系统会基于实时转写输出推荐理由、优势与风险点。</div></section>
-            <section className="empty voice-empty-card"><div><strong>招聘者建议区</strong><br />会根据你的提问内容与沟通节奏，实时给出信息采集、追问深度与改进建议。</div></section>
-          </div>
-        )}
+          {shouldShowCurrentOutput && selectedCandidate && analysis ? (
+            <>
+              {renderAnalysisSections({
+                sourceAnalysis: analysis,
+                sourceTranscript: transcript,
+                sourceSessionStartedAt: sessionStartedAt,
+                sourceCandidate: selectedCandidate,
+                sourceHighlightTerms: highlightTerms,
+                sourceManualNotes: manualNotes,
+              })}
+              {renderLiveCopilot()}
+            </>
+          ) : selectedHistory && historyCandidate ? (
+            renderAnalysisSections({
+              sourceAnalysis: selectedHistory,
+              sourceTranscript: selectedHistory.transcript,
+              sourceSessionStartedAt: selectedHistory.createdAt,
+              sourceCandidate: historyCandidate,
+              sourceHighlightTerms: historyHighlightTerms,
+              readOnly: true,
+            })
+          ) : (
+            <div className="voice-empty-state">
+              <section className="empty voice-empty-card"><div><strong>候选人评估区</strong><br />先选择岗位和人选，再开启录音。系统会基于实时转写输出推荐理由、优势与风险点。</div></section>
+              <section className="empty voice-empty-card"><div><strong>招聘者建议区</strong><br />会根据你的提问内容与沟通节奏，实时给出信息采集、追问深度与改进建议。</div></section>
+            </div>
+          )}
         </section>
       </div>
       {selectedHistory && historyCandidate && (
@@ -3636,7 +3636,7 @@ function isInterviewCandidate(candidate: Candidate) {
 
 const salaryRegionOptions = ["北京", "上海", "深圳", "广州", "杭州", "成都", "武汉"] as const;
 const salaryExperienceOptions = ["无经验", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"] as const;
-const salaryIndustryOptions = ["互联网", "企业服务", "消费品/零售", "制造业", "金融", "教育", "医疗健康"] as const;
+const salaryIndustryOptions = ["互联网/AI", "互联网", "企业服务", "消费品/零售", "制造业", "金融", "教育", "医疗健康"] as const;
 const salaryEducationOptions = ["大专", "本科", "硕士"] as const;
 const salaryRoleOptions = ["HRBP", "招聘专员", "前端工程师", "产品经理", "销售经理", "运营经理"] as const;
 
@@ -3650,7 +3650,7 @@ function SalaryView({
   const research = data ? {
     dataWindow: data.research?.dataWindow || "历史缓存",
     confidence: data.research?.confidence || "低",
-    confidenceReason: data.research?.confidenceReason || "当前数据缺少完整来源追溯，建议刷新薪酬大盘后再查看。", 
+    confidenceReason: data.research?.confidenceReason || "当前数据缺少完整来源追溯，建议刷新薪酬大盘后再查看。",
     limitations: data.research?.limitations?.length ? data.research.limitations : ["当前缓存数据缺少完整局限性说明。"],
     triangulation: {
       requiredSources: data.research?.triangulation?.requiredSources ?? 2,
@@ -5164,10 +5164,10 @@ function formatRealtimeVoiceCopy({
 
 function buildSalaryFilters(salaryData: SalaryData | null): SalaryFilters {
   return {
-    role: salaryData?.filters.role || "HRBP",
+    role: salaryData?.filters.role || "前端开发工程师",
     region: salaryData?.filters.region || "北京",
     experience: salaryData?.filters.experience || "3-5年",
-    industry: salaryData?.filters.industry || "企业服务",
+    industry: salaryData?.filters.industry || "互联网",
     education: salaryEducationOptions.includes((salaryData?.filters.education || "本科") as (typeof salaryEducationOptions)[number])
       ? (salaryData?.filters.education || "本科")
       : "本科",

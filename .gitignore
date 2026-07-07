@@ -8,7 +8,9 @@ apps/server/data/*.sqlite
 apps/server/data/*.sqlite-*
 apps/server/data/uploads/*
 !apps/server/data/uploads/.gitkeep
+apps/server/data/salary-scraper/
 apps/server/models/
+apps/server/tools/
 deploy/.env
 deploy/.web-security.env
 deploy/data/
