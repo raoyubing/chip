@@ -2,7 +2,7 @@ import React, { FormEvent, useEffect, useId, useMemo, useRef, useState } from "r
 import { createRoot } from "react-dom/client";
 import * as echarts from "echarts";
 import { api, type JobCopilotResult, type JobPayload, type ResumeUploadPayload } from "./api";
-import type { AppState, Candidate, CandidateInterviewPlan, CandidateInterviewPlanQuestion, InterviewMethodKey, Job, ResumeFilePayload, SalaryData, SalaryFilters, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceRecruiterCoachReport, VoiceSegmentInsight } from "./types";
+import type { AppState, Candidate, CandidateInterviewPlan, CandidateInterviewPlanQuestion, InterviewMethodKey, Job, ResumeFilePayload, SalaryData, SalaryFilters, UploadedFile, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceRecruiterCoachReport, VoiceSegmentInsight } from "./types";
 import "./styles.css";
 
 const views = [
@@ -147,11 +147,11 @@ function App() {
     return true;
   }
 
-  async function resetDemo() {
-    if (!window.confirm("确认重置为初始示例数据？当前 SQLite 数据会被覆盖。")) return;
-    const next = await api.reset();
+  async function clearData() {
+    if (!window.confirm("确认清空当前 SQLite 数据？职位、候选人和面试记录都会被删除。")) return;
+    const next = await api.clearData();
     setRemoteState(next);
-    showToast("示例数据已重置");
+    showToast("本地数据已清空");
   }
 
   async function markInterview(candidateId?: string) {
@@ -260,13 +260,15 @@ function App() {
           <div className="loading-copy">
             <strong>职位池还是空的</strong>
             <p>本地服务已连接成功，但当前还没有职位数据。</p>
-            <small>你可以先重置示例数据，或在数据库中新增一个职位后再进入工作台。</small>
+            <small>可以先新增一个职位，之后再上传简历和维护面试流程。</small>
           </div>
           <div className="loading-actions">
             <button className="btn" type="button" onClick={() => void loadState()}>刷新状态</button>
-            <button className="btn primary" type="button" onClick={resetDemo}>载入示例数据</button>
+            <button className="btn primary" type="button" onClick={() => setModal({ type: "job" })}>新增职位</button>
           </div>
         </section>
+        {modal?.type === "job" && <JobModal job={modal.job} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); showToast("职位已新增"); }} />}
+        {toast && <div className="toast">{toast}</div>}
       </div>
     );
   }
@@ -306,7 +308,7 @@ function App() {
         </header>
 
         <section className="content">
-          {activeView === "dashboard" && <Dashboard state={state} currentJob={currentJob} onJump={setActiveView} onReset={resetDemo} onSelectJob={changeJob} />}
+          {activeView === "dashboard" && <Dashboard state={state} currentJob={currentJob} onJump={setActiveView} onClearData={clearData} onSelectJob={changeJob} />}
           {activeView === "jobs" && <JobsView state={state} currentJob={currentJob} onSelect={changeJob} onEdit={(job) => setModal({ type: "job", job })} onCreate={() => setModal({ type: "job" })} onCloseJob={closeJob} onDelete={deleteJob} />}
           {activeView === "candidates" && <CandidatesView candidates={currentCandidates} selectedId={selectedCandidateId} onSelect={setSelectedCandidateId} onUpload={() => setModal({ type: "resume" })} onMark={markInterview} onDelete={deleteCandidate} currentJob={currentJob} onStateChange={setRemoteState} />}
           {activeView === "interviews" && <InterviewsView jobs={ongoingJobs} selectedJobId={activeInterviewJobId} onJobChange={setActiveInterviewJobId} selectedMonth={activeInterviewMonth} onMonthChange={setActiveInterviewMonth} activeStage={activeInterviewStage} candidates={interviewCandidates} onStageChange={setActiveInterviewStage} onSaveStage={updateInterviewStage} />}
@@ -562,7 +564,7 @@ function formatJobOption(job: Job) {
   return `${job.title} · ${job.location}`;
 }
 
-function Dashboard({ state, currentJob, onJump, onReset, onSelectJob }: { state: AppState; currentJob: Job; onJump: (view: View) => void; onReset: () => void; onSelectJob: (jobId: string) => Promise<void> }) {
+function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { state: AppState; currentJob: Job; onJump: (view: View) => void; onClearData: () => void; onSelectJob: (jobId: string) => Promise<void> }) {
   const candidates = Object.values(state.candidates).flat();
   const [granularity, setGranularity] = useState<AnalyticsGranularity>("month");
   const periodOptions = useMemo(() => getAnalyticsPeriodOptions(candidates, granularity), [candidates, granularity]);
@@ -675,7 +677,7 @@ function Dashboard({ state, currentJob, onJump, onReset, onSelectJob }: { state:
                 {periodOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             </label>
-            <button className="btn ghost" onClick={onReset}>重置示例数据</button>
+            <button className="btn ghost" onClick={onClearData}>清空本地数据</button>
           </div>
         </div>
       </section>
@@ -1264,6 +1266,7 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete, 
   const [methodKey, setMethodKey] = useState<InterviewMethodKey>(() => getInterviewRecommendation(candidate).methodKey);
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState("");
+  const [previewError, setPreviewError] = useState("");
   const overview = buildCandidateOverview(candidate);
   const matchedCount = overview.matched.length;
   const interviewPlan = candidate.interviewPlan;
@@ -1274,6 +1277,7 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete, 
     setMethodKey(getInterviewRecommendation(candidate, currentJob, candidate.interviewPlan).methodKey);
     setCopied(false);
     setPlanError("");
+    setPreviewError("");
   }, [candidate.id, candidate.interviewPlan, currentJob.id]);
 
   useEffect(() => {
@@ -1298,6 +1302,16 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete, 
     await navigator.clipboard.writeText(formatCandidateInterviewPack(candidate, interviewPack, recommendation));
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1600);
+  };
+
+  const previewCandidateFile = async () => {
+    if (!candidate.fileObjectKey) return;
+    setPreviewError("");
+    try {
+      await openFilePreview(candidate.fileObjectKey, candidate.fileType);
+    } catch (error) {
+      setPreviewError(error instanceof Error ? error.message : "原始附件预览失败");
+    }
   };
 
   return (
@@ -1513,7 +1527,14 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete, 
 
       {activeTab === "resume" && (
         <div className="tab-panel">
-          <div className="row-between section-title-row"><span className="meta">简历文本</span><span className="helper-text">{candidate.fileName || candidate.source}</span></div>
+          <div className="row-between section-title-row">
+            <span className="meta">简历文本</span>
+            <div className="toolbar-right compact-actions">
+              <span className="helper-text">{candidate.fileName || candidate.source}</span>
+              {candidate.fileObjectKey ? <button className="btn ghost compact" type="button" onClick={previewCandidateFile}>预览原件</button> : null}
+            </div>
+          </div>
+          {previewError ? <div className="tool-error spaced-small">{previewError}</div> : null}
           <div className="resume-box spaced-small">{candidate.resumeText}</div>
         </div>
       )}
@@ -3632,7 +3653,7 @@ function SalaryView({
     confidenceReason: data.research?.confidenceReason || "当前数据缺少完整来源追溯，建议刷新薪酬大盘后再查看。", 
     limitations: data.research?.limitations?.length ? data.research.limitations : ["当前缓存数据缺少完整局限性说明。"],
     triangulation: {
-      requiredSources: data.research?.triangulation?.requiredSources ?? 3,
+      requiredSources: data.research?.triangulation?.requiredSources ?? 2,
       actualSources: data.research?.triangulation?.actualSources ?? data.research?.coreSources?.length ?? 0,
       passed: data.research?.triangulation?.passed ?? false,
       summary: data.research?.triangulation?.summary || "当前数据未完成三角验证，建议重新生成调研结果。",
@@ -3731,7 +3752,7 @@ function SalaryView({
           <div className="empty">
             <div>
               <strong>当前公开数据不足，无法生成高置信度报告</strong><br />
-              {data.errorMessage || "未满足至少 3 个独立招聘平台近 3 个月有效样本要求。"}
+              {data.errorMessage || "未满足 BOSS直聘和智联招聘双平台可解析薪资样本要求。"}
             </div>
           </div>
           <div className="grid cols-2">
@@ -4163,19 +4184,123 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
   );
 }
 
+type ResumeUploadItem = {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  status: "uploading" | "done" | "error";
+  uploaded?: UploadedFile;
+  error?: string;
+};
+
 function ResumeModal({ job, onClose, onSaved }: { job: Job; onClose: () => void; onSaved: (state: AppState) => void }) {
   const [name, setName] = useState("");
+  const [nameTouched, setNameTouched] = useState(false);
+  const [nameAutoFilled, setNameAutoFilled] = useState(false);
   const [source, setSource] = useState("BOSS");
   const [resumeText, setResumeText] = useState("");
-  const [files, setFiles] = useState<File[]>([]);
+  const [uploadItems, setUploadItems] = useState<ResumeUploadItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const hasUploading = uploadItems.some((item) => item.status === "uploading");
+  const hasUploadError = uploadItems.some((item) => item.status === "error");
+  const uploadedFiles = uploadItems
+    .filter((item): item is ResumeUploadItem & { uploaded: UploadedFile } => item.status === "done" && Boolean(item.uploaded))
+    .map((item) => item.uploaded);
+
+  function handleFilesChange(fileList: File[]) {
+    setError("");
+    const nextFileCount = uploadItems.length + fileList.length;
+    const inferredName = nextFileCount === 1 ? inferCandidateNameFromFileName(fileList[0]?.name || "") : "";
+    if (!nameTouched) {
+      if (inferredName) {
+        setName(inferredName);
+        setNameAutoFilled(true);
+      } else if (nameAutoFilled && nextFileCount !== 1) {
+        setName("");
+        setNameAutoFilled(false);
+      }
+    }
+    fileList.forEach((file) => {
+      const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const item: ResumeUploadItem = {
+        id,
+        name: file.name,
+        type: file.type || "未知格式",
+        size: file.size,
+        status: "uploading",
+      };
+      setUploadItems((current) => [...current, item]);
+      void api.uploadFile(file, "resume").then((uploaded) => {
+        setUploadItems((current) => current.map((currentItem) => (
+          currentItem.id === id
+            ? { ...currentItem, status: "done", uploaded, name: uploaded.name, type: uploaded.content_type || currentItem.type, size: uploaded.size }
+            : currentItem
+        )));
+      }).catch((uploadError) => {
+        setUploadItems((current) => current.map((currentItem) => (
+          currentItem.id === id
+            ? { ...currentItem, status: "error", error: uploadError instanceof Error ? uploadError.message : "上传失败" }
+            : currentItem
+        )));
+      });
+    });
+  }
+
+  function removeUploadItem(item: ResumeUploadItem) {
+    setUploadItems((current) => {
+      const next = current.filter((currentItem) => currentItem.id !== item.id);
+      if (!nameTouched && nameAutoFilled) {
+        const nextName = next.length === 1 ? inferCandidateNameFromFileName(next[0].name) : "";
+        setName(nextName);
+        setNameAutoFilled(Boolean(nextName));
+      }
+      return next;
+    });
+    if (item.uploaded?.object_key) {
+      void api.deleteFile(item.uploaded.object_key).catch(() => undefined);
+    }
+  }
+
+  function handleResumeTextChange(value: string) {
+    setResumeText(value);
+    if (uploadItems.length > 0 || nameTouched) return;
+    const inferredName = inferCandidateNameFromResumeText(value);
+    if (inferredName) {
+      setName(inferredName);
+      setNameAutoFilled(true);
+    } else if (nameAutoFilled) {
+      setName("");
+      setNameAutoFilled(false);
+    }
+  }
+
+  async function previewUploadItem(item: ResumeUploadItem) {
+    if (!item.uploaded?.object_key) return;
+    setError("");
+    try {
+      await openFilePreview(item.uploaded.object_key, item.uploaded.content_type);
+    } catch (previewError) {
+      setError(previewError instanceof Error ? previewError.message : "文件预览失败");
+    }
+  }
+
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (hasUploading) {
+      setError("文件仍在上传中，请稍后提交");
+      return;
+    }
+    if (hasUploadError) {
+      setError("请先移除上传失败的文件后再提交");
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      const payload: ResumeUploadPayload = { name, source, resumeText, files: await Promise.all(files.map(fileToPayload)) };
+      const shouldSubmitSharedName = nameTouched || uploadedFiles.length <= 1;
+      const payload: ResumeUploadPayload = { name: shouldSubmitSharedName ? name : "", source, resumeText, files: uploadedFiles.map(uploadedFileToResumePayload) };
       const result = await api.uploadResumes(job.id, payload);
       onSaved(result.state);
     } catch (uploadError) {
@@ -4184,21 +4309,131 @@ function ResumeModal({ job, onClose, onSaved }: { job: Job; onClose: () => void;
       setLoading(false);
     }
   }
-  return <Modal title="上传/录入简历" onClose={onClose}><form onSubmit={submit}><div className="modal-body form-grid"><Input label="候选人姓名（文本录入时必填）" value={name} onChange={setName} /><label className="form-field"><span>来源渠道</span><select value={source} onChange={(event) => setSource(event.target.value)}><option value="BOSS">BOSS</option><option value="智联">智联</option><option value="猎聘">猎聘</option><option value="内推">内推</option><option value="其他">其他</option></select></label><label className="form-field full"><span>上传简历文件（支持单个或多个）</span><input className="file-input" type="file" multiple accept=".txt,.md,.pdf,.doc,.docx,.rtf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.heic,.heif,.csv,.json,.xml,.html,.htm,image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => setFiles(Array.from(event.target.files || []))} /><small className="helper-text">文件原件会写入 SQLite。系统会优先提取 PDF / Word / 图片 / TXT 等文件正文，并结合 DeepSeek 清洗整理后保存到简历原文。</small></label><label className="form-field full"><span>简历文本</span><textarea value={resumeText} onChange={(event) => setResumeText(event.target.value)} placeholder="可直接粘贴简历文本；若同时上传文件，会作为补充文本参与识别、整理与分析" /></label>{error ? <div className="tool-error full">{error}</div> : null}</div><div className="modal-foot"><button className="btn" type="button" onClick={onClose}>取消</button><button className="btn primary" disabled={loading}>{loading ? "分析中..." : "分析并生成候选人"}</button></div></form></Modal>;
+
+  return (
+    <Modal title="上传/录入简历" onClose={onClose}>
+      <form onSubmit={submit}>
+        <div className="modal-body form-grid">
+          <label className="form-field">
+            <span>候选人姓名（文本录入时必填）</span>
+            <input
+              required={!uploadItems.length}
+              value={name}
+              onChange={(event) => {
+                setName(event.target.value);
+                setNameTouched(true);
+                setNameAutoFilled(false);
+              }}
+            />
+          </label>
+          <label className="form-field">
+            <span>来源渠道</span>
+            <select value={source} onChange={(event) => setSource(event.target.value)}>
+              <option value="BOSS">BOSS</option>
+              <option value="智联">智联</option>
+              <option value="猎聘">猎聘</option>
+              <option value="内推">内推</option>
+              <option value="其他">其他</option>
+            </select>
+          </label>
+          <label className="form-field full">
+            <span>上传简历文件（支持单个或多个）</span>
+            <input
+              className="file-input"
+              type="file"
+              multiple
+              accept=".txt,.md,.pdf,.doc,.docx,.rtf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.heic,.heif,.csv,.json,.xml,.html,.htm,image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              onChange={(event) => {
+                handleFilesChange(Array.from(event.target.files || []));
+                event.currentTarget.value = "";
+              }}
+            />
+            <small className="helper-text">文件会先上传到 RustFS，后端再读取原件提取 PDF / Word / 图片 / TXT 等正文并生成候选人分析。</small>
+          </label>
+          {uploadItems.length ? (
+            <div className="upload-file-list full">
+              {uploadItems.map((item) => (
+                <div className={`upload-file-row ${item.status}`} key={item.id}>
+                  <div>
+                    <strong>{item.name}</strong>
+                    <span>{formatFileSize(item.size)} · {item.status === "uploading" ? "上传中" : item.status === "done" ? "已上传" : item.error || "上传失败"}</span>
+                  </div>
+                  <div className="toolbar-right compact-actions">
+                    {item.status === "done" ? <button className="btn ghost compact" type="button" onClick={() => void previewUploadItem(item)}>预览</button> : null}
+                    <button className="btn ghost compact" type="button" onClick={() => removeUploadItem(item)}>移除</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <label className="form-field full">
+            <span>简历文本</span>
+            <textarea value={resumeText} onChange={(event) => handleResumeTextChange(event.target.value)} placeholder="可直接粘贴简历文本；若同时上传文件，会作为补充文本参与识别、整理与分析" />
+          </label>
+          {error ? <div className="tool-error full">{error}</div> : null}
+        </div>
+        <div className="modal-foot">
+          <button className="btn" type="button" onClick={onClose}>取消</button>
+          <button className="btn primary" disabled={loading || hasUploading}>{hasUploading ? "上传中..." : loading ? "分析中..." : "分析并生成候选人"}</button>
+        </div>
+      </form>
+    </Modal>
+  );
 }
 
-async function fileToPayload(file: File) {
-  const textLike = /^(text\/|application\/(json|xml))/.test(file.type) || /\.(txt|md|csv|json|rtf)$/i.test(file.name);
-  return { name: file.name, type: file.type, size: file.size, text: textLike ? await file.text().catch(() => "") : "", dataBase64: await fileToBase64(file) };
+function uploadedFileToResumePayload(file: UploadedFile): ResumeFilePayload {
+  return {
+    name: file.name,
+    type: file.content_type ?? null,
+    content_type: file.content_type ?? null,
+    size: file.size,
+    bucket: file.bucket,
+    object_key: file.object_key,
+    url: file.url ?? null,
+    view_url: file.view_url ?? null,
+  };
 }
 
-function fileToBase64(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(",")[1] || "");
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
-  });
+function inferCandidateNameFromFileName(fileName: string) {
+  const baseName = fileName
+    .replace(/\.[^.]+$/, "")
+    .replace(/简历|个人简历|求职|resume|cv|附件/gi, "")
+    .replace(/[（(].*?[）)]/g, " ")
+    .trim();
+  const parts = baseName.split(/[\s_\-—–+·、，,]+/).map((part) => normalizeCandidateName(part)).filter(Boolean);
+  const nameLikeParts = parts.filter(isLikelyChineseName);
+  return nameLikeParts.at(-1) || "";
+}
+
+function inferCandidateNameFromResumeText(text: string) {
+  const explicitMatch = text.match(/(?:^|\n)\s*(?:姓名|候选人|应聘者)\s*[:：]\s*([\u4e00-\u9fa5·]{2,6}|[A-Za-z][A-Za-z\s.]{1,40})/);
+  if (explicitMatch?.[1]) return normalizeCandidateName(explicitMatch[1]);
+  return "";
+}
+
+function normalizeCandidateName(value: string) {
+  return value
+    .replace(/[^\u4e00-\u9fa5A-Za-z·.\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isLikelyChineseName(value: string) {
+  if (!/^[\u4e00-\u9fa5·]{2,6}$/.test(value)) return false;
+  if (/前端|后端|开发|工程师|产品|运营|设计|测试|算法|数据|长沙|北京|上海|广州|深圳|杭州|成都|武汉|南京|简历|求职|候选人/.test(value)) return false;
+  return true;
+}
+
+async function openFilePreview(objectKey: string, contentType?: string | null) {
+  const result = await api.getFileViewUrl(objectKey, { contentType });
+  window.open(result.url, "_blank", "noopener,noreferrer");
+}
+
+function formatFileSize(size?: number | null) {
+  const value = Number(size || 0);
+  if (!value) return "0KB";
+  if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))}KB`;
+  return `${(value / 1024 / 1024).toFixed(1)}MB`;
 }
 
 function Chart({ option, className, style }: { option: echarts.EChartsCoreOption; className?: string; style?: React.CSSProperties }) { const ref = useRef<HTMLDivElement>(null); useEffect(() => { if (!ref.current) return; const chart = echarts.init(ref.current); chart.setOption(option); const resize = () => chart.resize(); window.addEventListener("resize", resize); return () => { window.removeEventListener("resize", resize); chart.dispose(); }; }, [option]); return <div className={className ? `chart ${className}` : "chart"} style={style} ref={ref} />; }
@@ -4560,14 +4795,14 @@ function normalizeProbeText(probe: string) {
 }
 
 function buildVoiceHighlightTerms(job: Job, transcript: string, manualNotes: string) {
-  const seedTerms = [
+  const candidateTerms = [
     ...splitKeywords(job.keywords),
     job.title,
     job.location,
     ...["薪资", "到岗", "离职", "动机", "绩效", "团队", "管理", "稳定性", "通勤", "加班", "结果", "项目", "推进", "复盘"],
   ];
   const text = `${transcript}\n${manualNotes}`;
-  return Array.from(new Set(seedTerms
+  return Array.from(new Set(candidateTerms
     .map((item) => item.trim())
     .filter((item) => item.length >= 2)
     .filter((item) => text.includes(item))))

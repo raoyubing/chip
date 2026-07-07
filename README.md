@@ -9,7 +9,6 @@ zhaopin/
   apps/
     web/      # React + TypeScript + Vite 前端
     server/   # Node.js + Fastify + SQLite API
-  legacy-static/ # 旧版纯静态页面备份
   package.json
   pnpm-workspace.yaml
 ```
@@ -41,7 +40,7 @@ http://localhost:5173
 后端 API 默认运行在：
 
 ```text
-http://localhost:5174
+http://localhost:5175
 ```
 
 ## 常用命令
@@ -50,13 +49,20 @@ http://localhost:5174
 pnpm dev          # 同时启动前端和后端
 pnpm dev:web      # 只启动前端
 pnpm dev:server   # 只启动后端
+pnpm demo:load    # 按需加载演示数据；加 -- --reset 会先清空现有 SQLite 数据
+pnpm download:whisper-model # 下载本地语音转写模型到 apps/server/models
 pnpm typecheck    # TypeScript 类型检查
 pnpm build        # 构建前端和后端
+pnpm deploy:init  # 初始化 Docker 部署
 ```
+
+启动服务只会初始化数据库结构，不会自动写入演示数据。演示职位和候选人是测试数据，只有执行 `pnpm demo:load` 时才会导入。
+
+部署脚本在 `deploy/` 目录，包含 compose、nginx 配置、远程发布、离线镜像和备份。
 
 ## 功能视图
 
 - 工作台概览：职位、简历、推荐人数与图表统计。
 - 职位管理：新增、编辑、删除职位，JD 优化器和推荐面试问题。
 - 简历甄选：按当前职位切换候选人，支持文本和多文件简历上传分析。
-- 薪酬调研：优先结合 DeepSeek 与公开招聘网站搜索结果生成薪酬调研；若少于 3 个独立招聘平台有效样本，则直接返回“公开数据不足”，不再回退本地估算模型。
+- 薪酬调研：检索 BOSS直聘与智联招聘公开搜索结果，从可解析薪资样本中计算 P25/P50/P75；若任一平台缺少有效样本，则返回“公开数据不足”。

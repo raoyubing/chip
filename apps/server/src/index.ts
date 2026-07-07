@@ -1,13 +1,15 @@
 import cors from "@fastify/cors";
+import multipart from "@fastify/multipart";
 import sensible from "@fastify/sensible";
 import ffmpegInstaller from "@ffmpeg-installer/ffmpeg";
-import Fastify from "fastify";
+import Fastify, { type FastifyRequest } from "fastify";
 import { nanoid } from "nanoid";
-import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import wavefile from "wavefile";
 import { z } from "zod";
 import { createCandidate, normalizeKeywords } from "./analyzer.js";
+import { loadLocalEnv, serverRoot } from "./env.js";
+import { fileService } from "./file-service.js";
 import { extractResumeTextFromFile } from "./resume-parser.js";
 import {
   closeJob,
@@ -26,7 +28,7 @@ import {
   insertVoiceTranscriptSegment,
   insertVoiceAnalysis,
   prioritizeJob,
-  resetDatabase,
+  clearDatabase,
   setSetting,
   updateCandidate,
   updateVoiceTranscriptSegmentAnalysis,
@@ -34,13 +36,13 @@ import {
 } from "./db.js";
 import type { Candidate, CandidateEvaluation, CandidateInterviewPlan, InterviewMethodKey, Job, SalaryData, SalaryFilters, VoiceAnalysis, VoiceFinalEvaluation, VoiceRecruiterCoachReport, VoiceTranscriptResult, VoiceTranscriptSegment } from "./types.js";
 
+loadLocalEnv();
+
 const server = Fastify({
   logger: true,
   bodyLimit: Number(process.env.BODY_LIMIT_BYTES || 20 * 1024 * 1024),
 });
 const port = Number(process.env.PORT || 5175);
-
-loadLocalEnv();
 
 const deepseekApiKey = process.env.DEEPSEEK_API_KEY || "";
 const deepseekBaseUrl = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com";
@@ -48,15 +50,25 @@ const deepseekModel = process.env.DEEPSEEK_MODEL || "deepseek-v4-pro";
 const deepseekTimeoutMs = Number(process.env.DEEPSEEK_TIMEOUT_MS || 18000);
 const deepseekResumeTimeoutMs = Number(process.env.DEEPSEEK_RESUME_TIMEOUT_MS || 9000);
 const resumeExtractTimeoutMs = Number(process.env.RESUME_EXTRACT_TIMEOUT_MS || 12000);
+const uploadMaxFileSizeMb = Number(process.env.UPLOAD_MAX_FILE_SIZE_MB || 20);
 const whisperModelId = process.env.WHISPER_MODEL_ID || "Xenova/whisper-tiny";
+const whisperModelDir = resolve(serverRoot, process.env.WHISPER_MODEL_DIR || "models");
 const whisperTargetLanguage = process.env.WHISPER_LANGUAGE || "zh";
 const whisperChunkLength = Number(process.env.WHISPER_CHUNK_LENGTH || 20);
 const whisperStrideLength = Number(process.env.WHISPER_STRIDE_LENGTH || 4);
-const voiceTranscribeBackend = process.env.VOICE_TRANSCRIBE_BACKEND || "python";
-const huggingFaceEndpoint = process.env.HF_ENDPOINT || "https://hf-mirror.com";
+const whisperModelDownloadCommand = "pnpm --filter @xiaosongshu/server download:whisper-model";
+const salarySearchTimeoutMs = Number(process.env.SALARY_SEARCH_TIMEOUT_MS || 8000);
 
 await server.register(cors, { origin: true });
 await server.register(sensible);
+await server.register(multipart, {
+  throwFileSizeLimit: true,
+  limits: {
+    fileSize: uploadMaxFileSizeMb * 1024 * 1024,
+    files: 10,
+    parts: 100,
+  },
+});
 await initDb();
 
 const jobSchema = z.object({
@@ -80,13 +92,36 @@ const resumeSchema = z.object({
       z.object({
         name: z.string(),
         type: z.string().optional().nullable(),
+        content_type: z.string().optional().nullable(),
         size: z.number().optional().nullable(),
         text: z.string().optional().default(""),
         dataBase64: z.string().optional().nullable(),
+        bucket: z.string().optional().nullable(),
+        object_key: z.string().optional().nullable(),
+        url: z.string().optional().nullable(),
+        view_url: z.string().optional().nullable(),
       }),
     )
     .optional()
     .default([]),
+});
+
+const fileUploadSceneSchema = z.enum(["default", "resume", "form_design", "approval_item_icon", "system_logo"]).default("default");
+const uploadFileSchema = z.object({
+  scene: fileUploadSceneSchema,
+});
+const deleteFileSchema = z.object({
+  object_key: z.string().min(1).max(512),
+});
+const getFileViewUrlQuerySchema = z.object({
+  object_key: z.string().min(1).max(512),
+  purpose: z.enum(["default", "kkfile", "markdown"]).optional().default("default"),
+  content_type: z.string().min(1).max(255).optional(),
+});
+const getFileStreamQuerySchema = z.object({
+  token: z.string().min(1).max(4096),
+  fullfilename: z.string().min(1).max(512).optional(),
+  content_type: z.string().min(1).max(255).optional(),
 });
 
 const salaryFilterSchema = z.object({
@@ -149,12 +184,68 @@ const candidateInterviewPlanSchema = z.object({
 
 server.get("/api/health", async () => ({ ok: true }));
 
+server.post("/api/files/upload", async (request) => {
+  const file = await request.file();
+  if (!file) throw server.httpErrors.badRequest("请上传文件");
+  const payload = uploadFileSchema.parse({
+    scene: getMultipartFieldValue(file.fields, "scene") || "default",
+  });
+  const buffer = await file.toBuffer();
+  return fileService.uploadFile({
+    scene: payload.scene,
+    name: file.filename,
+    buffer,
+    contentType: file.mimetype,
+  });
+});
+
+server.delete("/api/files", async (request) => {
+  const body = deleteFileSchema.parse(request.body);
+  return fileService.deleteFile(body.object_key);
+});
+
+server.get("/api/files/view-url", async (request) => {
+  const query = getFileViewUrlQuerySchema.parse(request.query);
+  return fileService.getFileViewUrl({
+    objectKey: query.object_key,
+    purpose: query.purpose,
+    publicBaseUrl: getRequestPublicBaseUrl(request),
+    contentType: query.content_type,
+  });
+});
+
+server.get("/api/files/stream", async (request, reply) => {
+  const query = getFileStreamQuerySchema.parse(request.query);
+  const result = await fileService.getFileStream({
+    token: query.token,
+    contentType: query.content_type,
+  });
+
+  reply.header("Content-Type", result.contentType);
+  reply.header("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(result.fileName)}`);
+  reply.header("Cache-Control", "private, no-store, max-age=0");
+  if (typeof result.contentLength === "number") {
+    reply.header("Content-Length", String(result.contentLength));
+  }
+  if (result.lastModified) {
+    reply.header("Last-Modified", result.lastModified.toUTCString());
+  }
+  if (result.eTag) {
+    reply.header("ETag", result.eTag);
+  }
+
+  return reply.send(result.body);
+});
+
 server.get("/api/state", async () => getState());
 
-server.post("/api/reset", async () => {
-  resetDatabase();
+const clearDataHandler = async () => {
+  clearDatabase();
   return getState();
-});
+};
+
+server.post("/api/data/clear", clearDataHandler);
+server.post("/api/reset", clearDataHandler);
 
 server.post("/api/current-job", async (request) => {
   const body = z.object({ jobId: z.string().min(1) }).parse(request.body);
@@ -377,7 +468,7 @@ server.delete("/api/voice-analyses/:id", async (request) => {
 server.post("/api/job-copilot", async (request) => {
   const body = jobCopilotSchema.parse(request.body);
   if (!deepseekApiKey) {
-    throw server.httpErrors.badRequest("未配置 DEEPSEEK_API_KEY，请先在 apps/server/.env.local 中配置。");
+    throw server.httpErrors.badRequest("未配置 DEEPSEEK_API_KEY，请先在 apps/server/.env 或 apps/server/.env.local 中配置。");
   }
 
   const result = await generateJobCopilot(body);
@@ -426,9 +517,11 @@ async function buildCandidatesFromResumeInput(
         source: `${source} · ${file.name}`,
         resumeText,
         fileName: file.name,
-        fileType: file.type || "未知格式",
+        fileType: file.type || file.content_type || "未知格式",
         fileSize: file.size || 0,
-        fileDataBase64: file.dataBase64 || null,
+        fileDataBase64: file.object_key ? null : file.dataBase64 || null,
+        fileObjectKey: file.object_key || null,
+        fileUrl: file.url || null,
       });
       built.push(await enrichCandidateAssessmentWithDeepSeek(candidate, job));
     }
@@ -483,8 +576,9 @@ function shouldUseDeepSeekResumeCleanup(
 async function extractResumeTextSafely(file: z.infer<typeof resumeSchema>["files"][number]) {
   const fallbackText = buildResumeDraftText(file.text || "", "");
   try {
+    const resolvedFile = await resolveResumeFileForExtraction(file);
     return await withTimeout(
-      extractResumeTextFromFile(file),
+      extractResumeTextFromFile(resolvedFile),
       resumeExtractTimeoutMs,
       `提取文件 ${file.name} 内容超时`,
     );
@@ -501,16 +595,52 @@ async function extractResumeTextSafely(file: z.infer<typeof resumeSchema>["files
   }
 }
 
+async function resolveResumeFileForExtraction(file: z.infer<typeof resumeSchema>["files"][number]) {
+  const contentType = file.type || file.content_type || null;
+  if (file.dataBase64 || !file.object_key) {
+    return {
+      name: file.name,
+      type: contentType,
+      size: file.size,
+      text: file.text,
+      dataBase64: file.dataBase64,
+    };
+  }
+
+  const buffer = await fileService.readFileBuffer(file.object_key);
+  return {
+    name: file.name,
+    type: contentType,
+    size: file.size,
+    text: file.text,
+    dataBase64: buffer.toString("base64"),
+  };
+}
+
 function inferCandidateName(fileName: string) {
-  return (
-    fileName
-      .replace(/简历|个人|求职|resume|cv/gi, "")
-      .replace(/[\-_（）()\[\]【】]+/g, " ")
-      .trim()
-      .split(/\s+/)[0] ||
-    fileName ||
-    "未命名候选人"
-  );
+  const cleaned = fileName
+    .replace(/简历|个人简历|个人|求职|resume|cv|附件/gi, "")
+    .replace(/[（(].*?[）)]/g, " ")
+    .trim();
+  const parts = cleaned
+    .split(/[\s_\-—–+·、，,（）()\[\]【】]+/)
+    .map(normalizeCandidateName)
+    .filter(Boolean);
+  const nameLikeParts = parts.filter(isLikelyChineseName);
+  return nameLikeParts.at(-1) || parts.at(-1) || cleaned || fileName || "未命名候选人";
+}
+
+function normalizeCandidateName(value: string) {
+  return value
+    .replace(/[^\u4e00-\u9fa5A-Za-z·.\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isLikelyChineseName(value: string) {
+  if (!/^[\u4e00-\u9fa5·]{2,6}$/.test(value)) return false;
+  if (/前端|后端|开发|工程师|产品|运营|设计|测试|算法|数据|长沙|北京|上海|广州|深圳|杭州|成都|武汉|南京|简历|求职|候选人/.test(value)) return false;
+  return true;
 }
 
 function formatDateStamp(date = new Date()) {
@@ -1667,37 +1797,31 @@ function clampScoreValue(score: number) {
 async function transcribeVoiceChunk(audioBase64: string, mimeType: string, fileName = "voice-chunk.webm") {
   const inputBuffer = Buffer.from(audioBase64, "base64");
   const wavBuffer = await convertAudioToWavBuffer(inputBuffer, mimeType, fileName);
-
-  if (voiceTranscribeBackend === "js" || voiceTranscribeBackend === "auto") {
-    const transcriber = await getWhisperTranscriber();
-    if (transcriber) {
-      try {
-        const audio = decodeWavBufferTo16kMono(wavBuffer);
-        const result = await transcriber(audio, {
-          chunk_length_s: whisperChunkLength,
-          stride_length_s: whisperStrideLength,
-          language: whisperTargetLanguage,
-          task: "transcribe",
-          return_timestamps: false,
-        }) as { text?: string };
-        const transcript = (result.text || "").replace(/\s+/g, " ").trim();
-        if (transcript) return transcript;
-      } catch (error) {
-        requestLog("voice_transcribe_error", {
-          message: error instanceof Error ? error.message : String(error),
-          mimeType,
-          fileName,
-        });
-      }
+  const transcriber = await getWhisperTranscriber();
+  if (transcriber) {
+    try {
+      const audio = decodeWavBufferTo16kMono(wavBuffer);
+      const result = await transcriber(audio, {
+        chunk_length_s: whisperChunkLength,
+        stride_length_s: whisperStrideLength,
+        language: whisperTargetLanguage,
+        task: "transcribe",
+        return_timestamps: false,
+      }) as { text?: string };
+      const transcript = (result.text || "").replace(/\s+/g, " ").trim();
+      if (transcript) return transcript;
+    } catch (error) {
+      requestLog("voice_transcribe_error", {
+        message: error instanceof Error ? error.message : String(error),
+        mimeType,
+        fileName,
+        model: whisperModelId,
+        modelDir: whisperModelDir,
+      });
     }
   }
 
-  if (voiceTranscribeBackend === "python" || voiceTranscribeBackend === "auto") {
-    const pythonTranscript = await transcribeVoiceChunkWithPython(wavBuffer);
-    if (pythonTranscript !== null) return pythonTranscript;
-  }
-
-  throw server.httpErrors.serviceUnavailable("本地语音转写模型暂时不可用，请确认 Python 转写环境已安装后重试。");
+  throw server.httpErrors.serviceUnavailable(`本地语音转写模型暂时不可用，请先执行 ${whisperModelDownloadCommand} 下载模型后重试。`);
 }
 
 async function normalizeVoiceTranscript(transcript: string) {
@@ -1754,11 +1878,14 @@ async function getWhisperTranscriber() {
   if (!whisperPipelinePromise) {
     whisperPipelinePromise = transformers.pipeline("automatic-speech-recognition", whisperModelId, {
       dtype: "q8",
+      cache_dir: whisperModelDir,
+      local_files_only: true,
     }).then((instance) => instance as unknown as WhisperTranscriber).catch((error) => {
       whisperPipelinePromise = null;
       requestLog("whisper_pipeline_init_error", {
         message: error instanceof Error ? error.message : String(error),
         model: whisperModelId,
+        modelDir: whisperModelDir,
       });
       return null;
     });
@@ -1769,8 +1896,12 @@ async function getWhisperTranscriber() {
 async function getTransformersModule() {
   if (!transformersModulePromise) {
     transformersModulePromise = import("@huggingface/transformers").then((module) => {
-      module.env.allowLocalModels = false;
+      module.env.allowLocalModels = true;
+      module.env.allowRemoteModels = false;
+      module.env.localModelPath = whisperModelDir;
+      module.env.cacheDir = whisperModelDir;
       module.env.useBrowserCache = false;
+      module.env.useFSCache = true;
       return module;
     }).catch((error) => {
       transformersModulePromise = null;
@@ -1789,75 +1920,6 @@ function decodeWavBufferTo16kMono(wavBuffer: Buffer) {
   wav.toSampleRate(16000);
   const samples = wav.getSamples(true, Float32Array) as Float32Array | Float64Array;
   return samples instanceof Float32Array ? samples : Float32Array.from(samples);
-}
-
-async function transcribeVoiceChunkWithPython(wavBuffer: Buffer) {
-  const pythonBinary = resolvePythonBinary();
-  const scriptPath = resolve(process.cwd(), "src/transcribe_audio.py");
-  if (!pythonBinary || !existsSync(scriptPath)) {
-    requestLog("python_voice_transcribe_unavailable", {
-      pythonBinary: pythonBinary || "",
-      scriptPath,
-    });
-    return null;
-  }
-
-  const tempBase = resolve(process.cwd(), `.voice-py-${Date.now()}-${nanoid(6)}`);
-  const inputPath = `${tempBase}.wav`;
-  const outputPath = `${tempBase}.json`;
-  const { writeFile, unlink } = await import("node:fs/promises");
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
-  const execFileAsync = promisify(execFile);
-
-  await writeFile(inputPath, wavBuffer);
-  try {
-    const result = await withTimeout(
-      execFileAsync(pythonBinary, [scriptPath, inputPath, outputPath], {
-        cwd: process.cwd(),
-        env: {
-          ...process.env,
-          HF_ENDPOINT: huggingFaceEndpoint,
-        },
-        maxBuffer: 8 * 1024 * 1024,
-      }),
-      120000,
-      "Python 语音转写超时",
-    );
-    const parsed = safeJsonParse(result.stdout || "{}");
-    const schema = z.object({
-      transcript: z.string().default(""),
-    });
-    return schema.parse(parsed).transcript.trim();
-  } catch (error) {
-    requestLog("python_voice_transcribe_error", {
-      message: error instanceof Error ? error.message : String(error),
-      pythonBinary,
-      scriptPath,
-      huggingFaceEndpoint,
-    });
-    return null;
-  } finally {
-    await Promise.all([
-      unlink(inputPath).catch(() => undefined),
-      unlink(outputPath).catch(() => undefined),
-    ]);
-  }
-}
-
-function resolvePythonBinary() {
-  const candidates = [
-    process.env.XIAOSONGSHU_PYTHON_BIN,
-    resolve(process.cwd(), ".venv/bin/python"),
-    resolve(process.cwd(), ".venv/bin/python3"),
-  ].filter(Boolean) as string[];
-
-  for (const candidate of candidates) {
-    if (candidate.includes("/") ? existsSync(candidate) : true) {
-      return candidate;
-    }
-  }
-  return null;
 }
 
 async function convertAudioToWavBuffer(inputBuffer: Buffer, mimeType: string, fileName: string) {
@@ -2111,19 +2173,25 @@ function safeJsonParse(content: string) {
   return JSON.parse(normalized);
 }
 
-function loadLocalEnv() {
-  const envPath = resolve(process.cwd(), ".env.local");
-  if (!existsSync(envPath)) return;
-  const lines = readFileSync(envPath, "utf-8").split(/\r?\n/);
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const index = trimmed.indexOf("=");
-    if (index <= 0) continue;
-    const key = trimmed.slice(0, index).trim();
-    const value = trimmed.slice(index + 1).trim().replace(/^['"]|['"]$/g, "");
-    if (!(key in process.env)) process.env[key] = value;
-  }
+function getRequestPublicBaseUrl(request: FastifyRequest) {
+  const forwardedProto = request.headers["x-forwarded-proto"];
+  const forwardedHost = request.headers["x-forwarded-host"];
+  const protocol = Array.isArray(forwardedProto)
+    ? forwardedProto[0]
+    : forwardedProto || request.protocol;
+  const host = Array.isArray(forwardedHost)
+    ? forwardedHost[0]
+    : forwardedHost || request.headers.host;
+
+  if (!host) return undefined;
+  return `${protocol}://${host}`;
+}
+
+function getMultipartFieldValue(fields: unknown, key: string) {
+  const field = (fields as Record<string, unknown> | undefined)?.[key];
+  if (!field || Array.isArray(field)) return undefined;
+  const typedField = field as { type?: string; value?: unknown };
+  return typedField.type === "field" ? String(typedField.value ?? "") : undefined;
 }
 
 function requestLog(event: string, payload: Record<string, unknown>) {
@@ -2278,8 +2346,143 @@ type TransformersModule = typeof import("@huggingface/transformers");
 let transformersModulePromise: Promise<TransformersModule | null> | null = null;
 let whisperPipelinePromise: Promise<WhisperTranscriber | null> | null = null;
 
+interface SalaryRangeSample {
+  low: number;
+  high: number;
+  label: string;
+}
+
+interface SalarySearchSample {
+  platform: string;
+  domain: string;
+  title: string;
+  link: string;
+  snippet: string;
+  publishWindow: string;
+  salaryRange: SalaryRangeSample | null;
+}
+
+interface SalarySearchEvidence {
+  queryBase: string;
+  samples: SalarySearchSample[];
+  distinctPlatforms: string[];
+}
+
 async function generateSalaryData(job: Job, filters: SalaryFilters): Promise<SalaryData> {
-  return generateLocalSalaryData(job, filters);
+  const searchEvidence = await collectSalarySearchEvidence(job, filters);
+  return buildSalaryDataFromBossZhilianEvidence(job, filters, searchEvidence);
+}
+
+function buildSalaryDataFromBossZhilianEvidence(
+  job: Job,
+  filters: SalaryFilters,
+  searchEvidence: SalarySearchEvidence,
+): SalaryData {
+  const validSamples = getValidSalarySamples(searchEvidence);
+  const validPlatforms = Array.from(new Set(validSamples.map((item) => item.platform)));
+
+  if (validPlatforms.length < salaryResearchPlatforms.length || validSamples.length < 2) {
+    return buildInsufficientSalaryData(
+      job,
+      filters,
+      "BOSS直聘和智联招聘至少各需要 1 条可解析薪资样本，当前公开搜索样本不足，无法生成综合报告。",
+      searchEvidence,
+    );
+  }
+
+  const midpointValues = validSamples.map((item) => (item.salaryRange.low + item.salaryRange.high) / 2).sort((a, b) => a - b);
+  const lowValues = validSamples.map((item) => item.salaryRange.low).sort((a, b) => a - b);
+  const highValues = validSamples.map((item) => item.salaryRange.high).sort((a, b) => a - b);
+  const keywordPremium = getKeywordPremium(job.keywords, job.description);
+  const p25 = sanitizeKNumber(quantile(midpointValues, 0.25));
+  const p50 = sanitizeKNumber(quantile(midpointValues, 0.5));
+  const p75 = sanitizeKNumber(quantile(midpointValues, 0.75));
+  const anchor = sanitizeKNumber(p50 * (1 + keywordPremium.anchorBoost));
+  const suggestedLow = sanitizeKNumber(Math.max(quantile(lowValues, 0.35), anchor * 0.9));
+  const suggestedHigh = sanitizeKNumber(Math.max(suggestedLow, Math.min(Math.max(quantile(highValues, 0.65), anchor * 1.08), anchor * 1.22)));
+  const sampleCounts = countSamplesByPlatform(validSamples);
+  const confidence = validSamples.length >= 8 ? "中" : "低";
+  const confidenceReason = validSamples.length >= 8
+    ? "BOSS直聘和智联招聘均检索到可解析薪资样本，样本量达到基础参考要求；但当前仍基于公开搜索标题/摘要解析，未登录平台读取详情页，因此置信度保持为中。"
+    : "BOSS直聘和智联招聘均有可解析薪资样本，但样本量偏少，适合作为招聘沟通参考，不建议作为最终定薪依据。";
+  const metricSourceSummary = buildSalaryMetricSourceSummary(validSamples, sampleCounts);
+
+  return {
+    status: "ready",
+    filters,
+    benchmarkRegion: filters.region,
+    jobFamily: inferJobFamily(job),
+    p25,
+    p50,
+    p75,
+    suggestedLow,
+    suggestedHigh,
+    anchor,
+    experienceBands: buildExperienceBandsFromBenchmark(p50, filters),
+    regionComparison: buildRegionComparisonFromBenchmark(p50, filters),
+    educationComparison: buildEducationComparisonFromBenchmark(p50, filters),
+    industryComparison: buildIndustryComparisonFromBenchmark(p50, filters),
+    updatedAt: new Date().toLocaleDateString("zh-CN"),
+    insights: [
+      { title: "双平台综合", text: `当前综合 ${formatSampleCounts(sampleCounts)} 的可解析薪资样本，市场中位值约为 ${p50}k。` },
+      { title: "建议锚点", text: `${filters.region}${filters.role} 建议以 ${anchor}k 作为沟通锚点，常规报价可控制在 ${suggestedLow}-${suggestedHigh}k。` },
+      { title: "预算风险", text: `若预算低于 ${p25}k，在当前 ${filters.experience}、${filters.industry} 条件下，候选人转化可能承压。` },
+    ],
+    advice: {
+      summary: `${filters.role} 在 ${filters.region}、${filters.experience}、${filters.industry}、${filters.education} 条件下，综合 BOSS直聘与智联招聘公开样本后，市场中位值约 ${p50}k，建议报价区间为 ${suggestedLow}-${suggestedHigh}k。`,
+      reasons: [
+        `样本来源：${formatSampleCounts(sampleCounts)}，仅保留能从标题或摘要中解析出月薪区间的公开搜索结果。`,
+        `P25/P50/P75 分别来自样本薪资中点的分位统计，避免单个高薪或低薪样本过度影响结论。`,
+        `建议区间结合样本低位/高位分布与岗位关键词溢价进行校准。`,
+      ],
+      keywordPremiums: keywordPremium.reasons.length
+        ? keywordPremium.reasons
+        : ["当前岗位暂无明显额外关键词溢价，建议按 BOSS直聘与智联招聘综合样本区间沟通。"],
+    },
+    research: {
+      dataWindow: "BOSS直聘/智联招聘公开搜索结果",
+      confidence,
+      confidenceReason,
+      limitations: [
+        "当前通过公开搜索索引返回的标题和摘要解析薪资，不登录平台、不抓取需要登录或反爬保护的详情页。",
+        "招聘网站薪资口径可能包含 13 薪/14 薪、底薪+绩效、年薪等差异；当前统一折算为税前月薪 k。",
+        "公开搜索结果可能受搜索引擎索引更新时间影响，不能完全代表平台实时全量岗位。",
+      ],
+      triangulation: {
+        requiredSources: 2,
+        actualSources: validPlatforms.length,
+        passed: validPlatforms.length >= salaryResearchPlatforms.length,
+        summary: `已综合 ${validPlatforms.join("、")} 两个平台的可解析薪资样本。`,
+      },
+      metricSources: {
+        p25: `P25(${p25}K)：${metricSourceSummary}`,
+        p50: `P50(${p50}K)：${metricSourceSummary}`,
+        p75: `P75(${p75}K)：${metricSourceSummary}`,
+      },
+      methodology: [
+        "分别检索 BOSS直聘和智联招聘公开搜索结果。",
+        "从标题与摘要中解析月薪区间，剔除无法稳定识别薪资的结果。",
+        "以薪资区间中点计算 P25/P50/P75，并结合岗位关键词溢价生成建议报价区间。",
+      ],
+      coreSources: validPlatforms,
+      validationSources: validPlatforms,
+      sampleNotes: [
+        formatSampleCounts(sampleCounts),
+        `检索词：${searchEvidence.queryBase}`,
+        "未从公开摘要中解析出薪资的结果仅作为样本不足说明，不参与分位数计算。",
+      ],
+      evidence: validSamples.slice(0, 10).map((item) => ({
+        source: item.platform,
+        role: item.title,
+        region: filters.region,
+        experience: filters.experience,
+        salaryRange: item.salaryRange.label,
+        publishWindow: item.publishWindow || "公开搜索结果",
+        note: `${item.snippet}（${item.link}）`,
+      })),
+      disclaimer: "当前薪酬调研基于 BOSS直聘与智联招聘公开搜索标题/摘要解析结果，适合招聘预算参考；正式定薪前建议结合平台后台、HRBP 经验和实际候选人反馈复核。",
+    },
+  };
 }
 
 function generateLocalSalaryData(job: Job, filters: SalaryFilters): SalaryData {
@@ -2424,8 +2627,8 @@ async function generateSalaryDataWithDeepSeek(
           role: "system",
           content: [
             "你是一位中国招聘薪酬调研顾问，擅长聚合主流招聘网站和公开薪酬报告，给出谨慎、可解释、有依据的市场薪酬建议。",
-            "你必须扮演数据聚合器：你的任务是汇总和分析 BOSS直聘、猎聘、前程无忧、智联招聘等网站上的公开信息，而不是创作数据。",
-            "必须执行三角验证：不能只听信单一来源，请至少参考三个不同招聘网站的数据，交叉验证后再给出最终区间。",
+            "你必须扮演数据聚合器：你的任务是汇总和分析 BOSS直聘、智联招聘两个网站上的公开信息，而不是创作数据。",
+            "必须执行双平台交叉验证：不能只听信单一来源，请同时参考 BOSS直聘和智联招聘的数据，交叉验证后再给出最终区间。",
             "严禁编造数据：所有输出数值都必须有明确来源依据或推理逻辑；如果证据不足，必须明确说明不确定性，并给出合理估算依据，而不是伪造精确数据。",
             "请严格输出 JSON 对象，不要输出 markdown 代码块，不要输出额外解释。",
             "如果无法百分百确认，请给出保守、合理、可落地的估计，并明确降低置信度，不允许编造夸张或离谱的数字。",
@@ -2501,7 +2704,7 @@ async function generateSalaryDataWithDeepSeek(
       confidenceReason: z.string().min(1),
       limitations: z.array(z.string()).min(1).max(8),
       triangulation: z.object({
-        requiredSources: z.number().int().min(3).max(10),
+        requiredSources: z.number().int().min(2).max(10),
         actualSources: z.number().int().min(0).max(20),
         passed: z.boolean(),
         summary: z.string().min(1),
@@ -2530,8 +2733,8 @@ async function generateSalaryDataWithDeepSeek(
 
   const result = schema.parse(parsed);
   const normalizedActualSources = Math.max(result.research.triangulation.actualSources, result.research.coreSources.length);
-  const passedTriangulation = normalizedActualSources >= Math.max(3, result.research.triangulation.requiredSources);
-  if (normalizedActualSources < 3 || !passedTriangulation) {
+  const passedTriangulation = normalizedActualSources >= Math.max(2, result.research.triangulation.requiredSources);
+  if (normalizedActualSources < 2 || !passedTriangulation) {
     return buildInsufficientSalaryData(job, filters, "当前公开数据不足，无法生成高置信度报告", searchEvidence);
   }
   return {
@@ -2668,15 +2871,15 @@ function buildSalaryResearchPrompt(
   return [
     "请基于以下岗位信息，生成一份用于招聘实际工作的中国市场薪酬调研结果。",
     "核心要求：",
-    "0. 你必须主动使用我提供的搜索样本，对 BOSS直聘 / 智联 / 猎聘 / 前程无忧 等公开招聘网站结果做整理分析，而不是凭空创作数据。",
-    "1. 优先并主要参考国内主流招聘网站（如 BOSS直聘、猎聘、前程无忧、智联招聘等）近3-6个月内相似岗位的招聘信息。",
+    "0. 你必须主动使用我提供的搜索样本，对 BOSS直聘 / 智联招聘 两个平台公开招聘网站结果做整理分析，而不是凭空创作数据。",
+    "1. 优先并主要参考 BOSS直聘和智联招聘近3-6个月内相似岗位的招聘信息。",
     "2. 可结合公开薪酬报告、人力资源咨询公司报告（如美世、太和顾问等）做交叉验证。",
     "3. 你必须扮演“数据聚合器”，只允许汇总公开信息和推理，不允许创作或编造数据。",
-    "4. 必须执行三角验证：至少参考三个不同招聘网站的数据，通过交叉验证后给出最终区间；只有数值落在交叉重叠区间内，才可以作为依据；若做不到，必须直接返回公开数据不足。",
+    "4. 必须执行双平台交叉验证：至少同时参考 BOSS直聘和智联招聘的数据，通过交叉验证后给出最终区间；只有数值落在交叉重叠区间内，才可以作为依据；若做不到，必须直接返回公开数据不足。",
     "5. 严禁编造数据：所有数值都必须有明确来源依据或推理逻辑，尤其是 P25 / P50 / P75。",
     "6. 输出必须严格为 JSON 对象，不要 markdown，不要解释。",
     "7. 所有金额单位统一为税前月薪整数 k（例如 25 表示 25k/月）。",
-    "8. 如果搜不到足够的有效数据（少于3个独立来源），请直接输出“当前公开数据不足，无法生成高置信度报告”，绝对禁止使用本地模型或内部系数进行填补。",
+    "8. 如果搜不到足够的有效数据（BOSS直聘或智联招聘任一平台缺少有效样本），请直接输出“当前公开数据不足，无法生成高置信度报告”，绝对禁止使用本地模型或内部系数进行填补。",
     "9. 如果最终报告再次出现“来源：本地估算模型”或类似含义，则视为失败。",
     "10. 若信息存在不确定性，请降低 confidence，并在 confidenceReason / limitations / sampleNotes / disclaimer 中说明。",
     "",
@@ -2699,7 +2902,7 @@ function buildSalaryResearchPrompt(
     `岗位关键词：${job.keywords}`,
     `岗位描述：${job.description}`,
     "",
-    "搜索样本（先以这些公开搜索结果为基础，再做归纳；如果这些样本仍不足 3 个独立来源，则必须失败返回）：",
+    "搜索样本（先以这些公开搜索结果为基础，再做归纳；如果这些样本无法同时覆盖 BOSS直聘和智联招聘，则必须失败返回）：",
     ...searchEvidence.samples.map((sample, index) => `${index + 1}. [${sample.platform}] ${sample.title} | ${sample.link} | ${sample.snippet} | ${sample.publishWindow}`),
     "",
     "输出规则补充：",
@@ -2708,55 +2911,62 @@ function buildSalaryResearchPrompt(
     "3. educationComparison 请至少包含：大专、本科、硕士。",
     `4. industryComparison 必须包含当前行业 ${filters.industry}，并补充至少 3 个相近行业。`,
     "5. evidence 中请列出 4-8 条具有代表性的样本归纳，每条要写清来源平台、岗位、地区、经验、薪资区间、时间窗口和备注。",
-    "6. metricSources.p25 / metricSources.p50 / metricSources.p75 必须分别写明来源标注格式，例如：P50(37K)：综合参考 BOSS 直聘 20 个相关岗位（月薪30-45K）和猎聘 15 个相关岗位（月薪32-48K）的区间，交叉验证后取中位参考值。",
-    "7. research.triangulation 必须反映是否真的满足至少三个不同招聘网站交叉验证；未满足时 passed 必须为 false。",
+    "6. metricSources.p25 / metricSources.p50 / metricSources.p75 必须分别写明来源标注格式，例如：P50(37K)：综合参考 BOSS直聘 20 个相关岗位（月薪30-45K）和智联招聘 15 个相关岗位（月薪32-48K）的区间，交叉验证后取中位参考值。",
+    "7. research.triangulation 必须反映是否真的满足 BOSS直聘和智联招聘双平台交叉验证；未满足时 passed 必须为 false。",
     "8. advice.summary 要能直接给招聘者看；reasons 要解释为什么建议这个区间；keywordPremiums 要解释 JD 中哪些要求带来了溢价。",
     "9. limitations 必须如实写明数据不足、行业口径差异、城市样本不足、发布时间差异等局限性。",
   ].join("\n");
 }
 
-async function collectSalarySearchEvidence(job: Job, filters: SalaryFilters) {
-  const platforms = [
-    { name: "BOSS直聘", domain: "zhipin.com" },
-    { name: "猎聘", domain: "liepin.com" },
-    { name: "智联招聘", domain: "zhaopin.com" },
-    { name: "前程无忧", domain: "51job.com" },
-  ];
+const salaryResearchPlatforms = [
+  { name: "BOSS直聘", domain: "zhipin.com" },
+  { name: "智联招聘", domain: "zhaopin.com" },
+] as const;
+
+async function collectSalarySearchEvidence(job: Job, filters: SalaryFilters): Promise<SalarySearchEvidence> {
+  const platforms = salaryResearchPlatforms;
   const queryBase = `${filters.region} ${filters.role} ${filters.industry} ${filters.experience} ${filters.education} 招聘 薪资`;
-  const samples: Array<{ platform: string; domain: string; title: string; link: string; snippet: string; publishWindow: string }> = [];
+  const samples: SalarySearchSample[] = [];
+  const seen = new Set<string>();
+  const queryVariants = [
+    queryBase,
+    `${filters.region} ${filters.role} ${filters.experience} 薪资`,
+    `${filters.region} ${job.title} ${filters.industry} 招聘`,
+  ];
 
   await Promise.all(platforms.map(async (platform) => {
-    const rssUrl = `https://cn.bing.com/search?format=rss&q=${encodeURIComponent(`site:${platform.domain} ${queryBase}`)}`;
-    try {
-      const response = await fetch(rssUrl, {
-        headers: {
-          "User-Agent": "Mozilla/5.0",
-        },
-      });
-      const xml = await response.text();
-      const matches = Array.from(xml.matchAll(/<item><title>(.*?)<\/title><link>(.*?)<\/link><description>(.*?)<\/description><pubDate>(.*?)<\/pubDate><\/item>/g));
-      const platformItems = matches
-        .map((item) => ({
-          title: decodeHtml(item[1]),
-          link: decodeHtml(item[2]),
-          snippet: decodeHtml(item[3]).replace(/<[^>]+>/g, "").trim(),
-          publishWindow: decodeHtml(item[4]),
-        }))
-        .filter((item) => item.link.includes(platform.domain))
-        .slice(0, 4);
-      platformItems.forEach((item) => {
-        samples.push({
+    for (const query of queryVariants) {
+      if (samples.filter((item) => item.platform === platform.name).length >= 8) break;
+      const rssUrl = `https://cn.bing.com/search?format=rss&q=${encodeURIComponent(`site:${platform.domain} ${query}`)}`;
+      try {
+        const response = await withTimeout(fetch(rssUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0",
+          },
+        }), salarySearchTimeoutMs, "薪酬公开样本检索超时");
+        const xml = await response.text();
+        const platformItems = parseBingRssItems(xml)
+          .filter((item) => item.link.includes(platform.domain))
+          .slice(0, 6);
+        platformItems.forEach((item) => {
+          const identity = `${platform.name}:${item.link || item.title}`;
+          if (seen.has(identity)) return;
+          seen.add(identity);
+          const text = `${item.title} ${item.snippet}`;
+          samples.push({
+            platform: platform.name,
+            domain: platform.domain,
+            ...item,
+            salaryRange: extractSalaryRangeFromText(text),
+          });
+        });
+      } catch (error) {
+        requestLog("salary_search_collect_error", {
           platform: platform.name,
           domain: platform.domain,
-          ...item,
+          message: error instanceof Error ? error.message : String(error),
         });
-      });
-    } catch (error) {
-      requestLog("salary_search_collect_error", {
-        platform: platform.name,
-        domain: platform.domain,
-        message: error instanceof Error ? error.message : String(error),
-      });
+      }
     }
   }));
 
@@ -2768,11 +2978,169 @@ async function collectSalarySearchEvidence(job: Job, filters: SalaryFilters) {
   };
 }
 
+function parseBingRssItems(xml: string) {
+  return Array.from(xml.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/g))
+    .map((match) => {
+      const itemXml = match[1];
+      return {
+        title: decodeHtml(extractRssTag(itemXml, "title")),
+        link: decodeHtml(extractRssTag(itemXml, "link")),
+        snippet: decodeHtml(extractRssTag(itemXml, "description")).replace(/<[^>]+>/g, "").trim(),
+        publishWindow: decodeHtml(extractRssTag(itemXml, "pubDate")),
+      };
+    })
+    .filter((item) => item.title && item.link);
+}
+
+function extractRssTag(xml: string, tag: string) {
+  const match = xml.match(new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i"));
+  return stripCdata(match?.[1] || "");
+}
+
+function stripCdata(text: string) {
+  return text.replace(/^<!\[CDATA\[/, "").replace(/\]\]>$/, "");
+}
+
+function extractSalaryRangeFromText(text: string): SalaryRangeSample | null {
+  const normalized = text
+    .replace(/&nbsp;/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(/－|—|–|~|～/g, "-");
+  const annualMatch = normalized.match(/年薪\s*(\d+(?:\.\d+)?)\s*(万)?\s*[-至到]\s*(\d+(?:\.\d+)?)\s*万/i);
+  if (annualMatch) {
+    const low = Number(annualMatch[1]) * 10 / 12;
+    const high = Number(annualMatch[3]) * 10 / 12;
+    return normalizeSalaryRange(low, high, `${annualMatch[1]}-${annualMatch[3]}万/年`);
+  }
+
+  const rangePattern = /(\d+(?:\.\d+)?)\s*([kK千万元]?)\s*[-至到]\s*(\d+(?:\.\d+)?)\s*([kK千万元])(?:\/?月|每月|月)?(?:\s*[·x×*]\s*\d{1,2}\s*薪)?/g;
+  for (const match of normalized.matchAll(rangePattern)) {
+    const firstUnit = match[2] || match[4];
+    const secondUnit = match[4];
+    const low = convertSalaryUnit(Number(match[1]), firstUnit);
+    const high = convertSalaryUnit(Number(match[3]), secondUnit);
+    const range = normalizeSalaryRange(low, high, match[0].trim());
+    if (range) return range;
+  }
+
+  return null;
+}
+
+function convertSalaryUnit(value: number, unit: string) {
+  if (!Number.isFinite(value)) return 0;
+  if (unit === "万") return value * 10;
+  if (unit === "元") return value >= 1000 ? value / 1000 : 0;
+  return value;
+}
+
+function normalizeSalaryRange(low: number, high: number, label: string): SalaryRangeSample | null {
+  let normalizedLow = Math.min(low, high);
+  let normalizedHigh = Math.max(low, high);
+  if (!Number.isFinite(normalizedLow) || !Number.isFinite(normalizedHigh)) return null;
+  if (normalizedLow <= 0 || normalizedHigh <= 0) return null;
+  if (normalizedHigh > 200) return null;
+  if (normalizedHigh < 3) return null;
+  normalizedLow = Math.max(1, Math.round(normalizedLow * 10) / 10);
+  normalizedHigh = Math.max(normalizedLow, Math.round(normalizedHigh * 10) / 10);
+  return {
+    low: normalizedLow,
+    high: normalizedHigh,
+    label,
+  };
+}
+
+function getValidSalarySamples(searchEvidence: SalarySearchEvidence) {
+  return searchEvidence.samples.filter((item): item is SalarySearchSample & { salaryRange: SalaryRangeSample } => Boolean(item.salaryRange));
+}
+
+function quantile(values: number[], percentile: number) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const index = (sorted.length - 1) * percentile;
+  const lower = Math.floor(index);
+  const upper = Math.ceil(index);
+  if (lower === upper) return sorted[lower];
+  return sorted[lower] + (sorted[upper] - sorted[lower]) * (index - lower);
+}
+
+function countSamplesByPlatform(samples: Array<SalarySearchSample & { salaryRange: SalaryRangeSample }>) {
+  return samples.reduce<Record<string, number>>((acc, sample) => {
+    acc[sample.platform] = (acc[sample.platform] || 0) + 1;
+    return acc;
+  }, {});
+}
+
+function formatSampleCounts(counts: Record<string, number>) {
+  return salaryResearchPlatforms
+    .map((platform) => `${platform.name} ${counts[platform.name] || 0} 条`)
+    .join("、");
+}
+
+function buildSalaryMetricSourceSummary(samples: Array<SalarySearchSample & { salaryRange: SalaryRangeSample }>, counts: Record<string, number>) {
+  const ranges = samples
+    .slice(0, 6)
+    .map((item) => `${item.platform} ${item.salaryRange.label}`)
+    .join("；");
+  return `综合 ${formatSampleCounts(counts)} 可解析样本的薪资中点分布计算；代表区间：${ranges}`;
+}
+
+function buildExperienceBandsFromBenchmark(p50: number, filters: SalaryFilters) {
+  const currentMultiplier = experienceMultipliers[filters.experience] || 1;
+  return Object.entries(experienceMultipliers).map(([label, multiplier]) => {
+    const mid = Math.round(p50 * multiplier / currentMultiplier);
+    return {
+      label,
+      p25: Math.round(mid * 0.84),
+      p50: mid,
+      p75: Math.round(mid * 1.22),
+    };
+  });
+}
+
+function buildRegionComparisonFromBenchmark(p50: number, filters: SalaryFilters) {
+  const currentMultiplier = regionMultipliers[filters.region] || 1;
+  const entries = uniqueMetricEntries([[filters.region, currentMultiplier], ...Object.entries(regionMultipliers)]);
+  return entries.map(([city, multiplier]) => {
+    const mid = Math.round(p50 * multiplier / currentMultiplier);
+    return {
+      city,
+      p25: Math.round(mid * 0.84),
+      p50: mid,
+      p75: Math.round(mid * 1.22),
+    };
+  });
+}
+
+function buildEducationComparisonFromBenchmark(p50: number, filters: SalaryFilters) {
+  const currentMultiplier = educationMultipliers[filters.education] || 1;
+  return uniqueMetricEntries([[filters.education, currentMultiplier], ...Object.entries(educationMultipliers)]).map(([label, multiplier]) => ({
+    label,
+    value: Math.round(p50 * multiplier / currentMultiplier),
+  }));
+}
+
+function buildIndustryComparisonFromBenchmark(p50: number, filters: SalaryFilters) {
+  const currentMultiplier = industryMultipliers[filters.industry] || 1;
+  return uniqueMetricEntries([[filters.industry, currentMultiplier], ...Object.entries(industryMultipliers)]).map(([name, multiplier]) => ({
+    name,
+    value: Math.round(p50 * multiplier / currentMultiplier),
+  }));
+}
+
+function uniqueMetricEntries(entries: Array<[string, number]>) {
+  const seen = new Set<string>();
+  return entries.filter(([name]) => {
+    if (!name || seen.has(name)) return false;
+    seen.add(name);
+    return true;
+  });
+}
+
 function buildInsufficientSalaryData(
   job: Job,
   filters: SalaryFilters,
   message: string,
-  searchEvidence?: Awaited<ReturnType<typeof collectSalarySearchEvidence>>,
+  searchEvidence?: SalarySearchEvidence,
 ): SalaryData {
   return {
     status: "insufficient_data",
@@ -2796,19 +3164,19 @@ function buildInsufficientSalaryData(
     ],
     advice: {
       summary: message,
-      reasons: ["当前未满足至少 3 个独立招聘平台的公开样本要求。"],
+      reasons: ["当前未满足 BOSS直聘和智联招聘两个平台均有可解析薪资样本的要求。"],
       keywordPremiums: [],
     },
     research: {
-      dataWindow: "近3个月公开搜索",
+      dataWindow: "BOSS直聘/智联招聘公开搜索结果",
       confidence: "低",
-      confidenceReason: "当前公开招聘网站检索结果不足，无法完成三角验证。",
+      confidenceReason: "当前 BOSS直聘或智联招聘的公开搜索结果不足，无法完成双平台交叉验证。",
       limitations: [
-        "少于 3 个独立来源时，不允许生成高置信度薪酬区间。",
-        "当前实现不会用非公开样本去填补公开样本空缺。",
+        "当前要求 BOSS直聘与智联招聘均存在可解析薪资样本。",
+        "当前实现只使用公开搜索标题/摘要，不登录平台、不抓取需要权限的详情页。",
       ],
       triangulation: {
-        requiredSources: 3,
+        requiredSources: 2,
         actualSources: searchEvidence?.distinctPlatforms.length ?? 0,
         passed: false,
         summary: message,
@@ -2819,9 +3187,9 @@ function buildInsufficientSalaryData(
         p75: message,
       },
       methodology: [
-        "分别检索 BOSS直聘、猎聘、智联招聘、前程无忧等公开搜索结果。",
-        "要求至少 3 个独立招聘网站存在近 3 个月有效岗位样本。",
-        "未满足时直接返回公开数据不足，不进行替代性填补。",
+        "分别检索 BOSS直聘和智联招聘公开搜索结果。",
+        "从搜索结果标题与摘要中解析月薪区间。",
+        "未满足双平台均有可解析薪资样本时直接返回公开数据不足。",
       ],
       coreSources: searchEvidence?.distinctPlatforms.length ? searchEvidence.distinctPlatforms : [],
       validationSources: [],
@@ -2833,7 +3201,7 @@ function buildInsufficientSalaryData(
         role: item.title,
         region: filters.region,
         experience: filters.experience,
-        salaryRange: "未能稳定提取",
+        salaryRange: item.salaryRange?.label || "未能稳定提取",
         publishWindow: item.publishWindow,
         note: `${item.snippet}（${item.link}）`,
       })),

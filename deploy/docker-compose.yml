@@ -1,0 +1,95 @@
+services:
+  xiaosongshu-rustfs:
+    image: ${RUSTFS_IMAGE:-rustfs/rustfs:latest}
+    container_name: xiaosongshu-rustfs
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ROOT_ACCESS_KEY}
+      RUSTFS_SECRET_KEY: ${RUSTFS_ROOT_SECRET_KEY}
+      RUSTFS_CONSOLE_ENABLE: ${RUSTFS_CONSOLE_ENABLE:-true}
+      RUSTFS_CONSOLE_CORS_ALLOWED_ORIGINS: ${RUSTFS_CONSOLE_CORS_ALLOWED_ORIGINS:-*}
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - '${RUSTFS_API_PORT:-9000}:9000'
+      - '${RUSTFS_CONSOLE_PORT:-9001}:9001'
+    volumes:
+      - ./data/rustfs:/data
+    command: ['--console-enable', '/data']
+    restart: unless-stopped
+
+  xiaosongshu-kkfileview:
+    image: ${KKFILEVIEW_IMAGE:-keking/kkfileview:4.4.0}
+    container_name: xiaosongshu-kkfileview
+    environment:
+      KK_SERVER_ADDRESS: 0.0.0.0
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - '${KKFILEVIEW_PORT:-8018}:8012'
+    restart: unless-stopped
+
+  xiaosongshu-backend:
+    image: ${NODE_IMAGE:-node:22-bookworm-slim}
+    container_name: xiaosongshu-backend
+    working_dir: /app
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      PORT: ${PORT:-5175}
+      BODY_LIMIT_BYTES: ${BODY_LIMIT_BYTES:-3145728000}
+      DB_PATH: ${DB_PATH:-data/xiaosongshu.sqlite}
+      DEFAULT_CURRENT_USER: ${DEFAULT_CURRENT_USER:-本地用户}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-v4-pro}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      SALARY_SEARCH_TIMEOUT_MS: ${SALARY_SEARCH_TIMEOUT_MS:-8000}
+      RUSTFS_ENDPOINT: ${RUSTFS_ENDPOINT:-http://xiaosongshu-rustfs:9000}
+      RUSTFS_REGION: ${RUSTFS_REGION:-us-east-1}
+      RUSTFS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY_ID}
+      RUSTFS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_ACCESS_KEY}
+      RUSTFS_BUCKET: ${RUSTFS_BUCKET:-xiaosongshu}
+      RUSTFS_FORCE_PATH_STYLE: ${RUSTFS_FORCE_PATH_STYLE:-true}
+      UPLOAD_MAX_FILE_SIZE_MB: ${UPLOAD_MAX_FILE_SIZE_MB:-3000}
+      FILE_PROXY_SECRET: ${FILE_PROXY_SECRET}
+      KKFILE_OA_BASE_URL: ${KKFILE_OA_BASE_URL:-http://xiaosongshu-nginx}
+      WHISPER_MODEL_ID: ${WHISPER_MODEL_ID:-Xenova/whisper-tiny}
+      WHISPER_MODEL_DIR: ${WHISPER_MODEL_DIR:-models}
+      WHISPER_LANGUAGE: ${WHISPER_LANGUAGE:-zh}
+      WHISPER_CHUNK_LENGTH: ${WHISPER_CHUNK_LENGTH:-20}
+      WHISPER_STRIDE_LENGTH: ${WHISPER_STRIDE_LENGTH:-4}
+      HF_ENDPOINT: ${HF_ENDPOINT:-https://hf-mirror.com}
+      TZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - ../:/app
+      - ./pnpm-store:/pnpm/store
+      - ./data/server:/app/apps/server/data
+    command: sh -c "node apps/server/dist/index.js"
+    depends_on:
+      xiaosongshu-rustfs:
+        condition: service_started
+    expose:
+      - '5175'
+    healthcheck:
+      test: ['CMD-SHELL', 'node -e "fetch(''http://127.0.0.1:5175/api/health'').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  xiaosongshu-nginx:
+    image: ${NGINX_IMAGE:-nginx:1.27-alpine}
+    container_name: xiaosongshu-nginx
+    depends_on:
+      xiaosongshu-backend:
+        condition: service_healthy
+      xiaosongshu-kkfileview:
+        condition: service_started
+      xiaosongshu-rustfs:
+        condition: service_started
+    ports:
+      - '${WEB_PORT:-80}:80'
+    volumes:
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ../apps/web/dist:/usr/share/nginx/html:ro
+    restart: unless-stopped

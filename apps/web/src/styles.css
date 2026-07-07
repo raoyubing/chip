@@ -343,6 +343,51 @@ textarea:focus {
   padding: 9px;
 }
 
+.upload-file-list {
+  display: grid;
+  gap: 8px;
+}
+
+.upload-file-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.upload-file-row > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.upload-file-row strong,
+.upload-file-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-file-row span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.upload-file-row.uploading {
+  border-color: rgba(26, 107, 74, 0.32);
+  background: var(--green-50);
+}
+
+.upload-file-row.error {
+  border-color: rgba(176, 57, 57, 0.35);
+  background: #fff6f4;
+}
+
 .content {
   display: grid;
   gap: 18px;

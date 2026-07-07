@@ -1,0 +1,29 @@
+{
+  "name": "@xiaosongshu/shared",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "types": "./index.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "exports": {
+    ".": {
+      "types": "./index.ts",
+      "import": "./dist/index.js"
+    },
+    "./dto/schema.dto": {
+      "types": "./dto/schema.dto.ts",
+      "import": "./dist/dto/schema.dto.js"
+    },
+    "./dto/request.dto": {
+      "types": "./dto/request.dto.ts",
+      "import": "./dist/dto/request.dto.js"
+    },
+    "./dto/response.dto": {
+      "types": "./dto/response.dto.ts",
+      "import": "./dist/dto/response.dto.js"
+    }
+  }
+}

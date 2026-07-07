@@ -1,113 +1,31 @@
+import { asc, desc, eq, ne } from "drizzle-orm";
+import { drizzle, type SQLJsDatabase } from "drizzle-orm/sql-js";
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
 import type { AppState, Candidate, CandidateEvaluation, CandidateInterviewPlan, Job, SalaryData, VoiceAnalysis, VoiceTranscriptSegment } from "./types.js";
-import { seedState } from "./seed.js";
+import { demoState } from "./demo-data.js";
+import * as dbSchema from "./db/schema.js";
+import { serverRoot } from "./env.js";
 
-const serverRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const dbPath = resolve(serverRoot, process.env.DB_PATH || "data/xiaosongshu.sqlite");
-mkdirSync(dirname(dbPath), { recursive: true });
+type AppDatabase = SQLJsDatabase<typeof dbSchema>;
+type JobRow = typeof dbSchema.jobs.$inferSelect;
+type CandidateRow = typeof dbSchema.candidates.$inferSelect;
+type VoiceAnalysisRow = typeof dbSchema.voiceAnalyses.$inferSelect;
+type VoiceTranscriptSegmentRow = typeof dbSchema.voiceTranscriptSegments.$inferSelect;
 
-type BindValue = string | number | Uint8Array | null;
 let SQL: SqlJsStatic;
-let db: Database;
+let sqliteDb: Database;
+let appDb: AppDatabase | null = null;
+let resolvedDbPath: string | null = null;
 
 export async function initDb() {
   SQL = await initSqlJs();
-  db = existsSync(dbPath) ? new SQL.Database(readFileSync(dbPath)) : new SQL.Database();
-  run("PRAGMA foreign_keys = ON");
-  run(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
-  run(`CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    dept TEXT NOT NULL,
-    location TEXT NOT NULL,
-    experience TEXT NOT NULL,
-    level TEXT NOT NULL,
-    salary_range TEXT NOT NULL DEFAULT '面议',
-    keywords TEXT NOT NULL,
-    description TEXT NOT NULL,
-    status TEXT NOT NULL,
-    salary_data TEXT,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );`);
-  ensureColumn("jobs", "salary_range", "TEXT NOT NULL DEFAULT '面议'");
-  run(`CREATE TABLE IF NOT EXISTS candidates (
-    id TEXT PRIMARY KEY,
-    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    source TEXT NOT NULL,
-    score REAL NOT NULL,
-    conclusion TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    resume_text TEXT NOT NULL,
-    upload_time TEXT NOT NULL,
-    file_name TEXT,
-    file_type TEXT,
-    file_size INTEGER,
-    file_blob BLOB,
-    evaluation_json TEXT NOT NULL DEFAULT '{}',
-    interview_plan_json TEXT NOT NULL DEFAULT '{}',
-    key_point_analysis TEXT NOT NULL DEFAULT '[]',
-    interview_questions TEXT NOT NULL DEFAULT '[]',
-    interview_recommendation TEXT NOT NULL DEFAULT '待定',
-    stage_recommendation TEXT NOT NULL DEFAULT '是',
-    interview_result TEXT NOT NULL DEFAULT '待定',
-    onboarded TEXT NOT NULL DEFAULT '待入职',
-    report_month TEXT NOT NULL DEFAULT '',
-    interview_stage TEXT NOT NULL DEFAULT '初试',
-    interview_reason TEXT NOT NULL DEFAULT '',
-    reason_tags TEXT NOT NULL DEFAULT '[]',
-    interview_timeline TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );`);
-  ensureColumn("candidates", "interview_recommendation", "TEXT NOT NULL DEFAULT '待定'");
-  ensureColumn("candidates", "stage_recommendation", "TEXT NOT NULL DEFAULT '是'");
-  ensureColumn("candidates", "interview_result", "TEXT NOT NULL DEFAULT '待定'");
-  ensureColumn("candidates", "onboarded", "TEXT NOT NULL DEFAULT '待入职'");
-  ensureColumn("candidates", "report_month", "TEXT NOT NULL DEFAULT ''");
-  ensureColumn("candidates", "interview_stage", "TEXT NOT NULL DEFAULT '初试'");
-  ensureColumn("candidates", "interview_reason", "TEXT NOT NULL DEFAULT ''");
-  ensureColumn("candidates", "reason_tags", "TEXT NOT NULL DEFAULT '[]'");
-  ensureColumn("candidates", "interview_timeline", "TEXT NOT NULL DEFAULT '{}'");
-  ensureColumn("candidates", "evaluation_json", "TEXT NOT NULL DEFAULT '{}'");
-  ensureColumn("candidates", "interview_plan_json", "TEXT NOT NULL DEFAULT '{}'");
-  run(`CREATE TABLE IF NOT EXISTS voice_analyses (
-    id TEXT PRIMARY KEY,
-    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-    candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
-    audio_name TEXT NOT NULL,
-    audio_type TEXT,
-    audio_size INTEGER,
-    transcript TEXT NOT NULL,
-    summary TEXT NOT NULL,
-    job_fit_advice TEXT NOT NULL,
-    communication_strengths TEXT NOT NULL DEFAULT '[]',
-    communication_risks TEXT NOT NULL DEFAULT '[]',
-    recruiter_suggestions TEXT NOT NULL DEFAULT '[]',
-    recruiter_review TEXT NOT NULL DEFAULT '[]',
-    recommendation TEXT NOT NULL,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );`);
-  ensureColumn("voice_analyses", "recruiter_review", "TEXT NOT NULL DEFAULT '[]'");
-  run(`CREATE TABLE IF NOT EXISTS voice_transcript_segments (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-    candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
-    segment_index INTEGER NOT NULL,
-    raw_transcript TEXT NOT NULL,
-    normalized_transcript TEXT NOT NULL,
-    analysis_json TEXT,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );`);
-  ensureColumn("voice_transcript_segments", "analysis_json", "TEXT");
-
-  const count = one<{ count: number }>("SELECT COUNT(*) AS count FROM jobs")?.count ?? 0;
-  if (count === 0) seedDatabase();
+  const dbPath = getDatabasePath();
+  mkdirSync(dirname(dbPath), { recursive: true });
+  sqliteDb = existsSync(dbPath) ? new SQL.Database(readFileSync(dbPath)) : new SQL.Database();
+  appDb = drizzle(sqliteDb, { schema: dbSchema });
+  ensureSchema();
   persist();
 }
 
@@ -123,7 +41,7 @@ export function getState(): AppState {
   const currentJob = jobs.find((job) => job.id === savedCurrentJobId && job.status === "招聘中") || jobs.find((job) => job.status === "招聘中") || jobs[0];
   if (currentJob && currentJob.id !== savedCurrentJobId) setSettingNoPersist("currentJobId", currentJob.id);
   return {
-    currentUser: getSetting("currentUser") || seedState.currentUser,
+    currentUser: getSetting("currentUser") || getDefaultCurrentUser(),
     currentJobId: currentJob?.id || "",
     jobs,
     candidates,
@@ -132,151 +50,262 @@ export function getState(): AppState {
 }
 
 export function getJobs(): Job[] {
-  return all<Record<string, unknown>>(
-    `SELECT j.*, COUNT(c.id) AS resume_count
-     FROM jobs j
-     LEFT JOIN candidates c ON c.job_id = j.id
-     GROUP BY j.id
-     ORDER BY j.sort_order ASC, j.created_at ASC`,
-  ).map(rowToJob);
+  return getDb()
+    .select()
+    .from(dbSchema.jobs)
+    .orderBy(asc(dbSchema.jobs.sortOrder), asc(dbSchema.jobs.createdAt))
+    .all()
+    .map((row) => rowToJob(row, getCandidateCount(row.id)));
 }
 
 export function getJob(id: string): Job | null {
-  const row = one<Record<string, unknown>>(
-    `SELECT j.*, COUNT(c.id) AS resume_count
-     FROM jobs j
-     LEFT JOIN candidates c ON c.job_id = j.id
-     WHERE j.id = ?
-     GROUP BY j.id`,
-    [id],
-  );
-  return row ? rowToJob(row) : null;
+  const row = getDb().select().from(dbSchema.jobs).where(eq(dbSchema.jobs.id, id)).get();
+  return row ? rowToJob(row, getCandidateCount(row.id)) : null;
 }
 
 export function upsertJob(job: Omit<Job, "resumeCount" | "sortOrder"> & { sortOrder?: number }) {
-  const maxSort = one<{ maxSort: number }>("SELECT COALESCE(MAX(sort_order), 0) AS maxSort FROM jobs")?.maxSort ?? 0;
-  run(
-    `INSERT INTO jobs (id, title, dept, location, experience, level, salary_range, keywords, description, status, salary_data, sort_order, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-     ON CONFLICT(id) DO UPDATE SET
-       title = excluded.title,
-       dept = excluded.dept,
-       location = excluded.location,
-       experience = excluded.experience,
-       level = excluded.level,
-       salary_range = excluded.salary_range,
-       keywords = excluded.keywords,
-       description = excluded.description,
-       status = excluded.status,
-       salary_data = excluded.salary_data,
-       updated_at = CURRENT_TIMESTAMP`,
-    [job.id, job.title, job.dept, job.location, job.experience, job.level, job.salaryRange, job.keywords, job.description, job.status, job.salaryData ? JSON.stringify(job.salaryData) : null, job.sortOrder ?? maxSort + 1],
-  );
+  const existing = getDb().select({ id: dbSchema.jobs.id }).from(dbSchema.jobs).where(eq(dbSchema.jobs.id, job.id)).get();
+  if (existing) {
+    getDb()
+      .update(dbSchema.jobs)
+      .set({
+        title: job.title,
+        dept: job.dept,
+        location: job.location,
+        experience: job.experience,
+        level: job.level,
+        salaryRange: job.salaryRange,
+        keywords: job.keywords,
+        description: job.description,
+        status: job.status,
+        salaryData: job.salaryData ? JSON.stringify(job.salaryData) : null,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(dbSchema.jobs.id, job.id))
+      .run();
+  } else {
+    const maxSort = getDb()
+      .select({ sortOrder: dbSchema.jobs.sortOrder })
+      .from(dbSchema.jobs)
+      .all()
+      .reduce((maxValue, row) => Math.max(maxValue, row.sortOrder), 0);
+    getDb()
+      .insert(dbSchema.jobs)
+      .values({
+        id: job.id,
+        title: job.title,
+        dept: job.dept,
+        location: job.location,
+        experience: job.experience,
+        level: job.level,
+        salaryRange: job.salaryRange,
+        keywords: job.keywords,
+        description: job.description,
+        status: job.status,
+        salaryData: job.salaryData ? JSON.stringify(job.salaryData) : null,
+        sortOrder: job.sortOrder ?? maxSort + 1,
+      })
+      .run();
+  }
   persist();
 }
 
 export function closeJob(id: string) {
-  run("UPDATE jobs SET status = '已关闭', updated_at = CURRENT_TIMESTAMP WHERE id = ?", [id]);
+  getDb().update(dbSchema.jobs).set({ status: "已关闭", updatedAt: new Date().toISOString() }).where(eq(dbSchema.jobs.id, id)).run();
   const nextOngoing = getJobs().find((job) => job.status === "招聘中" && job.id !== id);
   if (nextOngoing) setSettingNoPersist("currentJobId", nextOngoing.id);
   persist();
 }
 
 export function deleteJob(id: string) {
-  run("DELETE FROM jobs WHERE id = ?", [id]);
+  getDb().delete(dbSchema.jobs).where(eq(dbSchema.jobs.id, id)).run();
   persist();
 }
 
 export function prioritizeJob(id: string) {
-  transaction(() => {
-    run("UPDATE jobs SET sort_order = sort_order + 1");
-    run("UPDATE jobs SET sort_order = 0 WHERE id = ?", [id]);
-    setSettingNoPersist("currentJobId", id);
+  const rows = getDb().select({ id: dbSchema.jobs.id, sortOrder: dbSchema.jobs.sortOrder }).from(dbSchema.jobs).all();
+  rows.forEach((row) => {
+    getDb().update(dbSchema.jobs).set({ sortOrder: row.sortOrder + 1 }).where(eq(dbSchema.jobs.id, row.id)).run();
   });
+  getDb().update(dbSchema.jobs).set({ sortOrder: 0 }).where(eq(dbSchema.jobs.id, id)).run();
+  setSettingNoPersist("currentJobId", id);
   persist();
 }
 
 export function getCandidateById(id: string): Candidate | null {
-  const row = one<Record<string, unknown>>("SELECT * FROM candidates WHERE id = ?", [id]);
+  const row = getDb().select().from(dbSchema.candidates).where(eq(dbSchema.candidates.id, id)).get();
   return row ? rowToCandidate(row) : null;
 }
 
 export function getCandidates(jobId: string): Candidate[] {
-  return all<Record<string, unknown>>("SELECT * FROM candidates WHERE job_id = ? ORDER BY created_at DESC", [jobId]).map(rowToCandidate);
+  return getDb()
+    .select()
+    .from(dbSchema.candidates)
+    .where(eq(dbSchema.candidates.jobId, jobId))
+    .orderBy(desc(dbSchema.candidates.createdAt))
+    .all()
+    .map(rowToCandidate);
 }
 
 export function insertCandidates(candidates: Candidate[]) {
-  transaction(() => candidates.forEach(insertCandidateNoPersist));
+  candidates.forEach(insertCandidateNoPersist);
   persist();
 }
 
 export function updateCandidate(candidate: Candidate) {
   const data = serializeCandidate(candidate);
-  const existingFileBlob = one<Record<string, unknown>>("SELECT file_blob FROM candidates WHERE id = ?", [candidate.id])?.file_blob;
-  const normalizedExistingFileBlob = normalizeBlob(existingFileBlob);
-  run(
-    `UPDATE candidates SET name = ?, source = ?, score = ?, conclusion = ?, reason = ?, resume_text = ?, upload_time = ?, file_name = ?, file_type = ?, file_size = ?, file_blob = ?, evaluation_json = ?, interview_plan_json = ?, key_point_analysis = ?, interview_questions = ?, interview_stage = ?, stage_recommendation = ?, interview_result = ?, onboarded = ?, report_month = ?, interview_reason = ?, reason_tags = ?, interview_timeline = ? WHERE id = ?`,
-    [data.name, data.source, data.score, data.conclusion, data.reason, data.resumeText, data.uploadTime, data.fileName, data.fileType, data.fileSize, data.fileBlob ?? normalizedExistingFileBlob, data.evaluationJson, data.interviewPlanJson, data.keyPointAnalysis, data.interviewQuestions, data.interviewStage, data.stageRecommendation, data.interviewResult, data.onboarded, data.reportMonth, data.interviewReason, data.reasonTags, data.interviewTimeline, data.id],
-  );
+  const existingFile = getDb()
+    .select({ fileBlob: dbSchema.candidates.fileBlob })
+    .from(dbSchema.candidates)
+    .where(eq(dbSchema.candidates.id, candidate.id))
+    .get();
+
+  getDb()
+    .update(dbSchema.candidates)
+    .set({
+      name: data.name,
+      source: data.source,
+      score: data.score,
+      conclusion: data.conclusion,
+      reason: data.reason,
+      resumeText: data.resumeText,
+      uploadTime: data.uploadTime,
+      fileName: data.fileName,
+      fileType: data.fileType,
+      fileSize: data.fileSize,
+      fileBlob: data.fileBlob ?? normalizeBlob(existingFile?.fileBlob),
+      fileObjectKey: data.fileObjectKey,
+      fileUrl: data.fileUrl,
+      evaluationJson: data.evaluationJson,
+      interviewPlanJson: data.interviewPlanJson,
+      keyPointAnalysis: data.keyPointAnalysis,
+      interviewQuestions: data.interviewQuestions,
+      interviewStage: data.interviewStage,
+      stageRecommendation: data.stageRecommendation,
+      interviewResult: data.interviewResult,
+      onboarded: data.onboarded,
+      reportMonth: data.reportMonth,
+      interviewReason: data.interviewReason,
+      reasonTags: data.reasonTags,
+      interviewTimeline: data.interviewTimeline,
+    })
+    .where(eq(dbSchema.candidates.id, data.id))
+    .run();
   persist();
 }
 
 export function deleteCandidate(id: string) {
-  run("DELETE FROM candidates WHERE id = ?", [id]);
+  getDb().delete(dbSchema.candidates).where(eq(dbSchema.candidates.id, id)).run();
   persist();
 }
 
 export function getDatabasePath() {
-  return dbPath;
+  if (!resolvedDbPath) {
+    resolvedDbPath = resolve(serverRoot, process.env.DB_PATH || "data/xiaosongshu.sqlite");
+  }
+  return resolvedDbPath;
+}
+
+function getDefaultCurrentUser() {
+  return process.env.DEFAULT_CURRENT_USER || "本地用户";
 }
 
 export function getVoiceAnalyses(jobId: string): VoiceAnalysis[] {
-  return all<Record<string, unknown>>("SELECT * FROM voice_analyses WHERE job_id = ? ORDER BY created_at DESC", [jobId]).map(rowToVoiceAnalysis);
+  return getDb()
+    .select()
+    .from(dbSchema.voiceAnalyses)
+    .where(eq(dbSchema.voiceAnalyses.jobId, jobId))
+    .orderBy(desc(dbSchema.voiceAnalyses.createdAt))
+    .all()
+    .map(rowToVoiceAnalysis);
 }
 
 export function insertVoiceAnalysis(analysis: VoiceAnalysis) {
-  run(
-    `INSERT INTO voice_analyses (id, job_id, candidate_id, audio_name, audio_type, audio_size, transcript, summary, job_fit_advice, communication_strengths, communication_risks, recruiter_suggestions, recruiter_review, recommendation, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [analysis.id, analysis.jobId, analysis.candidateId, analysis.audioName, analysis.audioType ?? null, analysis.audioSize ?? null, analysis.transcript, analysis.summary, analysis.jobFitAdvice, JSON.stringify(analysis.communicationStrengths), JSON.stringify(analysis.communicationRisks), JSON.stringify(analysis.recruiterSuggestions), JSON.stringify(analysis.recruiterReview), analysis.recommendation, analysis.createdAt],
-  );
+  getDb()
+    .insert(dbSchema.voiceAnalyses)
+    .values({
+      id: analysis.id,
+      jobId: analysis.jobId,
+      candidateId: analysis.candidateId,
+      audioName: analysis.audioName,
+      audioType: analysis.audioType ?? null,
+      audioSize: analysis.audioSize ?? null,
+      transcript: analysis.transcript,
+      summary: analysis.summary,
+      jobFitAdvice: analysis.jobFitAdvice,
+      communicationStrengths: JSON.stringify(analysis.communicationStrengths),
+      communicationRisks: JSON.stringify(analysis.communicationRisks),
+      recruiterSuggestions: JSON.stringify(analysis.recruiterSuggestions),
+      recruiterReview: JSON.stringify(analysis.recruiterReview),
+      recommendation: analysis.recommendation,
+      createdAt: analysis.createdAt,
+    })
+    .run();
   persist();
 }
 
 export function deleteVoiceAnalysis(id: string) {
-  run("DELETE FROM voice_analyses WHERE id = ?", [id]);
+  getDb().delete(dbSchema.voiceAnalyses).where(eq(dbSchema.voiceAnalyses.id, id)).run();
   persist();
 }
 
 export function insertVoiceTranscriptSegment(segment: VoiceTranscriptSegment) {
-  run(
-    `INSERT INTO voice_transcript_segments (id, session_id, job_id, candidate_id, segment_index, raw_transcript, normalized_transcript, analysis_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [segment.id, segment.sessionId, segment.jobId, segment.candidateId, segment.segmentIndex, segment.rawTranscript, segment.normalizedTranscript, segment.analysisJson ?? null, segment.createdAt],
-  );
+  getDb()
+    .insert(dbSchema.voiceTranscriptSegments)
+    .values({
+      id: segment.id,
+      sessionId: segment.sessionId,
+      jobId: segment.jobId,
+      candidateId: segment.candidateId,
+      segmentIndex: segment.segmentIndex,
+      rawTranscript: segment.rawTranscript,
+      normalizedTranscript: segment.normalizedTranscript,
+      analysisJson: segment.analysisJson ?? null,
+      createdAt: segment.createdAt,
+    })
+    .run();
   persist();
 }
 
 export function getVoiceTranscriptSegments(sessionId: string) {
-  return all<Record<string, unknown>>(
-    "SELECT * FROM voice_transcript_segments WHERE session_id = ? ORDER BY segment_index ASC, created_at ASC",
-    [sessionId],
-  ).map(rowToVoiceTranscriptSegment);
+  return getDb()
+    .select()
+    .from(dbSchema.voiceTranscriptSegments)
+    .where(eq(dbSchema.voiceTranscriptSegments.sessionId, sessionId))
+    .orderBy(asc(dbSchema.voiceTranscriptSegments.segmentIndex), asc(dbSchema.voiceTranscriptSegments.createdAt))
+    .all()
+    .map(rowToVoiceTranscriptSegment);
 }
 
 export function updateVoiceTranscriptSegmentAnalysis(id: string, analysisJson: string) {
-  run("UPDATE voice_transcript_segments SET analysis_json = ? WHERE id = ?", [analysisJson, id]);
+  getDb().update(dbSchema.voiceTranscriptSegments).set({ analysisJson }).where(eq(dbSchema.voiceTranscriptSegments.id, id)).run();
   persist();
 }
 
-export function resetDatabase() {
-  transaction(() => {
-    run("DELETE FROM candidates");
-    run("DELETE FROM jobs");
-    run("DELETE FROM settings");
-    seedDatabase();
-  });
+export function clearDatabase() {
+  clearDatabaseNoPersist();
   persist();
+}
+
+export function loadDemoData(options: { reset?: boolean } = {}) {
+  if (options.reset) clearDatabaseNoPersist();
+  const demoCandidates = Object.values(demoState.candidates).flat();
+  demoState.jobs.forEach((job) => upsertJobNoPersist(job));
+  demoCandidates.forEach((candidate) => {
+    getDb().delete(dbSchema.candidates).where(eq(dbSchema.candidates.id, candidate.id)).run();
+    insertCandidateNoPersist(candidate);
+  });
+  setSettingNoPersist("currentUser", demoState.currentUser);
+  setSettingNoPersist("currentJobId", demoState.currentJobId);
+  persist();
+}
+
+function clearDatabaseNoPersist() {
+  getDb().delete(dbSchema.voiceTranscriptSegments).run();
+  getDb().delete(dbSchema.voiceAnalyses).run();
+  getDb().delete(dbSchema.candidates).run();
+  getDb().delete(dbSchema.jobs).run();
+  getDb().delete(dbSchema.settings).run();
 }
 
 export function setSetting(key: string, value: string) {
@@ -285,58 +314,101 @@ export function setSetting(key: string, value: string) {
 }
 
 function setSettingNoPersist(key: string, value: string) {
-  run("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value", [key, value]);
+  const existing = getDb().select({ key: dbSchema.settings.key }).from(dbSchema.settings).where(eq(dbSchema.settings.key, key)).get();
+  if (existing) {
+    getDb().update(dbSchema.settings).set({ value }).where(eq(dbSchema.settings.key, key)).run();
+  } else {
+    getDb().insert(dbSchema.settings).values({ key, value }).run();
+  }
 }
 
 function getSetting(key: string) {
-  return one<{ value: string }>("SELECT value FROM settings WHERE key = ?", [key])?.value;
-}
-
-function seedDatabase() {
-  seedState.jobs.forEach((job) => upsertJobNoPersist(job));
-  Object.values(seedState.candidates).flat().forEach(insertCandidateNoPersist);
-  setSettingNoPersist("currentUser", seedState.currentUser);
-  setSettingNoPersist("currentJobId", seedState.currentJobId);
+  return getDb().select({ value: dbSchema.settings.value }).from(dbSchema.settings).where(eq(dbSchema.settings.key, key)).get()?.value;
 }
 
 function upsertJobNoPersist(job: Job) {
-  run(`INSERT INTO jobs (id, title, dept, location, experience, level, salary_range, keywords, description, status, salary_data, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, [job.id, job.title, job.dept, job.location, job.experience, job.level, job.salaryRange, job.keywords, job.description, job.status, null, job.sortOrder]);
+  const existing = getDb().select({ id: dbSchema.jobs.id }).from(dbSchema.jobs).where(eq(dbSchema.jobs.id, job.id)).get();
+  const row = {
+    id: job.id,
+    title: job.title,
+    dept: job.dept,
+    location: job.location,
+    experience: job.experience,
+    level: job.level,
+    salaryRange: job.salaryRange,
+    keywords: job.keywords,
+    description: job.description,
+    status: job.status,
+    salaryData: job.salaryData ? JSON.stringify(job.salaryData) : null,
+    sortOrder: job.sortOrder,
+  };
+
+  if (existing) {
+    getDb().update(dbSchema.jobs).set(row).where(eq(dbSchema.jobs.id, job.id)).run();
+  } else {
+    getDb().insert(dbSchema.jobs).values(row).run();
+  }
 }
 
 function insertCandidateNoPersist(candidate: Candidate) {
   const data = serializeCandidate(candidate);
-  run(
-    `INSERT INTO candidates (id, job_id, name, source, score, conclusion, reason, resume_text, upload_time, file_name, file_type, file_size, file_blob, evaluation_json, interview_plan_json, key_point_analysis, interview_questions, interview_stage, stage_recommendation, interview_result, onboarded, report_month, interview_reason, reason_tags, interview_timeline) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [data.id, data.jobId, data.name, data.source, data.score, data.conclusion, data.reason, data.resumeText, data.uploadTime, data.fileName, data.fileType, data.fileSize, data.fileBlob, data.evaluationJson, data.interviewPlanJson, data.keyPointAnalysis, data.interviewQuestions, data.interviewStage, data.stageRecommendation, data.interviewResult, data.onboarded, data.reportMonth, data.interviewReason, data.reasonTags, data.interviewTimeline],
-  );
+  getDb()
+    .insert(dbSchema.candidates)
+    .values({
+      id: data.id,
+      jobId: data.jobId,
+      name: data.name,
+      source: data.source,
+      score: data.score,
+      conclusion: data.conclusion,
+      reason: data.reason,
+      resumeText: data.resumeText,
+      uploadTime: data.uploadTime,
+      fileName: data.fileName,
+      fileType: data.fileType,
+      fileSize: data.fileSize,
+      fileBlob: data.fileBlob,
+      fileObjectKey: data.fileObjectKey,
+      fileUrl: data.fileUrl,
+      evaluationJson: data.evaluationJson,
+      interviewPlanJson: data.interviewPlanJson,
+      keyPointAnalysis: data.keyPointAnalysis,
+      interviewQuestions: data.interviewQuestions,
+      interviewStage: data.interviewStage,
+      stageRecommendation: data.stageRecommendation,
+      interviewResult: data.interviewResult,
+      onboarded: data.onboarded,
+      reportMonth: data.reportMonth,
+      interviewReason: data.interviewReason,
+      reasonTags: data.reasonTags,
+      interviewTimeline: data.interviewTimeline,
+    })
+    .run();
 }
 
-function ensureColumn(table: string, column: string, definition: string) {
-  const columns = all<{ name: string }>(`PRAGMA table_info(${table})`);
-  if (!columns.some((item) => item.name === column)) {
-    run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-  }
+function getCandidateCount(jobId: string) {
+  return getDb().select({ id: dbSchema.candidates.id }).from(dbSchema.candidates).where(eq(dbSchema.candidates.jobId, jobId)).all().length;
 }
 
-function rowToJob(row: Record<string, unknown>): Job {
+function rowToJob(row: JobRow, resumeCount: number): Job {
   return {
-    id: String(row.id),
-    title: String(row.title),
-    dept: String(row.dept),
-    location: String(row.location),
-    experience: String(row.experience),
-    level: String(row.level),
-    salaryRange: String(row.salary_range || "面议"),
-    keywords: String(row.keywords),
-    description: String(row.description),
+    id: row.id,
+    title: row.title,
+    dept: row.dept,
+    location: row.location,
+    experience: row.experience,
+    level: row.level,
+    salaryRange: row.salaryRange || "面议",
+    keywords: row.keywords,
+    description: row.description,
     status: row.status as Job["status"],
-    resumeCount: Number(row.resume_count ?? 0),
-    salaryData: row.salary_data ? normalizeSalaryData(JSON.parse(String(row.salary_data)), row) : null,
-    sortOrder: Number(row.sort_order ?? 0),
+    resumeCount,
+    salaryData: row.salaryData ? normalizeSalaryData(JSON.parse(row.salaryData), row) : null,
+    sortOrder: row.sortOrder ?? 0,
   };
 }
 
-function normalizeSalaryData(raw: unknown, row: Record<string, unknown>): SalaryData {
+function normalizeSalaryData(raw: unknown, row: JobRow): SalaryData {
   const legacy = (raw || {}) as Record<string, unknown>;
   if (legacy.filters && legacy.experienceBands && legacy.regionComparison && legacy.advice) {
     return legacy as unknown as SalaryData;
@@ -345,8 +417,8 @@ function normalizeSalaryData(raw: unknown, row: Record<string, unknown>): Salary
   const p25 = Number(legacy.p25 ?? 18);
   const p50 = Number(legacy.p50 ?? 24);
   const p75 = Number(legacy.p75 ?? 30);
-  const region = String(row.location || "北京");
-  const experience = normalizeLegacyExperience(String(row.experience || "3-5年"));
+  const region = row.location || "北京";
+  const experience = normalizeLegacyExperience(row.experience || "3-5年");
   const regionComparison = Array.isArray(legacy.cities)
     ? (legacy.cities as Array<Record<string, unknown>>).map((item) => ({
         city: String(item.city || region),
@@ -362,7 +434,7 @@ function normalizeSalaryData(raw: unknown, row: Record<string, unknown>): Salary
 
   return {
     filters: {
-      role: String(row.title || "岗位调研"),
+      role: row.title || "岗位调研",
       region,
       experience,
       industry: "企业服务",
@@ -436,67 +508,69 @@ function normalizeLegacyExperience(value: string) {
   return "3-5年";
 }
 
-function rowToCandidate(row: Record<string, unknown>): Candidate {
+function rowToCandidate(row: CandidateRow): Candidate {
   return {
-    id: String(row.id),
-    jobId: String(row.job_id),
-    name: String(row.name),
-    source: String(row.source),
+    id: row.id,
+    jobId: row.jobId,
+    name: row.name,
+    source: row.source,
     score: Number(row.score),
-    conclusion: String(row.conclusion),
-    reason: String(row.reason),
-    resumeText: String(row.resume_text),
-    uploadTime: String(row.upload_time),
-    fileName: row.file_name ? String(row.file_name) : null,
-    fileType: row.file_type ? String(row.file_type) : null,
-    fileSize: row.file_size ? Number(row.file_size) : null,
+    conclusion: row.conclusion,
+    reason: row.reason,
+    resumeText: row.resumeText,
+    uploadTime: row.uploadTime,
+    fileName: row.fileName,
+    fileType: row.fileType,
+    fileSize: row.fileSize,
     fileDataBase64: null,
-    evaluation: parseCandidateEvaluation(row.evaluation_json),
-    interviewPlan: parseCandidateInterviewPlan(row.interview_plan_json),
-    keyPointAnalysis: JSON.parse(String(row.key_point_analysis || "[]")),
-    interviewQuestions: JSON.parse(String(row.interview_questions || "[]")),
-    interviewStage: normalizeInterviewStage(row.interview_stage),
-    stageRecommendation: normalizeStageRecommendation(row.stage_recommendation),
-    interviewResult: String(row.interview_result || "待定") as Candidate["interviewResult"],
+    fileObjectKey: row.fileObjectKey,
+    fileUrl: row.fileUrl,
+    evaluation: parseCandidateEvaluation(row.evaluationJson),
+    interviewPlan: parseCandidateInterviewPlan(row.interviewPlanJson),
+    keyPointAnalysis: JSON.parse(row.keyPointAnalysis || "[]"),
+    interviewQuestions: JSON.parse(row.interviewQuestions || "[]"),
+    interviewStage: normalizeInterviewStage(row.interviewStage),
+    stageRecommendation: normalizeStageRecommendation(row.stageRecommendation),
+    interviewResult: String(row.interviewResult || "待定") as Candidate["interviewResult"],
     onboarded: normalizeOnboarded(row.onboarded),
-    reportMonth: String(row.report_month || formatReportMonth()),
-    interviewReason: String(row.interview_reason || ""),
-    reasonTags: JSON.parse(String(row.reason_tags || "[]")),
-    interviewTimeline: JSON.parse(String(row.interview_timeline || "{}")),
+    reportMonth: row.reportMonth || formatReportMonth(),
+    interviewReason: row.interviewReason || "",
+    reasonTags: JSON.parse(row.reasonTags || "[]"),
+    interviewTimeline: JSON.parse(row.interviewTimeline || "{}"),
   };
 }
 
-function rowToVoiceAnalysis(row: Record<string, unknown>): VoiceAnalysis {
+function rowToVoiceAnalysis(row: VoiceAnalysisRow): VoiceAnalysis {
   return {
-    id: String(row.id),
-    jobId: String(row.job_id),
-    candidateId: String(row.candidate_id),
-    audioName: String(row.audio_name),
-    audioType: row.audio_type ? String(row.audio_type) : null,
-    audioSize: row.audio_size ? Number(row.audio_size) : null,
-    transcript: String(row.transcript),
-    summary: String(row.summary),
-    jobFitAdvice: String(row.job_fit_advice),
-    communicationStrengths: JSON.parse(String(row.communication_strengths || "[]")),
-    communicationRisks: JSON.parse(String(row.communication_risks || "[]")),
-    recruiterSuggestions: JSON.parse(String(row.recruiter_suggestions || "[]")),
-    recruiterReview: JSON.parse(String(row.recruiter_review || "[]")),
-    recommendation: String(row.recommendation) as VoiceAnalysis["recommendation"],
-    createdAt: String(row.created_at),
+    id: row.id,
+    jobId: row.jobId,
+    candidateId: row.candidateId,
+    audioName: row.audioName,
+    audioType: row.audioType,
+    audioSize: row.audioSize,
+    transcript: row.transcript,
+    summary: row.summary,
+    jobFitAdvice: row.jobFitAdvice,
+    communicationStrengths: JSON.parse(row.communicationStrengths || "[]"),
+    communicationRisks: JSON.parse(row.communicationRisks || "[]"),
+    recruiterSuggestions: JSON.parse(row.recruiterSuggestions || "[]"),
+    recruiterReview: JSON.parse(row.recruiterReview || "[]"),
+    recommendation: row.recommendation as VoiceAnalysis["recommendation"],
+    createdAt: row.createdAt,
   };
 }
 
-function rowToVoiceTranscriptSegment(row: Record<string, unknown>): VoiceTranscriptSegment {
+function rowToVoiceTranscriptSegment(row: VoiceTranscriptSegmentRow): VoiceTranscriptSegment {
   return {
-    id: String(row.id),
-    sessionId: String(row.session_id),
-    jobId: String(row.job_id),
-    candidateId: String(row.candidate_id),
-    segmentIndex: Number(row.segment_index ?? 0),
-    rawTranscript: String(row.raw_transcript || ""),
-    normalizedTranscript: String(row.normalized_transcript || ""),
-    analysisJson: row.analysis_json ? String(row.analysis_json) : undefined,
-    createdAt: String(row.created_at || ""),
+    id: row.id,
+    sessionId: row.sessionId,
+    jobId: row.jobId,
+    candidateId: row.candidateId,
+    segmentIndex: row.segmentIndex,
+    rawTranscript: row.rawTranscript || "",
+    normalizedTranscript: row.normalizedTranscript || "",
+    analysisJson: row.analysisJson ?? undefined,
+    createdAt: row.createdAt || "",
   };
 }
 
@@ -522,8 +596,9 @@ function formatReportMonth(date = new Date()) {
 
 function normalizeBlob(value: unknown) {
   if (!value) return null;
-  if (value instanceof Uint8Array) return value;
-  return new Uint8Array(value as ArrayLike<number>);
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  return Buffer.from(value as ArrayLike<number>);
 }
 
 function serializeCandidate(candidate: Candidate) {
@@ -532,7 +607,9 @@ function serializeCandidate(candidate: Candidate) {
     fileName: candidate.fileName ?? null,
     fileType: candidate.fileType ?? null,
     fileSize: candidate.fileSize ?? null,
-    fileBlob: candidate.fileDataBase64 ? Uint8Array.from(Buffer.from(candidate.fileDataBase64, "base64")) : null,
+    fileBlob: candidate.fileDataBase64 ? Buffer.from(candidate.fileDataBase64, "base64") : null,
+    fileObjectKey: candidate.fileObjectKey ?? null,
+    fileUrl: candidate.fileUrl ?? null,
     evaluationJson: JSON.stringify(candidate.evaluation || {}),
     interviewPlanJson: JSON.stringify(candidate.interviewPlan || {}),
     keyPointAnalysis: JSON.stringify(candidate.keyPointAnalysis || []),
@@ -635,34 +712,121 @@ function parseCandidateInterviewPlan(raw: unknown): CandidateInterviewPlan | und
   }
 }
 
-function all<T extends Record<string, unknown>>(sql: string, params: BindValue[] = []): T[] {
-  const statement = db.prepare(sql);
-  statement.bind(params);
-  const rows: T[] = [];
-  while (statement.step()) rows.push(statement.getAsObject() as T);
+function getDb() {
+  if (!appDb) {
+    throw new Error("Database is not initialized");
+  }
+  return appDb;
+}
+
+function ensureSchema() {
+  sqliteDb.run("PRAGMA foreign_keys = ON");
+  sqliteDb.run(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+  sqliteDb.run(`CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    dept TEXT NOT NULL,
+    location TEXT NOT NULL,
+    experience TEXT NOT NULL,
+    level TEXT NOT NULL,
+    salary_range TEXT NOT NULL DEFAULT '面议',
+    keywords TEXT NOT NULL,
+    description TEXT NOT NULL,
+    status TEXT NOT NULL,
+    salary_data TEXT,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );`);
+  ensureColumn("jobs", "salary_range", "TEXT NOT NULL DEFAULT '面议'");
+  sqliteDb.run(`CREATE TABLE IF NOT EXISTS candidates (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    source TEXT NOT NULL,
+    score REAL NOT NULL,
+    conclusion TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    resume_text TEXT NOT NULL,
+    upload_time TEXT NOT NULL,
+    file_name TEXT,
+    file_type TEXT,
+    file_size INTEGER,
+    file_blob BLOB,
+    file_object_key TEXT,
+    file_url TEXT,
+    evaluation_json TEXT NOT NULL DEFAULT '{}',
+    interview_plan_json TEXT NOT NULL DEFAULT '{}',
+    key_point_analysis TEXT NOT NULL DEFAULT '[]',
+    interview_questions TEXT NOT NULL DEFAULT '[]',
+    interview_recommendation TEXT NOT NULL DEFAULT '待定',
+    stage_recommendation TEXT NOT NULL DEFAULT '是',
+    interview_result TEXT NOT NULL DEFAULT '待定',
+    onboarded TEXT NOT NULL DEFAULT '待入职',
+    report_month TEXT NOT NULL DEFAULT '',
+    interview_stage TEXT NOT NULL DEFAULT '初试',
+    interview_reason TEXT NOT NULL DEFAULT '',
+    reason_tags TEXT NOT NULL DEFAULT '[]',
+    interview_timeline TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );`);
+  ensureColumn("candidates", "interview_recommendation", "TEXT NOT NULL DEFAULT '待定'");
+  ensureColumn("candidates", "stage_recommendation", "TEXT NOT NULL DEFAULT '是'");
+  ensureColumn("candidates", "interview_result", "TEXT NOT NULL DEFAULT '待定'");
+  ensureColumn("candidates", "onboarded", "TEXT NOT NULL DEFAULT '待入职'");
+  ensureColumn("candidates", "report_month", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("candidates", "interview_stage", "TEXT NOT NULL DEFAULT '初试'");
+  ensureColumn("candidates", "interview_reason", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("candidates", "reason_tags", "TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn("candidates", "interview_timeline", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("candidates", "evaluation_json", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("candidates", "interview_plan_json", "TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn("candidates", "file_object_key", "TEXT");
+  ensureColumn("candidates", "file_url", "TEXT");
+  sqliteDb.run(`CREATE TABLE IF NOT EXISTS voice_analyses (
+    id TEXT PRIMARY KEY,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    audio_name TEXT NOT NULL,
+    audio_type TEXT,
+    audio_size INTEGER,
+    transcript TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    job_fit_advice TEXT NOT NULL,
+    communication_strengths TEXT NOT NULL DEFAULT '[]',
+    communication_risks TEXT NOT NULL DEFAULT '[]',
+    recruiter_suggestions TEXT NOT NULL DEFAULT '[]',
+    recruiter_review TEXT NOT NULL DEFAULT '[]',
+    recommendation TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );`);
+  ensureColumn("voice_analyses", "recruiter_review", "TEXT NOT NULL DEFAULT '[]'");
+  sqliteDb.run(`CREATE TABLE IF NOT EXISTS voice_transcript_segments (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+    segment_index INTEGER NOT NULL,
+    raw_transcript TEXT NOT NULL,
+    normalized_transcript TEXT NOT NULL,
+    analysis_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );`);
+  ensureColumn("voice_transcript_segments", "analysis_json", "TEXT");
+}
+
+function ensureColumn(table: string, column: string, definition: string) {
+  const statement = sqliteDb.prepare(`PRAGMA table_info(${table})`);
+  const columns: string[] = [];
+  while (statement.step()) {
+    columns.push(String(statement.getAsObject().name));
+  }
   statement.free();
-  return rows;
-}
-
-function one<T extends Record<string, unknown>>(sql: string, params: BindValue[] = []): T | undefined {
-  return all<T>(sql, params)[0];
-}
-
-function run(sql: string, params: BindValue[] = []) {
-  db.run(sql, params);
-}
-
-function transaction(callback: () => void) {
-  run("BEGIN");
-  try {
-    callback();
-    run("COMMIT");
-  } catch (error) {
-    run("ROLLBACK");
-    throw error;
+  if (!columns.includes(column)) {
+    sqliteDb.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
   }
 }
 
 function persist() {
-  writeFileSync(dbPath, Buffer.from(db.export()));
+  writeFileSync(getDatabasePath(), Buffer.from(sqliteDb.export()));
 }

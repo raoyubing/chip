@@ -1,0 +1,7 @@
+{
+  "host": "server.example.com",
+  "user": "root",
+  "port": 22,
+  "path": "/opt/xiaosongshu",
+  "branch": "main"
+}

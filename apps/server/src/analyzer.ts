@@ -35,6 +35,8 @@ export function createCandidate(input: {
   fileType?: string | null;
   fileSize?: number | null;
   fileDataBase64?: string | null;
+  fileObjectKey?: string | null;
+  fileUrl?: string | null;
 }): Candidate {
   const result = evaluateResume(input.resumeText, input.job);
   return {
@@ -51,6 +53,8 @@ export function createCandidate(input: {
     fileType: input.fileType ?? null,
     fileSize: input.fileSize ?? null,
     fileDataBase64: input.fileDataBase64 ?? null,
+    fileObjectKey: input.fileObjectKey ?? null,
+    fileUrl: input.fileUrl ?? null,
     keyPointAnalysis: result.keyPointAnalysis,
     interviewQuestions: result.interviewQuestions,
     reasonTags: inferDefaultReasonTags(result.reason),

@@ -1,0 +1,5 @@
+# compose image	source tar file under deploy/images
+node:22-bookworm-slim	node_22_bookworm_slim.tar
+nginx:1.27-alpine	nginx_1.27_alpine.tar
+rustfs/rustfs:latest	rustfs_rustfs_latest.tar
+keking/kkfileview:4.4.0	keking_kkfileview_4.4.0.tar
