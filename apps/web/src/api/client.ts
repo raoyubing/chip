@@ -10,7 +10,7 @@ function buildHttpErrorMessage(url: string, status: number, text: string) {
   if (trimmed) return trimmed;
   if (status >= 500) {
     if (url.startsWith("/api/voice")) {
-      return "访音解析服务暂时不可用，请确认本地后端已启动后重试。";
+      return "访音解析服务暂时不可用，请确认本地后端已启动，且本地语音模型已安装。";
     }
     return "本地服务暂时不可用，请确认 Node 后端已启动并监听 5175 端口。";
   }

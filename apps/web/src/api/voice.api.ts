@@ -10,6 +10,8 @@ export type VoiceAnalysisPayload = RequestDTO.VoiceAnalysisPayload;
 export const voiceApi = {
   transcribeVoiceChunk: (payload: VoiceChunkPayload) =>
     request<ResponseDTO.VoiceTranscript>("/api/voice/transcribe", { method: "POST", body: JSON.stringify(payload) }),
+  saveVoiceTranscriptSegment: (payload: VoiceSegmentAnalyzePayload) =>
+    request<{ ok: true }>("/api/voice/segments", { method: "POST", body: JSON.stringify(payload) }),
   analyzeVoiceSegment: (payload: VoiceSegmentAnalyzePayload) =>
     request<ResponseDTO.VoiceSegmentAnalyze>("/api/voice/analyze-segment", { method: "POST", body: JSON.stringify(payload) }),
   evaluateVoiceInterview: (payload: VoiceFinalEvaluatePayload) =>

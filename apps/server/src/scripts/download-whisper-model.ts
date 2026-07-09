@@ -32,20 +32,30 @@ await pipeline("automatic-speech-recognition", modelId, {
 console.log(`Whisper model ready: ${modelId}`);
 
 function reportProgress(info: ProgressInfo) {
-  if (info.status === "progress_total") {
+  const progressInfo = info as ProgressInfo & Record<string, unknown>;
+  const status = String(progressInfo.status);
+  if (status === "progress_total" || status === "progress") {
+    const progress = readProgressNumber(progressInfo, "progress");
+    const loaded = readProgressNumber(progressInfo, "loaded");
+    const total = readProgressNumber(progressInfo, "total");
     const now = Date.now();
-    if (info.progress < 100 && now - lastProgressLoggedAt < 500 && info.progress - lastProgressValue < 1) {
+    if (progress < 100 && now - lastProgressLoggedAt < 500 && progress - lastProgressValue < 1) {
       return;
     }
     lastProgressLoggedAt = now;
-    lastProgressValue = info.progress;
-    process.stdout.write(`\r${formatBytes(info.loaded)} / ${formatBytes(info.total)} (${info.progress.toFixed(1)}%)`);
-    if (info.progress >= 100) process.stdout.write("\n");
+    lastProgressValue = progress;
+    process.stdout.write(`\r${formatBytes(loaded)} / ${formatBytes(total)} (${progress.toFixed(1)}%)`);
+    if (progress >= 100) process.stdout.write("\n");
     return;
   }
   if (info.status === "done") {
     console.log(`Cached ${info.file}`);
   }
+}
+
+function readProgressNumber(info: Record<string, unknown>, key: string) {
+  const value = info[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function formatBytes(bytes: number) {

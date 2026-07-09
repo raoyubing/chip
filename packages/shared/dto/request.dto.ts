@@ -59,6 +59,7 @@ export declare namespace RequestDTO {
     audioBase64: string;
     mimeType: string;
     fileName?: string;
+    normalize?: boolean;
   }
 
   export interface VoiceSegmentAnalyze {

@@ -160,6 +160,7 @@ const voiceTranscribeSchema = z.object({
   audioBase64: z.string().min(1),
   mimeType: z.string().min(1),
   fileName: z.string().optional().default("voice-chunk.webm"),
+  normalize: z.boolean().optional().default(false),
 });
 
 const voiceAnalysisSchema = z.object({
@@ -410,11 +411,32 @@ server.post("/api/salary/research", async (request) => {
 server.post("/api/voice/transcribe", async (request) => {
   const body = voiceTranscribeSchema.parse(request.body);
   const transcript = await transcribeVoiceChunk(body.audioBase64, body.mimeType, body.fileName);
-  const normalizedTranscript = await normalizeVoiceTranscript(transcript);
+  const normalizedTranscript = body.normalize ? await normalizeVoiceTranscript(transcript) : transcript;
   return {
     transcript,
     normalizedTranscript,
   } satisfies VoiceTranscriptResult;
+});
+
+server.post("/api/voice/segments", async (request) => {
+  const body = voiceSegmentAnalyzeSchema.parse(request.body);
+  const job = getJob(body.jobId);
+  if (!job) throw server.httpErrors.notFound("关联岗位不存在");
+  const candidate = getCandidateById(body.candidateId);
+  if (!candidate) throw server.httpErrors.notFound("关联人选不存在");
+
+  const segment: VoiceTranscriptSegment = {
+    id: body.segmentId,
+    sessionId: body.sessionId,
+    jobId: body.jobId,
+    candidateId: body.candidateId,
+    segmentIndex: body.segmentIndex,
+    rawTranscript: body.rawTranscript,
+    normalizedTranscript: body.normalizedTranscript,
+    createdAt: new Date().toLocaleString("zh-CN"),
+  };
+  insertVoiceTranscriptSegment(segment);
+  return { ok: true };
 });
 
 server.post("/api/voice/analyze-segment", async (request) => {
@@ -1980,7 +2002,7 @@ async function convertAudioToWavBuffer(inputBuffer: Buffer, mimeType: string, fi
       fileName,
       ffmpegBinary,
     });
-    throw server.httpErrors.badRequest("录音转码失败，当前 ffmpeg 组件不可用。请稍后重试或联系我继续排查。");
+    throw server.httpErrors.badRequest("录音转码失败：当前录音文件不完整或浏览器音频格式暂不兼容，请重新开始录音后再试。");
   } finally {
     await Promise.all([
       unlink(inputPath).catch(() => undefined),

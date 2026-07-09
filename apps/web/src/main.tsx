@@ -2797,9 +2797,16 @@ function VoiceParseView({
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunkQueueRef = useRef<Blob[]>([]);
+  const pendingAudioBlobsRef = useRef<Blob[]>([]);
   const flushTimerRef = useRef<number | null>(null);
   const isFlushingRef = useRef(false);
   const shouldResumeRef = useRef(false);
+  const lastTranscribedTextRef = useRef("");
+  const activeSessionIdRef = useRef("");
+  const segmentIndexRef = useRef(0);
+  const finalEvaluationPendingRef = useRef(false);
+  const shouldStopStreamAfterRecorderRef = useRef(false);
+  const discardCurrentRecordingRef = useRef(false);
 
   useEffect(() => {
     if (!recordingJobs.some((job) => job.id === jobId)) setJobId((currentJob.status === "招聘中" ? currentJob.id : recordingJobs[0]?.id) || "");
@@ -2824,8 +2831,8 @@ function VoiceParseView({
 
   useEffect(() => () => {
     shouldResumeRef.current = false;
-    if (flushTimerRef.current) window.clearInterval(flushTimerRef.current);
-    recorderRef.current?.stop();
+    if (flushTimerRef.current) window.clearTimeout(flushTimerRef.current);
+    if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop();
     streamRef.current?.getTracks().forEach((track) => track.stop());
   }, []);
 
@@ -2848,6 +2855,14 @@ function VoiceParseView({
     [librarySelectedJob, selectedHistory],
   );
   const shouldShowCurrentOutput = !!selectedCandidate && !!analysis && (!!transcript || !!manualNotes.trim() || status === "listening" || status === "paused" || status === "stopped");
+
+  useEffect(() => {
+    activeSessionIdRef.current = sessionId;
+  }, [sessionId]);
+
+  useEffect(() => {
+    segmentIndexRef.current = segmentIndex;
+  }, [segmentIndex]);
 
   const markCopied = (key: "all" | "candidate" | "recruiter") => {
     setCopiedKey(key);
@@ -2875,10 +2890,14 @@ function VoiceParseView({
     window.setTimeout(() => setCopiedHistory(false), 1600);
   };
 
-  const appendTranscript = (text: string) => {
-    const next = text.trim();
-    if (!next) return;
-    setFinalTranscript((value) => `${value}${value ? "\n" : ""}${next}`.trim());
+  const normalizeTranscript = (text: string) => text.trim().replace(/\s+/g, " ");
+
+  const appendTranscriptSegment = (text: string) => {
+    const next = normalizeTranscript(text);
+    if (!next || lastTranscribedTextRef.current === next) return "";
+    lastTranscribedTextRef.current = next;
+    setFinalTranscript((value) => `${value.trim()}${value.trim() ? "\n" : ""}${next}`.trim());
+    return next;
   };
 
   const blobToBase64 = (blob: Blob) => new Promise<string>((resolve, reject) => {
@@ -2891,41 +2910,58 @@ function VoiceParseView({
     reader.readAsDataURL(blob);
   });
 
+  const requestFinalEvaluation = (attempt = 0) => {
+    const activeSessionId = activeSessionIdRef.current;
+    if (!finalEvaluationPendingRef.current || !selectedCandidate || !activeSessionId) return;
+    if ((isFlushingRef.current || pendingAudioBlobsRef.current.length) && attempt < 20) {
+      window.setTimeout(() => requestFinalEvaluation(attempt + 1), 700);
+      return;
+    }
+    finalEvaluationPendingRef.current = false;
+    setLiveHint("正在生成整场面试评估...");
+    void api.evaluateVoiceInterview({
+      sessionId: activeSessionId,
+      jobId,
+      candidateId: selectedCandidate.id,
+    }).then((result) => {
+      setFinalEvaluation(result);
+      setLiveHint("已生成整场面试评估");
+    }).catch((error) => {
+      onToast(error instanceof Error ? error.message : "整场面试评估失败");
+    });
+  };
+
   const flushChunks = async () => {
-    if (isFlushingRef.current || !chunkQueueRef.current.length) return;
+    if (isFlushingRef.current || !pendingAudioBlobsRef.current.length) return;
+    const audioBlob = pendingAudioBlobsRef.current.shift();
+    if (!audioBlob) return;
     isFlushingRef.current = true;
     setIsUploadingChunk(true);
     setLiveHint("正在转写最新录音片段...");
-    const merged = new Blob(chunkQueueRef.current.splice(0, chunkQueueRef.current.length), {
-      type: recorderRef.current?.mimeType || "audio/webm",
-    });
     try {
-      const audioBase64 = await blobToBase64(merged);
+      const audioBase64 = await blobToBase64(audioBlob);
       const result = await api.transcribeVoiceChunk({
         audioBase64,
-        mimeType: merged.type || "audio/webm",
+        mimeType: audioBlob.type || "audio/webm",
         fileName: `voice-${Date.now()}.webm`,
+        normalize: false,
       });
-      const normalized = result.normalizedTranscript || result.transcript;
-      appendTranscript(normalized);
-      setLiveHint(result.normalizedTranscript ? "已完成实时整理" : "已完成实时转写");
-      if (selectedCandidate && sessionId && normalized.trim()) {
-        const nextSegmentIndex = segmentIndex + 1;
+      const transcriptSegment = appendTranscriptSegment(result.transcript || result.normalizedTranscript);
+      setLiveHint(transcriptSegment ? "已完成实时转写" : "这一段暂未识别到清晰文字");
+      const activeSessionId = activeSessionIdRef.current;
+      if (selectedCandidate && activeSessionId && transcriptSegment) {
+        const nextSegmentIndex = segmentIndexRef.current + 1;
+        segmentIndexRef.current = nextSegmentIndex;
         setSegmentIndex(nextSegmentIndex);
-        try {
-          const liveResult = await api.analyzeVoiceSegment({
-            sessionId,
-            segmentId: `seg_${Date.now()}_${nextSegmentIndex}`,
-            jobId,
-            candidateId: selectedCandidate.id,
-            segmentIndex: nextSegmentIndex,
-            rawTranscript: result.transcript,
-            normalizedTranscript: normalized,
-          });
-          setAiLiveState(liveResult);
-        } catch (error) {
-          onToast(error instanceof Error ? error.message : "实时 AI 分析失败");
-        }
+        await api.saveVoiceTranscriptSegment({
+          sessionId: activeSessionId,
+          segmentId: `seg_${Date.now()}_${nextSegmentIndex}`,
+          jobId,
+          candidateId: selectedCandidate.id,
+          segmentIndex: nextSegmentIndex,
+          rawTranscript: transcriptSegment,
+          normalizedTranscript: transcriptSegment,
+        });
       }
     } catch (error) {
       onToast(error instanceof Error ? error.message : "实时转写失败");
@@ -2933,7 +2969,22 @@ function VoiceParseView({
     } finally {
       isFlushingRef.current = false;
       setIsUploadingChunk(false);
+      if (pendingAudioBlobsRef.current.length) {
+        void flushChunks();
+      } else {
+        requestFinalEvaluation();
+      }
     }
+  };
+
+  const scheduleSegmentStop = () => {
+    if (flushTimerRef.current) window.clearTimeout(flushTimerRef.current);
+    flushTimerRef.current = window.setTimeout(() => {
+      const recorder = recorderRef.current;
+      if (shouldResumeRef.current && recorder?.state === "recording") {
+        recorder.stop();
+      }
+    }, 8000);
   };
 
   const startRecorder = async () => {
@@ -2945,15 +2996,32 @@ function VoiceParseView({
         ? "audio/webm"
         : "";
     const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    chunkQueueRef.current = [];
     recorder.ondataavailable = (event) => {
       if (event.data && event.data.size > 0) chunkQueueRef.current.push(event.data);
     };
+    recorder.onstop = () => {
+      if (flushTimerRef.current) {
+        window.clearTimeout(flushTimerRef.current);
+        flushTimerRef.current = null;
+      }
+      const chunks = chunkQueueRef.current.splice(0, chunkQueueRef.current.length);
+      if (!discardCurrentRecordingRef.current && chunks.length) {
+        pendingAudioBlobsRef.current.push(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
+        void flushChunks();
+      }
+      if (recorderRef.current === recorder) recorderRef.current = null;
+      if (shouldResumeRef.current && streamRef.current?.active) {
+        void startRecorder();
+      } else if (shouldStopStreamAfterRecorderRef.current) {
+        streamRef.current?.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        shouldStopStreamAfterRecorderRef.current = false;
+      }
+    };
     recorderRef.current = recorder;
-    recorder.start(2000);
-    if (flushTimerRef.current) window.clearInterval(flushTimerRef.current);
-    flushTimerRef.current = window.setInterval(() => {
-      void flushChunks();
-    }, 3500);
+    recorder.start();
+    scheduleSegmentStop();
   };
 
   const startSession = async () => {
@@ -2966,8 +3034,16 @@ function VoiceParseView({
       return;
     }
     shouldResumeRef.current = true;
+    shouldStopStreamAfterRecorderRef.current = false;
+    discardCurrentRecordingRef.current = false;
+    finalEvaluationPendingRef.current = false;
     setSelectedHistoryId("");
     const nextSessionId = `voice_session_${Date.now()}`;
+    chunkQueueRef.current = [];
+    pendingAudioBlobsRef.current = [];
+    lastTranscribedTextRef.current = "";
+    activeSessionIdRef.current = nextSessionId;
+    segmentIndexRef.current = 0;
     setSessionId(nextSessionId);
     setSegmentIndex(0);
     setAiLiveState(null);
@@ -2987,22 +3063,22 @@ function VoiceParseView({
 
   const pauseSession = () => {
     shouldResumeRef.current = false;
-    recorderRef.current?.requestData();
-    recorderRef.current?.pause();
-    window.setTimeout(() => { void flushChunks(); }, 160);
+    if (flushTimerRef.current) {
+      window.clearTimeout(flushTimerRef.current);
+      flushTimerRef.current = null;
+    }
+    const recorder = recorderRef.current;
+    if (recorder?.state === "recording") recorder.stop();
     setStatus("paused");
     setLiveHint("已暂停，正在整理最后一段录音...");
   };
 
   const resumeSession = async () => {
-    const recorder = recorderRef.current;
-    if (!recorder) {
-      onToast("当前没有可继续的录音会话");
-      return;
-    }
     shouldResumeRef.current = true;
+    shouldStopStreamAfterRecorderRef.current = false;
+    discardCurrentRecordingRef.current = false;
     try {
-      recorder.resume();
+      await startRecorder();
       setStatus("listening");
       setCopiedKey(null);
       setLiveHint("已继续录音");
@@ -3013,44 +3089,44 @@ function VoiceParseView({
 
   const stopSession = () => {
     shouldResumeRef.current = false;
+    shouldStopStreamAfterRecorderRef.current = true;
+    finalEvaluationPendingRef.current = true;
     if (flushTimerRef.current) {
-      window.clearInterval(flushTimerRef.current);
+      window.clearTimeout(flushTimerRef.current);
       flushTimerRef.current = null;
     }
-    recorderRef.current?.stop();
-    streamRef.current?.getTracks().forEach((track) => track.stop());
-    streamRef.current = null;
-    window.setTimeout(() => { void flushChunks(); }, 220);
+    const recorder = recorderRef.current;
+    if (recorder?.state === "recording") {
+      recorder.stop();
+    } else {
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      void flushChunks();
+      requestFinalEvaluation();
+    }
     setStatus("stopped");
     setLiveHint("本次录音已结束，正在完成最后整理...");
     onToast("本次录音已结束，可保存到录音库或直接复制输出");
-    if (selectedCandidate && sessionId) {
-      window.setTimeout(() => {
-        void api.evaluateVoiceInterview({
-          sessionId,
-          jobId,
-          candidateId: selectedCandidate.id,
-        }).then((result) => {
-          setFinalEvaluation(result);
-          setLiveHint("已生成整场面试评估");
-        }).catch((error) => {
-          onToast(error instanceof Error ? error.message : "整场面试评估失败");
-        });
-      }, 600);
-    }
   };
 
   const clearSession = () => {
     shouldResumeRef.current = false;
+    shouldStopStreamAfterRecorderRef.current = true;
+    discardCurrentRecordingRef.current = true;
+    finalEvaluationPendingRef.current = false;
     if (flushTimerRef.current) {
-      window.clearInterval(flushTimerRef.current);
+      window.clearTimeout(flushTimerRef.current);
       flushTimerRef.current = null;
     }
-    recorderRef.current?.stop();
+    if (recorderRef.current && recorderRef.current.state !== "inactive") recorderRef.current.stop();
     streamRef.current?.getTracks().forEach((track) => track.stop());
     recorderRef.current = null;
     streamRef.current = null;
     chunkQueueRef.current = [];
+    pendingAudioBlobsRef.current = [];
+    lastTranscribedTextRef.current = "";
+    activeSessionIdRef.current = "";
+    segmentIndexRef.current = 0;
     isFlushingRef.current = false;
     setStatus("idle");
     setFinalTranscript("");
