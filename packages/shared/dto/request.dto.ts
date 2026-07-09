@@ -5,7 +5,7 @@ export declare namespace RequestDTO {
     jobId: string;
   }
 
-  export type CreateJob = Pick<SchemaDTO.Job, "title" | "dept" | "location" | "experience" | "level" | "salaryRange" | "keywords" | "description" | "status">;
+  export type CreateJob = Pick<SchemaDTO.Job, "title" | "dept" | "location" | "experience" | "level" | "salaryRange" | "keywords" | "scoreWeights" | "description" | "status">;
   export type UpdateJob = CreateJob;
 
   export interface JobPath {
@@ -21,6 +21,7 @@ export declare namespace RequestDTO {
     source?: string;
     resumeText?: string;
     files?: SchemaDTO.ResumeFilePayload[];
+    duplicateAction?: "skip" | "overwrite";
   }
 
   export interface UploadFile {
@@ -42,9 +43,18 @@ export declare namespace RequestDTO {
     ":id": string;
   }
 
+  export interface AddToTalentPool {
+    note?: string;
+  }
+
+  export interface RecommendTalentToJob {
+    jobId: string;
+    duplicateAction?: "skip" | "overwrite";
+  }
+
   export interface InterviewStage {
-    interviewStage: "初试" | "复试" | "offer";
-    stageRecommendation: "是" | "否";
+    interviewStage: "推荐" | "初试" | "复试" | "offer";
+    stageRecommendation: "待定" | "是" | "否";
     interviewResult: "通过" | "淘汰" | "待定" | "未到面";
     onboarded: "待入职" | "是" | "否";
     reportMonth: string;

@@ -64,6 +64,14 @@ export interface SalaryData {
   };
 }
 
+export interface JobScoreWeights {
+  experience: number;
+  professional: number;
+  stability: number;
+  education: number;
+  business: number;
+}
+
 export interface Job {
   id: string;
   title: string;
@@ -73,6 +81,7 @@ export interface Job {
   level: string;
   salaryRange: string;
   keywords: string;
+  scoreWeights: JobScoreWeights;
   description: string;
   status: JobStatus;
   resumeCount: number;
@@ -94,6 +103,13 @@ export interface CandidateEvaluation {
   weaknesses: string[];
   risks: string[];
   interviewFocuses: string[];
+  scoreDimensions?: Array<{
+    key: keyof JobScoreWeights;
+    label: string;
+    weight: number;
+    score: number;
+    reason: string;
+  }>;
 }
 
 export type InterviewMethodKey = "structured" | "behavioral" | "star" | "scenario" | "case";
@@ -149,6 +165,7 @@ export interface Candidate {
   score: number;
   conclusion: string;
   reason: string;
+  remark?: string;
   resumeText: string;
   uploadTime: string;
   fileName?: string | null;
@@ -168,14 +185,17 @@ export interface Candidate {
     starFocus?: string[];
     evaluationSignals?: string[];
   }>;
-  interviewStage?: "初试" | "复试" | "offer";
-  stageRecommendation?: "是" | "否";
+  interviewStage?: "推荐" | "初试" | "复试" | "offer";
+  stageRecommendation?: "待定" | "是" | "否";
   interviewResult?: "通过" | "淘汰" | "待定" | "未到面";
   onboarded?: "待入职" | "是" | "否";
   reportMonth?: string;
   interviewReason?: string;
   reasonTags?: string[];
   interviewTimeline?: CandidateTimeline;
+  isInTalentPool?: boolean;
+  talentPoolAt?: string;
+  talentPoolNote?: string;
 }
 
 export interface VoiceAnalysis {

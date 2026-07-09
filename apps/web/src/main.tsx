@@ -2,13 +2,14 @@ import React, { FormEvent, useEffect, useId, useMemo, useRef, useState } from "r
 import { createRoot } from "react-dom/client";
 import * as echarts from "echarts";
 import { api, type JobCopilotResult, type JobPayload, type ResumeUploadPayload } from "./api";
-import type { AppState, Candidate, CandidateInterviewPlan, CandidateInterviewPlanQuestion, InterviewMethodKey, Job, ResumeFilePayload, SalaryData, SalaryFilters, UploadedFile, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceRecruiterCoachReport, VoiceSegmentInsight } from "./types";
+import type { AppState, Candidate, CandidateInterviewPlan, CandidateInterviewPlanQuestion, InterviewMethodKey, Job, JobScoreWeights, ResumeFilePayload, SalaryData, SalaryFilters, UploadedFile, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceRecruiterCoachReport, VoiceSegmentInsight } from "./types";
 import "./styles.css";
 
 const views = [
   ["dashboard", "工作台概览", "◎"],
   ["jobs", "职位管理", "▦"],
   ["candidates", "简历甄选", "◉"],
+  ["talent", "人才库", "☆"],
   ["interviews", "面试管理", "◌"],
   ["voice", "访音解析", "◇"],
   ["salary", "薪酬调研", "⌁"],
@@ -55,7 +56,7 @@ function App() {
   const [bootStatus, setBootStatus] = useState<"loading" | "ready" | "error">("loading");
   const [bootError, setBootError] = useState("");
   const [activeView, setActiveView] = useState<View>("dashboard");
-  const [activeInterviewStage, setActiveInterviewStage] = useState<InterviewStage>("初试");
+  const [activeInterviewStage, setActiveInterviewStage] = useState<InterviewStage>("推荐");
   const [activeInterviewJobId, setActiveInterviewJobId] = useState<string>("all");
   const [activeInterviewMonth, setActiveInterviewMonth] = useState<string>("all");
   const [salaryData, setSalaryData] = useState<SalaryData | null>(null);
@@ -160,18 +161,31 @@ function App() {
     const next = await api.markInterview(targetCandidateId);
     setRemoteState(next);
     setSelectedCandidateId(targetCandidateId);
-    setActiveInterviewStage("初试");
+    setActiveInterviewStage("推荐");
     setActiveInterviewJobId(currentJob?.id || "all");
     setActiveInterviewMonth("all");
     setActiveView("interviews");
-    showToast("已标记为面试，已进入初试");
+    showToast("已进入推荐，确认推荐后再推进初试");
   }
 
   async function deleteCandidate() {
-    if (!selectedCandidateId || !window.confirm("确认删除该候选人？")) return;
+    const targetCandidate = currentCandidates.find((candidate) => candidate.id === selectedCandidateId);
+    const message = targetCandidate?.isInTalentPool
+      ? "该候选人已进入人才库，删除后人才库档案也会彻底删除。确认删除？"
+      : "确认删除该候选人？";
+    if (!selectedCandidateId || !window.confirm(message)) return;
     const next = await api.deleteCandidate(selectedCandidateId);
     setRemoteState(next);
     showToast("候选人已删除");
+  }
+
+  async function addToTalentPool(candidateId?: string) {
+    const targetCandidateId = candidateId || selectedCandidateId || currentCandidates[0]?.id;
+    if (!targetCandidateId) return;
+    const next = await api.addToTalentPool(targetCandidateId);
+    setRemoteState(next);
+    setSelectedCandidateId(targetCandidateId);
+    showToast("已进入人才库，后续可追溯复用");
   }
 
   async function updateInterviewStage(
@@ -310,7 +324,8 @@ function App() {
         <section className="content">
           {activeView === "dashboard" && <Dashboard state={state} currentJob={currentJob} onJump={setActiveView} onClearData={clearData} onSelectJob={changeJob} />}
           {activeView === "jobs" && <JobsView state={state} currentJob={currentJob} onSelect={changeJob} onEdit={(job) => setModal({ type: "job", job })} onCreate={() => setModal({ type: "job" })} onCloseJob={closeJob} onDelete={deleteJob} />}
-          {activeView === "candidates" && <CandidatesView candidates={currentCandidates} selectedId={selectedCandidateId} onSelect={setSelectedCandidateId} onUpload={() => setModal({ type: "resume" })} onMark={markInterview} onDelete={deleteCandidate} currentJob={currentJob} onStateChange={setRemoteState} />}
+          {activeView === "candidates" && <CandidatesView candidates={currentCandidates} selectedId={selectedCandidateId} onSelect={setSelectedCandidateId} onUpload={() => setModal({ type: "resume" })} onMark={markInterview} onAddToTalentPool={addToTalentPool} onDelete={deleteCandidate} currentJob={currentJob} onStateChange={setRemoteState} />}
+          {activeView === "talent" && <TalentPoolView jobs={state.jobs} currentJob={currentJob} candidatesByJob={state.candidates} onStateChange={setRemoteState} onToast={showToast} />}
           {activeView === "interviews" && <InterviewsView jobs={ongoingJobs} selectedJobId={activeInterviewJobId} onJobChange={setActiveInterviewJobId} selectedMonth={activeInterviewMonth} onMonthChange={setActiveInterviewMonth} activeStage={activeInterviewStage} candidates={interviewCandidates} onStageChange={setActiveInterviewStage} onSaveStage={updateInterviewStage} />}
           {activeView === "voice" && (
             <VoiceParseView
@@ -327,7 +342,7 @@ function App() {
       </main>
 
       {modal?.type === "job" && <JobModal job={modal.job} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); showToast(modal.job ? "职位已更新" : "职位已新增"); }} />}
-      {modal?.type === "resume" && <ResumeModal job={currentJob} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); showToast("简历分析完成"); }} />}
+      {modal?.type === "resume" && <ResumeModal job={currentJob} candidates={currentCandidates} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); showToast("简历分析完成"); }} />}
       {toast && <div className="toast">{toast}</div>}
     </div>
   );
@@ -339,12 +354,14 @@ function JobSearchSwitcher({
   onChange,
   label = "当前进行中岗位",
   placeholder = "输入岗位名称搜索",
+  disabled = false,
 }: {
   jobs: Job[];
   currentJob: Job | null;
   onChange: (id: string) => void;
   label?: string;
   placeholder?: string;
+  disabled?: boolean;
 }) {
   const selectedLabel = currentJob ? formatJobOption(currentJob) : "";
   const inputId = useId();
@@ -362,6 +379,7 @@ function JobSearchSwitcher({
   const filteredJobs = keyword && !showAll
     ? jobs.filter((job) => `${job.title} ${job.dept} ${job.location}`.toLowerCase().includes(keyword))
     : jobs;
+  const isDisabled = disabled || !jobs.length;
 
   const selectJob = (job: Job) => {
     setQuery(formatJobOption(job));
@@ -375,7 +393,7 @@ function JobSearchSwitcher({
   };
 
   const toggleAllJobs = () => {
-    if (!jobs.length) return;
+    if (isDisabled) return;
     const shouldOpen = !open || !showAll;
     keepAllOnFocusRef.current = shouldOpen;
     setOpen(shouldOpen);
@@ -392,7 +410,7 @@ function JobSearchSwitcher({
           id={inputId}
           value={query}
           placeholder={jobs.length ? placeholder : "暂无可选岗位"}
-          disabled={!jobs.length}
+          disabled={isDisabled}
           autoComplete="off"
           onFocus={() => {
             setOpen(true);
@@ -412,7 +430,7 @@ function JobSearchSwitcher({
           type="button"
           className="job-search-arrow"
           aria-label="展开岗位列表"
-          disabled={!jobs.length}
+          disabled={isDisabled}
           onMouseDown={(event) => event.preventDefault()}
           onClick={toggleAllJobs}
         >
@@ -437,6 +455,154 @@ function JobSearchSwitcher({
       </div>
     </div>
   );
+}
+
+function CandidateSearchSwitcher({
+  candidates,
+  currentCandidate,
+  onChange,
+  label = "关联人选",
+  placeholder = "输入人选姓名搜索",
+  disabled = false,
+}: {
+  candidates: Candidate[];
+  currentCandidate: Candidate | null;
+  onChange: (id: string) => void;
+  label?: string;
+  placeholder?: string;
+  disabled?: boolean;
+}) {
+  const selectedLabel = currentCandidate ? formatCandidateOption(currentCandidate) : "";
+  const inputId = useId();
+  const [query, setQuery] = useState(selectedLabel);
+  const [open, setOpen] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const keepAllOnFocusRef = useRef(false);
+
+  useEffect(() => {
+    if (!open) setQuery(selectedLabel);
+  }, [open, selectedLabel]);
+
+  const keyword = normalizeSearchKeyword(query);
+  const filteredCandidates = keyword && !showAll
+    ? candidates.filter((candidate) => buildCandidateSearchText(candidate).includes(keyword))
+    : candidates;
+  const isDisabled = disabled || !candidates.length;
+
+  const selectCandidate = (candidate: Candidate) => {
+    setQuery(formatCandidateOption(candidate));
+    setOpen(false);
+    setShowAll(false);
+    onChange(candidate.id);
+  };
+
+  const commitBestMatch = () => {
+    const exactCandidate = findBestCandidateTextMatch(candidates, query);
+    if (exactCandidate) {
+      selectCandidate(exactCandidate);
+      return;
+    }
+    if (filteredCandidates[0]) selectCandidate(filteredCandidates[0]);
+  };
+
+  const toggleAllCandidates = () => {
+    if (isDisabled) return;
+    const shouldOpen = !open || !showAll;
+    keepAllOnFocusRef.current = shouldOpen;
+    setOpen(shouldOpen);
+    setShowAll(shouldOpen);
+    if (shouldOpen) inputRef.current?.focus();
+  };
+
+  return (
+    <div className="job-switcher job-search candidate-search">
+      <label htmlFor={inputId}>{label}</label>
+      <div className="job-search-box">
+        <input
+          ref={inputRef}
+          id={inputId}
+          value={query}
+          placeholder={candidates.length ? placeholder : "当前岗位暂无候选人"}
+          disabled={isDisabled}
+          autoComplete="off"
+          onFocus={() => {
+            setOpen(true);
+            if (!keepAllOnFocusRef.current) setShowAll(false);
+            keepAllOnFocusRef.current = false;
+          }}
+          onChange={(event) => {
+            const nextQuery = event.target.value;
+            setQuery(nextQuery);
+            setOpen(true);
+            setShowAll(false);
+            const exactCandidate = findBestCandidateTextMatch(candidates, nextQuery);
+            if (exactCandidate) onChange(exactCandidate.id);
+          }}
+          onBlur={() => window.setTimeout(() => {
+            if (query.trim()) commitBestMatch();
+            setOpen(false);
+            setShowAll(false);
+          }, 120)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              commitBestMatch();
+            }
+          }}
+        />
+        <button
+          type="button"
+          className="job-search-arrow"
+          aria-label="展开人选列表"
+          disabled={isDisabled}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={toggleAllCandidates}
+        >
+          ⌄
+        </button>
+        {open && candidates.length > 0 && (
+          <div className="job-search-menu">
+            {filteredCandidates.length ? filteredCandidates.map((candidate) => (
+              <button
+                type="button"
+                key={candidate.id}
+                className={`job-search-option ${candidate.id === currentCandidate?.id ? "active" : ""}`}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => selectCandidate(candidate)}
+              >
+                <strong>{candidate.name}</strong>
+                <span>{candidate.source} · {candidate.conclusion} · {candidate.score}分</span>
+              </button>
+            )) : <div className="job-search-empty">未找到匹配人选</div>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function formatCandidateOption(candidate: Candidate) {
+  return candidate.name;
+}
+
+function normalizeSearchKeyword(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, "");
+}
+
+function buildCandidateSearchText(candidate: Candidate) {
+  return normalizeSearchKeyword(`${candidate.name} ${candidate.source} ${candidate.conclusion} ${candidate.reason} ${candidate.resumeText}`);
+}
+
+function findBestCandidateTextMatch(candidates: Candidate[], query: string) {
+  const keyword = normalizeSearchKeyword(query);
+  if (!keyword) return null;
+  const exactName = candidates.find((candidate) => normalizeSearchKeyword(candidate.name) === keyword);
+  if (exactName) return exactName;
+  const exactOption = candidates.find((candidate) => normalizeSearchKeyword(formatCandidateOption(candidate)) === keyword);
+  if (exactOption) return exactOption;
+  const matched = candidates.filter((candidate) => buildCandidateSearchText(candidate).includes(keyword));
+  return matched.length === 1 ? matched[0] : null;
 }
 
 function EditableOptionSwitcher({
@@ -643,9 +809,9 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
     <>
       <div className="grid cols-4 dashboard-summary-grid">
         <section className="card dashboard-summary-card"><span className="dashboard-summary-label">招聘中岗位</span><strong className="dashboard-summary-value">{activeJobs.length}</strong><span className="dashboard-summary-extra">{selectedPeriod === "all" ? "当前在招" : `${formatAnalyticsGranularity(granularity)}筛选视角`}</span></section>
-        <section className="card dashboard-summary-card"><span className="dashboard-summary-label">推荐简历总数</span><strong className="dashboard-summary-value">{overview.resumeTotal}</strong><span className="dashboard-summary-extra">{selectedPeriod === "all" ? "全部周期汇总" : `周期：${selectedPeriod}`}</span></section>
+        <section className="card dashboard-summary-card"><span className="dashboard-summary-label">推荐简历数</span><strong className="dashboard-summary-value">{overview.recommendedTotal}</strong><span className="dashboard-summary-extra">{selectedPeriod === "all" ? "面试管理流程起点" : `周期：${selectedPeriod}`}</span></section>
         <section className="card dashboard-summary-card"><span className="dashboard-summary-label">最终录用人数</span><strong className="dashboard-summary-value">{overview.hiredCount}</strong><span className="dashboard-summary-extra">{pendingOffers ? `${pendingOffers} 位待入职` : "已含入职转化"}</span></section>
-        <section className="card dashboard-summary-card"><span className="dashboard-summary-label">实际入职人数</span><strong className="dashboard-summary-value">{completedOffers}</strong><span className="dashboard-summary-extra">{overview.resumeTotal ? `录用转化 ${formatPercent(overview.hiredCount, overview.resumeTotal)}` : "暂无数据"}</span></section>
+        <section className="card dashboard-summary-card"><span className="dashboard-summary-label">实际入职人数</span><strong className="dashboard-summary-value">{completedOffers}</strong><span className="dashboard-summary-extra">{overview.recommendedTotal ? `录用转化 ${formatPercent(overview.hiredCount, overview.recommendedTotal)}` : "暂无数据"}</span></section>
       </div>
 
       <section className="card pad analytics-toolbar-card">
@@ -725,7 +891,7 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
                 <tr>
                   <th>招聘流程项目</th>
                   <th>数量</th>
-                  <th>与简历总数比</th>
+                  <th>与推荐简历比</th>
                   <th>各环节通过率</th>
                   <th>通过率说明</th>
                   <th>备注</th>
@@ -1191,14 +1357,21 @@ function JobsView({
   );
 }
 
-function CandidatesView({ candidates, selectedId, onSelect, onUpload, onMark, onDelete, currentJob, onStateChange }: { candidates: Candidate[]; selectedId: string | null; onSelect: (id: string) => void; onUpload: () => void; onMark: (id: string) => void; onDelete: () => void; currentJob: Job; onStateChange: (state: AppState) => void }) {
-  const sortedCandidates = useMemo(() => [...candidates].sort((left, right) => right.score - left.score), [candidates]);
+function CandidatesView({ candidates, selectedId, onSelect, onUpload, onMark, onAddToTalentPool, onDelete, currentJob, onStateChange }: { candidates: Candidate[]; selectedId: string | null; onSelect: (id: string) => void; onUpload: () => void; onMark: (id: string) => void; onAddToTalentPool: (id: string) => void; onDelete: () => void; currentJob: Job; onStateChange: (state: AppState) => void }) {
+  const visibleCandidates = useMemo(() => dedupeCandidateList(candidates), [candidates]);
+  const sortedCandidates = useMemo(() => [...visibleCandidates].sort((left, right) => right.score - left.score), [visibleCandidates]);
   const selected = sortedCandidates.find((candidate) => candidate.id === selectedId) || sortedCandidates[0] || null;
   const [detailTab, setDetailTab] = useState<CandidateDetailTab>("overview");
 
   useEffect(() => {
     setDetailTab("overview");
   }, [selected?.id]);
+
+  useEffect(() => {
+    if (selected?.id && selected.id !== selectedId) {
+      onSelect(selected.id);
+    }
+  }, [onSelect, selected?.id, selectedId]);
 
   const selectCandidate = (id: string, tab: CandidateDetailTab = "overview") => {
     onSelect(id);
@@ -1207,7 +1380,7 @@ function CandidatesView({ candidates, selectedId, onSelect, onUpload, onMark, on
 
   return <>
     <section className="card pad"><div className="toolbar"><div><h3 className="card-title">{currentJob.title} · 简历甄选</h3><p className="helper-text">按当前职位查看候选人，并基于岗位关键考核点生成分析。</p></div><div className="toolbar-right"><button className="btn primary" onClick={onUpload}>上传/录入简历</button></div></div></section>
-    <div className="candidate-layout"><section className="card pad">{sortedCandidates.length ? <div className="candidate-list">{sortedCandidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} selected={candidate.id === selected?.id} onSelect={() => selectCandidate(candidate.id)} onOpenResume={() => selectCandidate(candidate.id, "resume")} />)}</div> : <div className="empty"><div><strong>暂无简历</strong><br />点击“上传/录入简历”添加候选人。</div></div>}</section><section key={selected?.id || "empty"} className="card pad candidate-detail-card">{selected ? <CandidateDetail candidate={selected} activeTab={detailTab} onTabChange={setDetailTab} onMark={onMark} onDelete={onDelete} onStateChange={onStateChange} currentJob={currentJob} /> : <div className="empty"><div><strong>暂无候选人详情</strong><br />上传或录入简历后可查看甄选结论。</div></div>}</section></div>
+    <div className="candidate-layout"><section className="card pad">{sortedCandidates.length ? <div className="candidate-list">{sortedCandidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} selected={candidate.id === selected?.id} onSelect={() => selectCandidate(candidate.id)} onOpenResume={() => selectCandidate(candidate.id, "resume")} />)}</div> : <div className="empty"><div><strong>暂无简历</strong><br />点击“上传/录入简历”添加候选人。</div></div>}</section><section key={selected?.id || "empty"} className="card pad candidate-detail-card">{selected ? <CandidateDetail candidate={selected} activeTab={detailTab} onTabChange={setDetailTab} onMark={onMark} onAddToTalentPool={onAddToTalentPool} onDelete={onDelete} onStateChange={onStateChange} currentJob={currentJob} /> : <div className="empty"><div><strong>暂无候选人详情</strong><br />上传或录入简历后可查看甄选结论。</div></div>}</section></div>
   </>;
 }
 
@@ -1229,7 +1402,7 @@ function CandidateCard({ candidate, selected, onSelect, onOpenResume }: { candid
     >
       <div className="score-ring" style={{ "--score": candidate.score } as React.CSSProperties}><span>{candidate.score}</span></div>
       <div className="candidate-body">
-        <div className="candidate-topline"><div><h4>{candidate.name}</h4>{profileTags.length > 0 && <div className="candidate-profile-tags">{profileTags.map((tag) => <span key={`${tag.label}-${tag.value}`}>{tag.label}：{tag.value}</span>)}</div>}</div><Badge color={scoreColor(candidate.score)}>{candidate.conclusion}</Badge></div>
+        <div className="candidate-topline"><div><h4>{candidate.name}</h4>{profileTags.length > 0 && <div className="candidate-profile-tags">{profileTags.map((tag) => <span key={`${tag.label}-${tag.value}`}>{tag.label}：{tag.value}</span>)}</div>}</div><div className="candidate-badge-stack"><Badge color={scoreColor(candidate.score)}>{candidate.conclusion}</Badge>{candidate.isInTalentPool ? <Badge color="green">已入库</Badge> : null}</div></div>
         <p className="reason">{candidate.reason}</p>
         <button className="btn ghost" type="button" onClick={(event) => { event.stopPropagation(); onOpenResume(); }}>查看简历</button>
       </div>
@@ -1249,6 +1422,638 @@ function extractCandidateProfileTags(candidate: Candidate) {
   ].filter((tag): tag is { label: string; value: string } => Boolean(tag));
 }
 
+function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onToast }: { jobs: Job[]; currentJob: Job; candidatesByJob: AppState["candidates"]; onStateChange: (state: AppState) => void; onToast: (message: string) => void }) {
+  const [keyword, setKeyword] = useState("");
+  const [jobId, setJobId] = useState("all");
+  const [profileFilter, setProfileFilter] = useState("all");
+  const [selectedTalentId, setSelectedTalentId] = useState("");
+  const [previewError, setPreviewError] = useState("");
+  const [recommendCandidate, setRecommendCandidate] = useState<Candidate | null>(null);
+  const [recommendTargetJobId, setRecommendTargetJobId] = useState("");
+  const [recommendLoading, setRecommendLoading] = useState(false);
+  const [recommendError, setRecommendError] = useState("");
+  const [overwriteExistingRecommend, setOverwriteExistingRecommend] = useState(false);
+  const [revivalScriptLoading, setRevivalScriptLoading] = useState(false);
+  const [revivalScriptCopied, setRevivalScriptCopied] = useState(false);
+  const ongoingJobs = useMemo(() => jobs.filter((job) => job.status === "招聘中"), [jobs]);
+  const talentCandidates = useMemo(() => {
+    return Object.values(candidatesByJob)
+      .flat()
+      .filter((candidate) => candidate.isInTalentPool || isHiredTalent(candidate))
+      .sort((left, right) => right.score - left.score);
+  }, [candidatesByJob]);
+  const frequentKeywords = useMemo(() => buildFrequentTalentKeywords(talentCandidates), [talentCandidates]);
+  const outcomeSummary = useMemo(() => buildTalentOutcomeSummary(talentCandidates), [talentCandidates]);
+  const filteredCandidates = useMemo(() => talentCandidates.filter((candidate) => {
+    const job = jobs.find((item) => item.id === candidate.jobId);
+    const searchText = `${candidate.name} ${candidate.source} ${candidate.reason} ${candidate.resumeText} ${job?.title || ""} ${job?.dept || ""} ${job?.keywords || ""}`.toLowerCase();
+    const matchesKeyword = !keyword.trim() || searchText.includes(keyword.trim().toLowerCase());
+    const matchesJob = jobId === "all" || candidate.jobId === jobId;
+    const matchesProfile =
+      profileFilter === "all"
+      || (profileFilter === "high" && candidate.score >= 85)
+      || (profileFilter === "reusable" && isReusableTalent(candidate))
+      || (profileFilter === "interviewed" && Boolean(candidate.interviewStage));
+    return matchesKeyword && matchesJob && matchesProfile;
+  }), [talentCandidates, jobs, keyword, jobId, profileFilter]);
+  const selectedTalent = filteredCandidates.find((candidate) => candidate.id === selectedTalentId) || filteredCandidates[0] || null;
+  const selectedJob = selectedTalent ? jobs.find((job) => job.id === selectedTalent.jobId) || null : null;
+  const recommendDuplicateCandidate = recommendCandidate && recommendTargetJobId
+    ? findDuplicateCandidateInList(candidatesByJob[recommendTargetJobId] || [], recommendCandidate)
+    : null;
+  const recommendCandidateAgeDays = recommendCandidate ? getTalentArchiveAgeDays(recommendCandidate) : null;
+  const shouldWarnRevival = typeof recommendCandidateAgeDays === "number" && recommendCandidateAgeDays > 90;
+  const highProfileCount = talentCandidates.filter((candidate) => candidate.score >= 85).length;
+  const reusableCount = talentCandidates.filter(isReusableTalent).length;
+
+  useEffect(() => {
+    if (!recommendCandidate) return;
+    const defaultJobId = currentJob.status === "招聘中" ? currentJob.id : ongoingJobs[0]?.id || "";
+    setRecommendTargetJobId((jobId) => jobId && ongoingJobs.some((job) => job.id === jobId) ? jobId : defaultJobId);
+    setOverwriteExistingRecommend(false);
+    setRevivalScriptCopied(false);
+    setRecommendError("");
+  }, [currentJob.id, currentJob.status, ongoingJobs, recommendCandidate]);
+
+  useEffect(() => {
+    setRevivalScriptCopied(false);
+  }, [recommendTargetJobId]);
+
+  useEffect(() => {
+    if (!filteredCandidates.length) {
+      setSelectedTalentId("");
+      return;
+    }
+    if (!filteredCandidates.some((candidate) => candidate.id === selectedTalentId)) {
+      setSelectedTalentId(filteredCandidates[0].id);
+    }
+  }, [filteredCandidates, selectedTalentId]);
+
+  const previewTalentFile = async () => {
+    if (!selectedTalent?.fileObjectKey) return;
+    setPreviewError("");
+    try {
+      await openFilePreview(selectedTalent.fileObjectKey, selectedTalent.fileType);
+    } catch (error) {
+      setPreviewError(error instanceof Error ? error.message : "原始附件预览失败");
+    }
+  };
+
+  const submitRecommendToJob = async () => {
+    if (!recommendCandidate || !recommendTargetJobId) return;
+    setRecommendLoading(true);
+    setRecommendError("");
+    try {
+      const beforeCount = candidatesByJob[recommendTargetJobId]?.length || 0;
+      const next = await api.recommendTalentToJob(recommendCandidate.id, {
+        jobId: recommendTargetJobId,
+        duplicateAction: overwriteExistingRecommend ? "overwrite" : "skip",
+      });
+      const targetJob = jobs.find((job) => job.id === recommendTargetJobId);
+      const afterCount = next.candidates[recommendTargetJobId]?.length || 0;
+      onStateChange(next);
+      onToast(afterCount > beforeCount
+        ? `已推荐至${targetJob?.title || "目标岗位"}，可在简历甄选查看`
+        : recommendDuplicateCandidate && overwriteExistingRecommend
+          ? `已用人才库简历覆盖${targetJob?.title || "目标岗位"}中的原简历`
+        : `${targetJob?.title || "目标岗位"}的简历甄选已存在该人选，不重复显示`);
+      setRecommendCandidate(null);
+    } catch (error) {
+      setRecommendError(error instanceof Error ? error.message : "推荐失败，请稍后重试");
+    } finally {
+      setRecommendLoading(false);
+    }
+  };
+
+  const copyTalentRevivalScript = async () => {
+    if (!recommendCandidate || !recommendTargetJobId) return;
+    setRevivalScriptLoading(true);
+    setRevivalScriptCopied(false);
+    setRecommendError("");
+    try {
+      const { script } = await api.generateTalentRevivalScript(recommendCandidate.id, recommendTargetJobId);
+      await navigator.clipboard.writeText(script);
+      setRevivalScriptCopied(true);
+      onToast("已复制高价值回访话术");
+    } catch (error) {
+      setRecommendError(error instanceof Error ? error.message : "话术生成失败，请稍后重试");
+    } finally {
+      setRevivalScriptLoading(false);
+    }
+  };
+
+  return (
+    <div className="talent-page">
+      <section className="card pad talent-hero-card">
+        <div>
+          <p className="eyebrow">Talent Archive</p>
+          <h3 className="card-title">人才库</h3>
+          <p className="helper-text">从简历甄选进入人才库后，候选人简历、原岗位、AI 评分与关键画像会持续保留，方便未来岗位重新开启时快速追溯。</p>
+        </div>
+        <div className="talent-metrics">
+          <Metric label="入库人才" value={talentCandidates.length} />
+          <Metric label="高画像人选" value={highProfileCount} />
+          <Metric label="可复用人选" value={reusableCount} />
+        </div>
+      </section>
+
+      <section className="card pad">
+        <div className="talent-filter-grid">
+          <label className="field"><span>搜索人才</span><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入姓名、岗位、关键词、经历内容" /></label>
+          <label className="field"><span>原岗位</span><select value={jobId} onChange={(event) => setJobId(event.target.value)}><option value="all">全部岗位</option>{jobs.map((job) => <option key={job.id} value={job.id}>{job.title} · {job.dept}</option>)}</select></label>
+          <label className="field"><span>画像筛选</span><select value={profileFilter} onChange={(event) => setProfileFilter(event.target.value)}><option value="all">全部画像</option><option value="high">高画像（85分+）</option><option value="reusable">可复用（已流失可复活）</option><option value="interviewed">已进入面试流程</option></select></label>
+        </div>
+      </section>
+
+      <section className="card pad">
+        <CardHeader title="人才档案" desc="按综合评分排序；点击查看可回到原岗位的简历详情。" />
+        <div className="talent-outcome-bar" aria-label="结局">
+          <strong>结局</strong>
+          {talentOutcomePresets.map((outcome) => (
+            <TalentOutcomeTag key={outcome.key} outcome={outcome} count={outcomeSummary[outcome.key]} />
+          ))}
+        </div>
+        {filteredCandidates.length ? (
+          <div className="talent-table-wrap">
+            <table className="table talent-table">
+              <thead>
+                <tr>
+                  <th>候选人</th>
+                  <th>原岗位 / 部门</th>
+                  <th>结局</th>
+                  <th>画像标签</th>
+                  <th>新鲜度</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredCandidates.map((candidate) => {
+                  const job = jobs.find((item) => item.id === candidate.jobId);
+                  const matchedKeywords = candidate.keyPointAnalysis.filter((item) => item.matched).map((item) => item.keyword);
+                  const profileTags = buildTalentProfileTags(candidate, matchedKeywords, frequentKeywords);
+                  const outcome = getTalentOutcome(candidate);
+                  const freshness = getTalentFreshness(candidate);
+                  return (
+                    <tr key={candidate.id} className={`${candidate.id === selectedTalent?.id ? "selected" : ""} ${freshness.key === "sleeping" ? "sleeping" : ""}`}>
+                      <td>
+                        <div className="talent-person">
+                          <div className="score-ring compact talent-score-ring" style={{ "--score": candidate.score } as React.CSSProperties}><span>{candidate.score}</span></div>
+                          <div>
+                            <strong>{candidate.name}</strong>
+                            <div className="talent-person-meta">
+                              {buildTalentCandidateMeta(candidate, job).map((item) => <span key={item}>{item}</span>)}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      <td><strong>{job?.title || "未知岗位"}</strong><span className="meta">{job?.dept || "未记录部门"} · {job?.location || "未记录地点"}</span></td>
+                      <td><TalentOutcomeTag outcome={outcome} /></td>
+                      <td><div className="talent-tag-row">{profileTags.map((tag) => <span key={tag}>{tag}</span>)}</div></td>
+                      <td><TalentFreshnessHat candidate={candidate} /></td>
+                      <td>
+                        <div className="talent-action-buttons">
+                          <button className="btn ghost compact" type="button" onClick={() => { setSelectedTalentId(candidate.id); setPreviewError(""); }}>查看档案</button>
+                          <button className="btn blue compact" type="button" onClick={() => setRecommendCandidate(candidate)}>🔄 推荐至当前岗位</button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="empty"><div><strong>暂无匹配人才</strong><br />在简历甄选中点击“进入人才库”后，这里会自动沉淀可追溯档案。</div></div>
+        )}
+      </section>
+
+      {selectedTalent ? (
+        <section className="card pad talent-detail-card">
+          <div className="row-between">
+            <div>
+              <p className="eyebrow">Talent Profile</p>
+              <h3 className="card-title">{selectedTalent.name} · 人才档案</h3>
+              <p className="helper-text">原岗位：{selectedJob?.title || "未知岗位"} · {selectedJob?.dept || "未记录部门"} · 归档记录：{formatTalentArchiveTime(selectedTalent)}</p>
+            </div>
+            <Badge color={scoreColor(selectedTalent.score)}>{selectedTalent.score} 分</Badge>
+          </div>
+          <div className="salary-summary compact">
+            <Metric label="原岗位状态" value={selectedJob?.status || "未记录"} />
+            <Metric label="结局" value={getTalentOutcome(selectedTalent).label} />
+            <Metric label="新鲜度" value={<TalentFreshnessHat candidate={selectedTalent} compact />} />
+            <Metric label="筛选结论" value={selectedTalent.conclusion} />
+            <Metric label="推荐强度" value={selectedTalent.score >= 85 ? "高画像" : isReusableTalent(selectedTalent) ? "可复用" : "可观察"} />
+          </div>
+          <div className="talent-detail-grid">
+            <section className="insight-card">
+              <strong>AI 推荐理由</strong>
+              <p>{selectedTalent.reason}</p>
+            </section>
+            <section className="insight-card">
+              <strong>关键画像</strong>
+              <div className="talent-tag-row spaced-small">
+                {buildTalentProfileTags(selectedTalent, selectedTalent.keyPointAnalysis.filter((item) => item.matched).map((item) => item.keyword), frequentKeywords).map((tag) => <span key={tag}>{tag}</span>)}
+              </div>
+            </section>
+          </div>
+          <div className="row-between section-title-row">
+            <span className="meta">简历原文</span>
+            <div className="toolbar-right compact-actions">
+              <span className="helper-text">{selectedTalent.fileName || selectedTalent.source}</span>
+              {selectedTalent.fileObjectKey ? <button className="btn ghost compact" type="button" onClick={previewTalentFile}>预览原件</button> : null}
+            </div>
+          </div>
+          {previewError ? <div className="tool-error spaced-small">{previewError}</div> : null}
+          <div className="resume-box talent-resume-box"><ResumeKeywordHighlightedText candidate={selectedTalent} job={selectedJob} /></div>
+        </section>
+      ) : null}
+
+      {recommendCandidate ? (
+        <div className="modal-root talent-recommend-root">
+          <section className="modal talent-recommend-modal" role="dialog" aria-modal="true" aria-label="推荐至当前岗位">
+            <header className="modal-head">
+              <div>
+                <h3>推荐至当前岗位</h3>
+                <p className="helper-text">将 {recommendCandidate.name} 的简历副本与 AI 摘要回溯推荐到招聘中岗位。</p>
+              </div>
+              <button className="btn ghost compact" type="button" onClick={() => setRecommendCandidate(null)}>关闭</button>
+            </header>
+            <div className="modal-body talent-recommend-body">
+              <label className="field">
+                <span>选择招聘中岗位</span>
+                <select value={recommendTargetJobId} onChange={(event) => setRecommendTargetJobId(event.target.value)}>
+                  {ongoingJobs.map((job) => <option key={job.id} value={job.id}>{job.title} · {job.location}</option>)}
+                </select>
+              </label>
+              <div className="talent-recommend-preview">
+                <strong>系统备注</strong>
+                <p>由人才库于 {formatSimpleDate()} 回溯推荐</p>
+                <small>确认后，该候选人会出现在目标岗位的“简历甄选”列表中，状态默认为“待筛选”。</small>
+              </div>
+              {shouldWarnRevival ? (
+                <div className="talent-revival-warning">
+                  <div>
+                    <strong>该候选人已入库超过 3 个月</strong>
+                    <p>系统建议先用低压、高价值的方式唤醒沟通：不问是否在看机会，而是告诉 TA 为什么这次非要找 TA。</p>
+                    <small>已入库约 {recommendCandidateAgeDays} 天，不阻止推荐，但建议先复制话术预热。</small>
+                  </div>
+                  <button className="btn gold compact" type="button" onClick={copyTalentRevivalScript} disabled={revivalScriptLoading || !recommendTargetJobId}>
+                    {revivalScriptLoading ? "生成中..." : revivalScriptCopied ? "已复制" : "复制话术"}
+                  </button>
+                </div>
+              ) : null}
+              {recommendDuplicateCandidate ? (
+                <label className="talent-overwrite-option">
+                  <input
+                    type="checkbox"
+                    checked={overwriteExistingRecommend}
+                    onChange={(event) => setOverwriteExistingRecommend(event.target.checked)}
+                  />
+                  <span>
+                    <strong>简历甄选中已有 {recommendDuplicateCandidate.name} 的简历</strong>
+                    <small>勾选后，将用人才库这份简历覆盖原简历；不勾选则保留原简历，且不重复显示。</small>
+                  </span>
+                </label>
+              ) : null}
+              {recommendError ? <div className="tool-error">{recommendError}</div> : null}
+            </div>
+            <footer className="modal-foot">
+              <button className="btn" type="button" onClick={() => setRecommendCandidate(null)}>取消</button>
+              <button className="btn blue" type="button" onClick={submitRecommendToJob} disabled={recommendLoading || !recommendTargetJobId || !ongoingJobs.length}>{recommendLoading ? "推荐中..." : "确认推荐"}</button>
+            </footer>
+          </section>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function buildFrequentTalentKeywords(candidates: Candidate[]) {
+  const counts = new Map<string, number>();
+  candidates.forEach((candidate) => {
+    candidate.keyPointAnalysis
+      .filter((item) => item.matched)
+      .forEach((item) => counts.set(item.keyword, (counts.get(item.keyword) || 0) + 1));
+  });
+  return new Set([...counts.entries()].filter(([, count]) => count >= 2).map(([keyword]) => keyword));
+}
+
+function buildTalentCandidateMeta(candidate: Candidate, job?: Job | null) {
+  const source = normalizeTalentCandidateSource(candidate.source);
+  const searchText = `${candidate.source} ${candidate.fileName || ""} ${candidate.resumeText} ${candidate.reason}`;
+  const experience = extractTalentExperience(searchText);
+  const salary = extractTalentSalary(searchText);
+  const region = extractTalentRegion(searchText) || job?.location || "地区未记录";
+  return [source, experience, salary, region].filter(Boolean);
+}
+
+function normalizeTalentCandidateSource(source: string) {
+  const cleaned = source.replace(/^人才库回溯\s*·\s*/, "").trim();
+  const matched = cleaned.match(/BOSS|智联|猎聘|内推|前程无忧|51job|其他|本地上传/i)?.[0];
+  if (!matched) return cleaned.split("·")[0]?.trim() || "来源未记录";
+  if (/boss/i.test(matched)) return "BOSS";
+  if (/51job/i.test(matched)) return "前程无忧";
+  return matched;
+}
+
+function extractTalentExperience(text: string) {
+  const matched = text.match(/(?:无经验|应届|1年以内|1-3年|3-5年|5-10年|10年以上|[0-9]{1,2}\s*年以上|[0-9]{1,2}\s*年(?:工作经验|经验)?)/)?.[0];
+  return matched?.replace(/\s+/g, "") || "年限未记录";
+}
+
+function extractTalentSalary(text: string) {
+  const matched = text.match(/(?:期望薪资|薪资期望|薪酬期望|期望|薪资)?[:：]?\s*([0-9]{1,3}\s*(?:k|K|千|万)?\s*[-~—至到]\s*[0-9]{1,3}\s*(?:k|K|千|万)?|[0-9]{1,3}\s*(?:k|K|千|万)\+?|面议)/)?.[1];
+  return matched?.replace(/\s+/g, "").replace(/至|到|—|~/g, "-").toUpperCase() || "薪资未记录";
+}
+
+function extractTalentRegion(text: string) {
+  const matched = text.match(/北京|上海|广州|深圳|杭州|南京|苏州|成都|重庆|武汉|西安|天津|青岛|济南|郑州|长沙|合肥|厦门|福州|宁波|无锡|石家庄|佛山|东莞|珠海|全国|远程/)?.[0];
+  return matched || "";
+}
+
+type CandidateIdentityLike = {
+  id?: string;
+  name: string;
+  resumeText?: string;
+  fileName?: string | null;
+  fileSize?: number | null;
+  fileObjectKey?: string | null;
+  fileUrl?: string | null;
+};
+
+function findDuplicateCandidateInList(candidates: Candidate[], incomingCandidate: CandidateIdentityLike) {
+  return candidates.find((candidate) => isLikelySameCandidate(candidate, incomingCandidate)) || null;
+}
+
+function dedupeCandidateList(candidates: Candidate[]) {
+  return candidates.reduce<Candidate[]>((visibleCandidates, candidate) => {
+    const existingIndex = visibleCandidates.findIndex((visibleCandidate) => isLikelySameCandidate(visibleCandidate, candidate));
+    if (existingIndex === -1) return [...visibleCandidates, candidate];
+    const existingCandidate = visibleCandidates[existingIndex];
+    const preferredCandidate = pickPreferredCandidate(existingCandidate, candidate);
+    if (preferredCandidate.id === existingCandidate.id) return visibleCandidates;
+    return visibleCandidates.map((item, index) => (index === existingIndex ? preferredCandidate : item));
+  }, []);
+}
+
+function findVisibleCandidateByStoredId(visibleCandidates: Candidate[], rawCandidates: Candidate[], storedCandidateId: string) {
+  const visibleCandidate = visibleCandidates.find((candidate) => candidate.id === storedCandidateId);
+  if (visibleCandidate) return visibleCandidate;
+  const rawCandidate = rawCandidates.find((candidate) => candidate.id === storedCandidateId);
+  if (!rawCandidate) return null;
+  return visibleCandidates.find((candidate) => isLikelySameCandidate(candidate, rawCandidate)) || rawCandidate;
+}
+
+function pickPreferredCandidate(left: Candidate, right: Candidate) {
+  const leftScore = getCandidateDisplayPriority(left);
+  const rightScore = getCandidateDisplayPriority(right);
+  if (rightScore !== leftScore) return rightScore > leftScore ? right : left;
+  return right.score > left.score ? right : left;
+}
+
+function getCandidateDisplayPriority(candidate: Candidate) {
+  let priority = 0;
+  if (!candidate.source.startsWith("人才库回溯")) priority += 30;
+  if (candidate.isInTalentPool) priority += 12;
+  if (candidate.interviewStage && candidate.interviewStage !== "推荐") priority += 10;
+  if (candidate.conclusion !== "待筛选") priority += 6;
+  if (candidate.fileObjectKey || candidate.fileUrl) priority += 4;
+  if (candidate.evaluation?.summary || candidate.keyPointAnalysis?.length) priority += 3;
+  return priority;
+}
+
+function isLikelySameCandidate(candidate: CandidateIdentityLike, incomingCandidate: CandidateIdentityLike) {
+  if (candidate.id && incomingCandidate.id && candidate.id === incomingCandidate.id) return true;
+  if (candidate.fileObjectKey && incomingCandidate.fileObjectKey && candidate.fileObjectKey === incomingCandidate.fileObjectKey) return true;
+  if (candidate.fileUrl && incomingCandidate.fileUrl && candidate.fileUrl === incomingCandidate.fileUrl) return true;
+
+  const sameName = normalizeCandidateIdentityText(candidate.name) === normalizeCandidateIdentityText(incomingCandidate.name);
+  if (!sameName) return false;
+
+  const candidateResumeText = normalizeCandidateIdentityText(candidate.resumeText || "");
+  const incomingResumeText = normalizeCandidateIdentityText(incomingCandidate.resumeText || "");
+  if (candidateResumeText && incomingResumeText && candidateResumeText === incomingResumeText) return true;
+
+  const candidateFileName = normalizeCandidateIdentityText(candidate.fileName || "");
+  const incomingFileName = normalizeCandidateIdentityText(incomingCandidate.fileName || "");
+  if (candidateFileName && incomingFileName && candidateFileName === incomingFileName && candidate.fileSize && incomingCandidate.fileSize && candidate.fileSize === incomingCandidate.fileSize) {
+    return true;
+  }
+
+  const candidateContacts = extractCandidateIdentityContacts(candidate.resumeText || "");
+  const incomingContacts = extractCandidateIdentityContacts(incomingCandidate.resumeText || "");
+  if (candidateContacts.length && incomingContacts.length) {
+    return candidateContacts.some((contact) => incomingContacts.includes(contact));
+  }
+
+  return sameName;
+}
+
+function normalizeCandidateIdentityText(value: string) {
+  return value.replace(/\s+/g, "").trim().toLowerCase();
+}
+
+function extractCandidateIdentityContacts(text: string) {
+  const phoneMatches = text.match(/1[3-9]\d{9}/g) || [];
+  const emailMatches = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+  return Array.from(new Set([...phoneMatches, ...emailMatches].map((item) => item.toLowerCase())));
+}
+
+function ResumeKeywordHighlightedText({ candidate, job }: { candidate: Candidate; job?: Job | null }) {
+  const text = candidate.resumeText || "";
+  const terms = buildResumeHighlightTerms(candidate, job);
+  if (!terms.length) return <>{text}</>;
+  const pattern = new RegExp(`(${terms.map(escapeRegExp).join("|")})`, "gi");
+  const parts = text.split(pattern);
+  return (
+    <>
+      {parts.map((part, index) => (
+        terms.some((term) => term.toLowerCase() === part.toLowerCase())
+          ? <mark className="resume-highlight-mark" key={`${part}-${index}`}>{part}</mark>
+          : <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>
+      ))}
+    </>
+  );
+}
+
+function buildResumeHighlightTerms(candidate: Candidate, job?: Job | null) {
+  const keywords = Array.from(new Set([
+    ...splitKeywords(job?.keywords || ""),
+    ...candidate.keyPointAnalysis.map((item) => item.keyword),
+    ...(candidate.evaluation?.interviewFocuses || []),
+  ].map((keyword) => keyword.trim()).filter((keyword) => keyword.length >= 2)));
+  return keywords
+    .filter((keyword) => candidate.resumeText.toLowerCase().includes(keyword.toLowerCase()))
+    .sort((left, right) => right.length - left.length)
+    .slice(0, 18);
+}
+
+type TalentOutcomeKey = "hired" | "revivable" | "inProcess";
+type TalentFreshnessKey = "fresh" | "warm" | "sleeping" | "unknown";
+
+const talentOutcomePresets: Array<{ key: TalentOutcomeKey; icon: string; label: string; description: string }> = [
+  { key: "hired", icon: "🟢", label: "已入职", description: "自动归档，不进入可复用" },
+  { key: "revivable", icon: "🟡", label: "已流失·可复活", description: "拒了Offer但素质好" },
+  { key: "inProcess", icon: "⚪", label: "流程中", description: "暂不可复用" },
+];
+
+const talentFreshnessPresets: Record<TalentFreshnessKey, { icon: string; label: string; action: string }> = {
+  fresh: { icon: "🟢", label: "新鲜", action: "刚聊过，意愿度高，优先推荐" },
+  warm: { icon: "🟡", label: "温热", action: "可能还在看机会，联系前先看社交动态" },
+  sleeping: { icon: "🔴", label: "沉睡", action: "除非急招否则不碰，避免浪费沟通成本" },
+  unknown: { icon: "⚪", label: "待确认", action: "缺少入库时间，先确认最近动态" },
+};
+
+function TalentOutcomeTag({ outcome, count }: { outcome: typeof talentOutcomePresets[number]; count?: number }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`talent-outcome-tag ${outcome.key} ${open ? "open" : ""}`}>
+      <button
+        className="talent-outcome-trigger"
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((value) => !value);
+        }}
+        aria-expanded={open}
+      >
+        <i>{outcome.icon}</i>{outcome.label}{typeof count === "number" ? <em>{count}</em> : null}
+      </button>
+      {open ? (
+        <div className="talent-outcome-popover">
+          <strong>{outcome.label}</strong>
+          <p>{outcome.description}</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function isHiredTalent(candidate: Candidate) {
+  return candidate.interviewStage === "offer" && candidate.onboarded === "是";
+}
+
+function getTalentOutcome(candidate: Candidate) {
+  if (isHiredTalent(candidate)) {
+    return talentOutcomePresets[0];
+  }
+  if (candidate.interviewStage === "offer" && candidate.onboarded === "否" && candidate.score >= 75) {
+    return talentOutcomePresets[1];
+  }
+  return talentOutcomePresets[2];
+}
+
+function formatTalentArchiveTime(candidate: Candidate) {
+  return candidate.talentPoolAt || candidate.interviewTimeline?.onboardedAt || (isHiredTalent(candidate) ? "入职自动归档" : "已入库");
+}
+
+function formatSimpleDate(date = new Date()) {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}年${month}月${day}日`;
+}
+
+function getTalentFreshness(candidate: Candidate) {
+  const days = getTalentArchiveAgeDays(candidate);
+  if (days === null) {
+    return { key: "unknown" as const, ...talentFreshnessPresets.unknown, ageText: "时间未知" };
+  }
+  if (days < 15) {
+    return { key: "fresh" as const, ...talentFreshnessPresets.fresh, ageText: formatTalentFreshnessAge(days) };
+  }
+  if (days > 180) {
+    return { key: "sleeping" as const, ...talentFreshnessPresets.sleeping, ageText: formatTalentFreshnessAge(days) };
+  }
+  const warmAction = days > 90 ? "已超过3个月，先低成本确认近况" : talentFreshnessPresets.warm.action;
+  return { key: "warm" as const, ...talentFreshnessPresets.warm, action: warmAction, ageText: formatTalentFreshnessAge(days) };
+}
+
+function getTalentArchiveAgeDays(candidate: Candidate) {
+  const archiveDate = getTalentArchiveDate(candidate);
+  if (!archiveDate) return null;
+  return Math.max(0, Math.floor((Date.now() - archiveDate.getTime()) / 86400000));
+}
+
+function getTalentArchiveDate(candidate: Candidate) {
+  return parseTalentDate(candidate.talentPoolAt)
+    || parseTalentDate(candidate.interviewTimeline?.onboardedAt)
+    || parseTalentDate(candidate.uploadTime)
+    || null;
+}
+
+function parseTalentDate(value?: string | null) {
+  if (!value) return null;
+  const normalized = value
+    .trim()
+    .replace(/[年月]/g, "/")
+    .replace(/[日]/g, "")
+    .replace(/\./g, "/")
+    .replace(/-/g, "/");
+  const match = normalized.match(/(\d{4})\/(\d{1,2})(?:\/(\d{1,2}))?(?:\s+(\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?/);
+  if (!match) return null;
+  const [, year, month, day = "1", hour = "0", minute = "0", second = "0"] = match;
+  const date = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second));
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatTalentFreshnessAge(days: number) {
+  if (days === 0) return "今天归档";
+  if (days < 30) return `${days}天前归档`;
+  if (days < 365) return `${Math.floor(days / 30)}个月前归档`;
+  return `${Math.floor(days / 365)}年前归档`;
+}
+
+function TalentFreshnessHat({ candidate, compact = false }: { candidate: Candidate; compact?: boolean }) {
+  const freshness = getTalentFreshness(candidate);
+  const [open, setOpen] = useState(false);
+  return (
+    <div className={`talent-freshness ${freshness.key} ${compact ? "compact" : ""} ${open ? "open" : ""}`}>
+      <button
+        className="talent-freshness-trigger"
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          setOpen((value) => !value);
+        }}
+        aria-expanded={open}
+      >
+        <i>{freshness.icon}</i>{freshness.label}
+      </button>
+      {open ? (
+        <div className="talent-freshness-popover">
+          <strong>入库时间：{formatTalentArchiveTime(candidate)}</strong>
+          <span>{freshness.ageText}</span>
+          <p>{freshness.action}</p>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function isReusableTalent(candidate: Candidate) {
+  const matchedCount = candidate.keyPointAnalysis.filter((item) => item.matched).length;
+  return getTalentOutcome(candidate).key === "revivable" && candidate.score >= 75 && matchedCount >= 2;
+}
+
+function buildTalentOutcomeSummary(candidates: Candidate[]): Record<TalentOutcomeKey, number> {
+  return candidates.reduce<Record<TalentOutcomeKey, number>>((summary, candidate) => {
+    const outcome = getTalentOutcome(candidate);
+    summary[outcome.key] += 1;
+    return summary;
+  }, { hired: 0, revivable: 0, inProcess: 0 });
+}
+
+function buildTalentProfileTags(candidate: Candidate, matchedKeywords: string[], frequentKeywords: Set<string>) {
+  const tags = [
+    candidate.score >= 85 ? "高画像" : null,
+    isReusableTalent(candidate) ? "可复用" : null,
+    candidate.interviewStage ? `流程：${candidate.interviewStage}` : null,
+    ...matchedKeywords.filter((keyword) => frequentKeywords.has(keyword)).slice(0, 2).map((keyword) => `高频：${keyword}`),
+    ...matchedKeywords.slice(0, 2),
+  ].filter((tag): tag is string => Boolean(tag));
+  return [...new Set(tags)].slice(0, 5);
+}
+
 type InterviewQuestionItem = Candidate["interviewQuestions"][number];
 
 const interviewMethods: Array<{ key: InterviewMethodKey; label: string; desc: string }> = [
@@ -1261,13 +2066,13 @@ const interviewMethods: Array<{ key: InterviewMethodKey; label: string; desc: st
 
 type CandidateDetailTab = "overview" | "interview" | "resume";
 
-function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete, onStateChange, currentJob }: { candidate: Candidate; activeTab: CandidateDetailTab; onTabChange: (tab: CandidateDetailTab) => void; onMark: (id: string) => void; onDelete: () => void; onStateChange: (state: AppState) => void; currentJob: Job }) {
+function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onAddToTalentPool, onDelete, onStateChange, currentJob }: { candidate: Candidate; activeTab: CandidateDetailTab; onTabChange: (tab: CandidateDetailTab) => void; onMark: (id: string) => void; onAddToTalentPool: (id: string) => void; onDelete: () => void; onStateChange: (state: AppState) => void; currentJob: Job }) {
   const [copied, setCopied] = useState(false);
   const [methodKey, setMethodKey] = useState<InterviewMethodKey>(() => getInterviewRecommendation(candidate).methodKey);
   const [planLoading, setPlanLoading] = useState(false);
   const [planError, setPlanError] = useState("");
   const [previewError, setPreviewError] = useState("");
-  const overview = buildCandidateOverview(candidate);
+  const overview = buildCandidateOverview(candidate, currentJob);
   const matchedCount = overview.matched.length;
   const interviewPlan = candidate.interviewPlan;
   const recommendation = getInterviewRecommendation(candidate, currentJob, interviewPlan);
@@ -1329,6 +2134,7 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete, 
           <Metric label="推荐强度" value={candidate.score >= 85 ? "高" : candidate.score >= 70 ? "中高" : "观察"} />
           <Metric label="关键点命中" value={`${matchedCount}/${candidate.keyPointAnalysis.length || 0}`} />
         </div>
+        {candidate.remark ? <div className="candidate-remark"><strong>备注</strong><span>{candidate.remark}</span></div> : null}
       </section>
 
       <div className="detail-tabs" role="tablist" aria-label="候选人详情分区">
@@ -1352,8 +2158,11 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete, 
             </div>
             <div className="match-bars">
               {overview.dimensions.map((dimension) => (
-                <div className="match-bar" key={dimension.label}>
-                  <div className="row-between"><strong>{dimension.label}</strong><span>{dimension.value}</span></div>
+                <div className="match-bar" key={dimension.label} title={dimension.reason}>
+                  <div className="row-between">
+                    <strong>{dimension.label}{dimension.weight ? <em>权重{dimension.weight}%</em> : null}</strong>
+                    <span>{dimension.value}</span>
+                  </div>
                   <div className="bar-track"><i style={{ width: `${dimension.value}%` }} /></div>
                 </div>
               ))}
@@ -1535,29 +2344,27 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onDelete, 
             </div>
           </div>
           {previewError ? <div className="tool-error spaced-small">{previewError}</div> : null}
-          <div className="resume-box spaced-small">{candidate.resumeText}</div>
+          <div className="resume-box spaced-small"><ResumeKeywordHighlightedText candidate={candidate} job={currentJob} /></div>
         </div>
       )}
 
-      <div className="toolbar-left detail-actions"><button className="btn primary" type="button" onClick={() => onMark(candidate.id)}>标记面试</button><button className="btn danger" type="button" onClick={onDelete}>删除候选人</button></div>
+      <div className="toolbar-left detail-actions">
+        <button className="btn primary" type="button" onClick={() => onMark(candidate.id)}>标记面试</button>
+        <button className="btn" type="button" onClick={() => onAddToTalentPool(candidate.id)} disabled={Boolean(candidate.isInTalentPool)}>{candidate.isInTalentPool ? "已入人才库" : "进入人才库"}</button>
+        <button className="btn danger" type="button" onClick={onDelete}>删除候选人</button>
+      </div>
     </div>
   );
 }
 
 
-function buildCandidateOverview(candidate: Candidate) {
+function buildCandidateOverview(candidate: Candidate, currentJob?: Job | null) {
   const matched = candidate.keyPointAnalysis.filter((item) => item.matched);
   const missed = candidate.keyPointAnalysis.filter((item) => !item.matched);
   const matchedKeywords = matched.map((item) => item.keyword);
   const missedKeywords = missed.map((item) => item.keyword);
   const evaluation = candidate.evaluation;
-  const keywordRatio = candidate.keyPointAnalysis.length ? Math.round((matched.length / candidate.keyPointAnalysis.length) * 100) : Math.round(candidate.score * 0.68);
-  const dimensions = [
-    { label: "岗位关键词", value: clampScore(keywordRatio || candidate.score) },
-    { label: "经验匹配", value: clampScore(candidate.score + (matched.length ? 6 : -8)) },
-    { label: "专业技能", value: clampScore(candidate.score + (matched.length >= 2 ? 4 : -6)) },
-    { label: "软性素质", value: clampScore(candidate.score + (/协同|推动|沟通|管理|团队/.test(candidate.resumeText) ? 8 : -4)) },
-  ];
+  const dimensions = buildCandidateScoreDimensions(candidate, currentJob);
   const strengths = evaluation?.strengths?.length
     ? evaluation.strengths
     : matchedKeywords.length
@@ -1589,6 +2396,36 @@ function buildCandidateOverview(candidate: Candidate) {
 
 function clampScore(value: number) {
   return Math.max(8, Math.min(100, Math.round(value)));
+}
+
+function buildCandidateScoreDimensions(candidate: Candidate, currentJob?: Job | null) {
+  const aiDimensions = candidate.evaluation?.scoreDimensions;
+  if (aiDimensions?.length) {
+    return aiDimensions.map((dimension) => ({
+      label: dimension.label || scoreWeightFields.find((field) => field.key === dimension.key)?.label || "评分维度",
+      value: clampScore(dimension.score),
+      weight: dimension.weight,
+      reason: dimension.reason,
+    }));
+  }
+
+  const weights = normalizeJobScoreWeights(currentJob?.scoreWeights);
+  const matched = candidate.keyPointAnalysis.filter((item) => item.matched);
+  const keywordRatio = candidate.keyPointAnalysis.length ? Math.round((matched.length / candidate.keyPointAnalysis.length) * 100) : Math.round(candidate.score * 0.68);
+  const fallbackScores: Record<keyof JobScoreWeights, number> = {
+    experience: clampScore(candidate.score + (matched.length ? 6 : -8)),
+    professional: clampScore(keywordRatio || candidate.score),
+    stability: clampScore(candidate.score + (/频繁|短期|空窗|离职|跳槽/.test(candidate.resumeText) ? -12 : 4)),
+    education: clampScore(candidate.score + (/博士|硕士|本科|大专|专科|证书|资格/.test(candidate.resumeText) ? 5 : -10)),
+    business: clampScore(candidate.score + (/业务|增长|营收|利润|客户|指标|结果|目标|效率|战略|经营/.test(candidate.resumeText) ? 8 : -6)),
+  };
+
+  return scoreWeightFields.map((field) => ({
+    label: field.label,
+    value: fallbackScores[field.key],
+    weight: weights[field.key],
+    reason: field.hint,
+  }));
 }
 
 function getInterviewRecommendation(candidate: Candidate, currentJob?: Job | null, interviewPlan?: CandidateInterviewPlan): { methodKey: InterviewMethodKey; reason: string } {
@@ -1775,8 +2612,12 @@ function formatCandidateInterviewPack(candidate: Candidate, interviewPack: Retur
   return `${header}\n\n面试问题：\n${questions}\n\n参考评估意见：\n${methods}`;
 }
 
-const interviewStages = ["初试", "复试", "offer"] as const;
+const interviewStages = ["推荐", "初试", "复试", "offer"] as const;
 type InterviewStage = (typeof interviewStages)[number];
+
+function formatInterviewStageLabel(stage: InterviewStage | NonNullable<Candidate["interviewStage"]>) {
+  return stage;
+}
 
 function InterviewsView({ jobs, selectedJobId, onJobChange, selectedMonth, onMonthChange, candidates, activeStage, onStageChange, onSaveStage }: { jobs: Job[]; selectedJobId: string; onJobChange: (jobId: string) => void; selectedMonth: string; onMonthChange: (month: string) => void; candidates: Candidate[]; activeStage: InterviewStage; onStageChange: (stage: InterviewStage) => void; onSaveStage: (candidateId: string, interviewStage: NonNullable<Candidate["interviewStage"]>, stageRecommendation: NonNullable<Candidate["stageRecommendation"]>, interviewResult: NonNullable<Candidate["interviewResult"]>, onboarded: NonNullable<Candidate["onboarded"]>, reportMonth: string, interviewReason: string, reasonTags: string[], interviewTimeline: NonNullable<Candidate["interviewTimeline"]>) => Promise<void> }) {
   const monthOptions = Array.from(new Set(candidates.map((candidate) => normalizeReportMonth(candidate.reportMonth || formatReportMonth())))).sort((a, b) => b.localeCompare(a, "zh-Hans-CN"));
@@ -1786,7 +2627,7 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedMonth, onMon
   const interviewCandidates = candidates
     .filter((candidate) => isInterviewCandidate(candidate))
     .filter((candidate) => selectedMonth === "all" || normalizeReportMonth(candidate.reportMonth || formatReportMonth()) === selectedMonth)
-    .filter((candidate) => (candidate.interviewStage || "初试") === activeStage);
+    .filter((candidate) => (candidate.interviewStage || "推荐") === activeStage);
 
   const selectedJob = selectedJobId === "all" ? null : jobs.find((job) => job.id === selectedJobId) || null;
   const maxTableScrollLeft = Math.max(tableScrollState.scrollWidth - tableScrollState.clientWidth, 0);
@@ -1871,7 +2712,7 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedMonth, onMon
         <div className="stage-filter-tabs">
           {interviewStages.map((stage) => (
             <button key={stage} type="button" className={`stage-filter ${activeStage === stage ? "active" : ""}`} onClick={() => onStageChange(stage)}>
-              {stage}<span>{candidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.interviewStage || "初试") === stage).length}</span>
+              {formatInterviewStageLabel(stage)}<span>{candidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.interviewStage || "推荐") === stage).length}</span>
             </button>
           ))}
         </div>
@@ -1880,13 +2721,13 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedMonth, onMon
         <div className="table-wrap interview-table-wrap" ref={tableWrapRef}>
           {interviewCandidates.length ? (
             <table className="table interview-table">
-              <thead><tr><th>候选人</th><th>统计月份</th>{showJobColumn && <th>岗位</th>}<th>来源</th><th>{activeStage}</th><th>{activeStage === "offer" ? "入职" : "面试结果"}</th><th>标签</th><th>备注</th><th>操作</th></tr></thead>
+              <thead><tr><th>候选人</th><th>统计月份</th>{showJobColumn && <th>岗位</th>}<th>来源</th><th>{activeStage === "推荐" ? "是否推荐" : "阶段"}</th><th>{activeStage === "推荐" ? "推荐流向" : activeStage === "offer" ? "入职" : "面试结果"}</th><th>标签</th><th>备注</th><th>操作</th></tr></thead>
               <tbody>
                 {interviewCandidates.map((candidate) => <InterviewStageRow key={candidate.id} candidate={candidate} jobs={jobs} showJobColumn={showJobColumn} activeStage={activeStage} onSaveStage={onSaveStage} />)}
               </tbody>
             </table>
           ) : (
-            <div className="empty"><div><strong>暂无面试人选</strong><br />请先在“简历甄选”中点击“标记面试”。</div></div>
+            <div className="empty"><div><strong>暂无{activeStage === "推荐" ? "推荐" : "面试人选"}</strong><br />请先在“简历甄选”中点击“标记面试”。</div></div>
           )}
         </div>
         {interviewCandidates.length > 0 && maxTableScrollLeft > 0 && (
@@ -1915,43 +2756,53 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
   const defaultReason = candidate.interviewReason || overview.recommendation || overview.risks[0];
   const currentReasonTagOptions = getReasonTagOptions(activeStage);
   const defaultReasonTags = normalizeStageReasonTags(candidate.reasonTags?.length ? candidate.reasonTags : inferReasonTags(defaultReason, activeStage, candidate.onboarded), activeStage, candidate.onboarded);
-  const [stage, setStage] = useState<NonNullable<Candidate["interviewStage"]>>(candidate.interviewStage || "初试");
-  const [stageRecommendation, setStageRecommendation] = useState<NonNullable<Candidate["stageRecommendation"]>>(candidate.stageRecommendation || "是");
+  const [stage, setStage] = useState<NonNullable<Candidate["interviewStage"]>>(candidate.interviewStage || "推荐");
+  const [stageRecommendation, setStageRecommendation] = useState<NonNullable<Candidate["stageRecommendation"]>>(candidate.stageRecommendation || "待定");
   const [interviewResult, setInterviewResult] = useState<NonNullable<Candidate["interviewResult"]>>(candidate.interviewResult || "待定");
   const [onboarded, setOnboarded] = useState<NonNullable<Candidate["onboarded"]>>(candidate.onboarded || "待入职");
   const [reportMonth, setReportMonth] = useState(candidate.reportMonth || formatReportMonth());
   const [reason, setReason] = useState(defaultReason);
   const [reasonTags, setReasonTags] = useState<string[]>(defaultReasonTags);
-  const [targetStage, setTargetStage] = useState<NonNullable<Candidate["interviewStage"]>>(candidate.interviewStage || "初试");
+  const [targetStage, setTargetStage] = useState<NonNullable<Candidate["interviewStage"]>>(candidate.interviewStage || "推荐");
   const [editingFlow, setEditingFlow] = useState(false);
   const [saving, setSaving] = useState(false);
+  const shouldManageReasonTags = shouldManageReasonTagsForDecision(activeStage, interviewResult, onboarded);
   const timeline = useMemo(
     () => buildInterviewTimeline(candidate, stage, interviewResult, onboarded),
     [candidate, interviewResult, onboarded, stage],
   );
 
   useEffect(() => {
-    const currentStage = candidate.interviewStage || "初试";
+    const currentStage = candidate.interviewStage || "推荐";
     setStage(currentStage);
     setTargetStage(currentStage);
     setEditingFlow(false);
-    setStageRecommendation(candidate.stageRecommendation || "是");
+    setStageRecommendation(candidate.stageRecommendation || "待定");
     setInterviewResult(candidate.interviewResult || "待定");
     setOnboarded(candidate.onboarded || "待入职");
     setReportMonth(candidate.reportMonth || formatReportMonth());
     setReason(candidate.interviewReason || buildCandidateOverview(candidate).recommendation || buildCandidateOverview(candidate).risks[0]);
     setReasonTags(normalizeStageReasonTags(candidate.reasonTags?.length ? candidate.reasonTags : inferReasonTags(candidate.interviewReason || candidate.reason || "", activeStage, candidate.onboarded), activeStage, candidate.onboarded));
-  }, [candidate.id, candidate.interviewStage, candidate.stageRecommendation, candidate.interviewResult, candidate.onboarded, candidate.reportMonth, candidate.interviewReason, candidate.reasonTags, candidate.reason]);
+  }, [activeStage, candidate.id, candidate.interviewStage, candidate.stageRecommendation, candidate.interviewResult, candidate.onboarded, candidate.reportMonth, candidate.interviewReason, candidate.reasonTags, candidate.reason]);
+
+  useEffect(() => {
+    if (!shouldManageReasonTags && reasonTags.length) setReasonTags([]);
+  }, [reasonTags.length, shouldManageReasonTags]);
 
   const save = async () => {
     setSaving(true);
     try {
-      const nextStage = stage !== "offer" && interviewResult === "通过" ? nextInterviewStage(stage) : stage;
+      const nextStage = stage === "推荐"
+        ? stageRecommendation === "是" ? "初试" : "推荐"
+        : stage !== "offer" && interviewResult === "通过" ? nextInterviewStage(stage) : stage;
+      const nextStageRecommendation = resolveStageRecommendation(nextStage, stageRecommendation);
       const nextResult = nextStage !== stage ? "待定" : interviewResult;
       const nextTimeline = buildInterviewTimeline(candidate, nextStage, nextResult, onboarded);
-      await onSaveStage(candidate.id, nextStage, stageRecommendation, nextResult, onboarded, normalizeReportMonth(reportMonth), reason, reasonTags, nextTimeline);
+      const nextReasonTags = shouldManageReasonTagsForDecision(nextStage, nextResult, onboarded) ? reasonTags : [];
+      await onSaveStage(candidate.id, nextStage, nextStageRecommendation, nextResult, onboarded, normalizeReportMonth(reportMonth), reason, nextReasonTags, nextTimeline);
       setStage(nextStage);
       setTargetStage(nextStage);
+      setStageRecommendation(nextStageRecommendation);
       setInterviewResult(nextResult);
     } finally {
       setSaving(false);
@@ -1962,8 +2813,11 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
     setSaving(true);
     try {
       const nextTimeline = buildInterviewTimeline(candidate, targetStage, interviewResult, onboarded);
-      await onSaveStage(candidate.id, targetStage, stageRecommendation, interviewResult, onboarded, normalizeReportMonth(reportMonth), reason, reasonTags, nextTimeline);
+      const nextStageRecommendation = resolveStageRecommendation(targetStage, stageRecommendation);
+      const nextReasonTags = shouldManageReasonTagsForDecision(targetStage, interviewResult, onboarded) ? reasonTags : [];
+      await onSaveStage(candidate.id, targetStage, nextStageRecommendation, interviewResult, onboarded, normalizeReportMonth(reportMonth), reason, nextReasonTags, nextTimeline);
       setStage(targetStage);
+      setStageRecommendation(nextStageRecommendation);
       setEditingFlow(false);
     } finally {
       setSaving(false);
@@ -1979,12 +2833,20 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
       {showJobColumn && <td><strong>{job?.title || "未知岗位"}</strong></td>}
       <td>{candidate.source.split(" · ")[0]}</td>
       <td>
-        <select className="decision-select recommendation-select" value={stageRecommendation} onChange={(event) => setStageRecommendation(event.target.value as NonNullable<Candidate["stageRecommendation"]>)}>
-          {["是", "否"].map((item) => <option key={item} value={item}>{item}</option>)}
-        </select>
+        {activeStage === "推荐" ? (
+          <select className="decision-select recommendation-select" value={stageRecommendation} onChange={(event) => setStageRecommendation(event.target.value as NonNullable<Candidate["stageRecommendation"]>)}>
+            {["待定", "是", "否"].map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+        ) : (
+          <div className="stage-status-pill">已进入{formatInterviewStageLabel(activeStage)}</div>
+        )}
       </td>
       <td>
-        {activeStage === "offer" ? (
+        {activeStage === "推荐" ? (
+          <div className="stage-flow-hint">
+            {stageRecommendation === "是" ? "保存后进入初试" : stageRecommendation === "否" ? "暂不推进初试" : "等待推荐确认"}
+          </div>
+        ) : activeStage === "offer" ? (
           <select className="decision-select recommendation-select" value={onboarded} onChange={(event) => setOnboarded(event.target.value as NonNullable<Candidate["onboarded"]>)}>
             {["待入职", "是", "否"].map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
@@ -1995,7 +2857,14 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
         )}
       </td>
       <td>
-        <ReasonTagsDropdown value={reasonTags} options={currentReasonTagOptions} onChange={setReasonTags} />
+        {shouldManageReasonTags ? (
+          <ReasonTagsDropdown value={reasonTags} options={currentReasonTagOptions} onChange={setReasonTags} />
+        ) : (
+          <div className="reason-tags-empty">
+            <strong>无需标签</strong>
+            <span>{activeStage === "推荐" ? "推荐阶段只写备注" : activeStage === "offer" ? "已入职不做原因归类" : "仅记录淘汰/未到面原因"}</span>
+          </div>
+        )}
       </td>
       <td>
         <div className="decision-reason-block">
@@ -2018,7 +2887,7 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
               <label>
                 <span>回退/调整至</span>
                 <select className="decision-select stage-select" value={targetStage} onChange={(event) => setTargetStage(event.target.value as NonNullable<Candidate["interviewStage"]>)}>
-                  {interviewStages.map((item) => <option key={item} value={item}>{item}</option>)}
+                  {interviewStages.map((item) => <option key={item} value={item}>{formatInterviewStageLabel(item)}</option>)}
                 </select>
               </label>
               <div className="interview-action-row">
@@ -2079,19 +2948,33 @@ function nextInterviewStage(stage: NonNullable<Candidate["interviewStage"]>) {
   return interviewStages[Math.min(index + 1, interviewStages.length - 1)];
 }
 
+function resolveStageRecommendation(
+  stage: NonNullable<Candidate["interviewStage"]>,
+  recommendation: NonNullable<Candidate["stageRecommendation"]>,
+): NonNullable<Candidate["stageRecommendation"]> {
+  if (stage !== "推荐") return "是";
+  return recommendation === "否" ? "否" : "待定";
+}
+
 const generalReasonTagOptions = ["薪资不匹配", "稳定性风险", "技能不符", "未到面", "offer流失", "求职动机不足", "通勤地点受限", "管理经验不足", "沟通表达一般"];
-const offerReasonTagOptions = ["薪资福利", "接到其他offer", "身体/家庭原因", "岗位调整", "待入职", "其他"];
+const offerReasonTagOptions = ["薪资不匹配", "发展不符合预期", "岗位调整", "部门对比", "其他（身体、家人等）"];
 
 function getReasonTagOptions(stage: InterviewStage) {
   return stage === "offer" ? offerReasonTagOptions : generalReasonTagOptions;
 }
 
+function shouldManageReasonTagsForDecision(
+  stage: InterviewStage,
+  interviewResult: NonNullable<Candidate["interviewResult"]>,
+  onboarded: NonNullable<Candidate["onboarded"]>,
+) {
+  if (stage === "offer") return onboarded !== "是";
+  return interviewResult === "淘汰" || interviewResult === "未到面";
+}
+
 function normalizeStageReasonTags(tags: string[], stage: InterviewStage, onboarded?: Candidate["onboarded"]) {
   const options = getReasonTagOptions(stage);
   const mapped = tags.map((tag) => mapReasonTagByStage(tag, stage, onboarded));
-  if (stage === "offer" && onboarded === "待入职" && !mapped.includes("待入职")) {
-    mapped.unshift("待入职");
-  }
   return Array.from(new Set(mapped.filter((item): item is string => {
     if (!item) return false;
     return options.includes(item);
@@ -2103,9 +2986,9 @@ function mapReasonTagByStage(tag: string, stage: InterviewStage, onboarded?: Can
   if (!value) return null;
   if (stage !== "offer") return generalReasonTagOptions.includes(value) ? value : null;
   if (offerReasonTagOptions.includes(value)) return value;
-  if (value === "薪资不匹配") return "薪资福利";
-  if (value === "offer流失") return "接到其他offer";
-  if (value === "待入职" || onboarded === "待入职") return "待入职";
+  if (value === "薪资福利") return "薪资不匹配";
+  if (value === "接到其他offer" || value === "offer流失") return "发展不符合预期";
+  if (value === "身体/家庭原因" || value === "其他") return "其他（身体、家人等）";
   return null;
 }
 
@@ -2114,12 +2997,12 @@ function inferReasonTags(reason: string, stage: InterviewStage = "初试", onboa
   if (!source) return [];
   if (stage === "offer") {
     const matched: string[] = [];
-    if (/薪资|工资|预算|福利|社保|公积金|补贴/.test(source)) matched.push("薪资福利");
-    if (/其他offer|别家|他家|对比offer|接到.*offer/.test(source)) matched.push("接到其他offer");
-    if (/身体|家庭|家里|照顾|生病|怀孕/.test(source)) matched.push("身体/家庭原因");
+    if (/薪资|工资|预算|福利|社保|公积金|补贴/.test(source)) matched.push("薪资不匹配");
+    if (/发展|成长|晋升|平台|预期|空间|职业规划|其他offer|别家|他家|对比offer|接到.*offer/.test(source)) matched.push("发展不符合预期");
     if (/岗位调整|编制调整|hc调整|职位调整/.test(source)) matched.push("岗位调整");
-    if (/待入职|到岗中|入职中|未到入职日/.test(source) || onboarded === "待入职") matched.push("待入职");
-    if (!matched.length && source) matched.push("其他");
+    if (/部门|团队|直属|领导|汇报|组织|业务线/.test(source)) matched.push("部门对比");
+    if (/身体|家庭|家里|家人|照顾|生病|怀孕|个人原因|其他/.test(source)) matched.push("其他（身体、家人等）");
+    if (!matched.length && source) matched.push("其他（身体、家人等）");
     return normalizeStageReasonTags(matched, stage, onboarded);
   }
   return generalReasonTagOptions
@@ -2135,8 +3018,10 @@ function buildInterviewTimeline(
 ) {
   const stamp = formatDateISO();
   const next = { ...(candidate.interviewTimeline || {}) };
-  if ((candidate.stageRecommendation || "是") === "是" || candidate.interviewStage || candidate.conclusion === "已邀面试") {
+  if (stage !== "推荐") {
     next.recommendedAt = next.recommendedAt || stamp;
+  } else if ((candidate.stageRecommendation || "待定") !== "是") {
+    delete next.recommendedAt;
   }
   if ((stage === "复试" || stage === "offer") && interviewResult !== "未到面") {
     next.firstInterviewPassedAt = next.firstInterviewPassedAt || stamp;
@@ -2153,6 +3038,9 @@ function buildInterviewTimeline(
   if (stage !== "offer") {
     delete next.secondInterviewPassedAt;
     delete next.offerAt;
+  }
+  if (stage === "推荐") {
+    delete next.firstInterviewPassedAt;
   }
   if (onboarded !== "是") {
     delete next.onboardedAt;
@@ -2273,11 +3161,18 @@ function percentValue(value: number, total: number) {
   return Number((((value / total) * 100)).toFixed(1));
 }
 
+function isRecommendedToDepartment(candidate: Candidate) {
+  if (!isInterviewCandidate(candidate)) return false;
+  const stage = candidate.interviewStage || "推荐";
+  if (stage !== "推荐") return true;
+  return candidate.stageRecommendation === "是";
+}
+
 function buildPeriodComparison(currentCandidates: Candidate[], previousCandidates: Candidate[]) {
   const currentOverview = buildRecruitmentAnalytics(currentCandidates);
   const previousOverview = buildRecruitmentAnalytics(previousCandidates);
-  const currentInvited = currentCandidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.stageRecommendation || "是") === "是").length;
-  const previousInvited = previousCandidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.stageRecommendation || "是") === "是").length;
+  const currentRecommended = currentCandidates.filter(isInterviewCandidate).length;
+  const previousRecommended = previousCandidates.filter(isInterviewCandidate).length;
   const currentAttendedFirst = currentCandidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.interviewStage === "初试" || candidate.interviewStage === "复试" || candidate.interviewStage === "offer") && candidate.interviewResult !== "未到面").length;
   const previousAttendedFirst = previousCandidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.interviewStage === "初试" || candidate.interviewStage === "复试" || candidate.interviewStage === "offer") && candidate.interviewResult !== "未到面").length;
   const currentFirstPass = currentCandidates.filter((candidate) => candidate.interviewStage === "复试" || candidate.interviewStage === "offer").length;
@@ -2288,7 +3183,7 @@ function buildPeriodComparison(currentCandidates: Candidate[], previousCandidate
   const previousOnboarded = previousCandidates.filter((candidate) => candidate.interviewStage === "offer" && candidate.onboarded === "是").length;
 
   const metrics = [
-    { label: "面试邀约出席率", current: percentValue(currentAttendedFirst, currentInvited), previous: percentValue(previousAttendedFirst, previousInvited), type: "rate" as const },
+    { label: "推荐到初试出席率", current: percentValue(currentAttendedFirst, currentRecommended), previous: percentValue(previousAttendedFirst, previousRecommended), type: "rate" as const },
     { label: "初试通过率", current: percentValue(currentFirstPass, currentAttendedFirst), previous: percentValue(previousFirstPass, previousAttendedFirst), type: "rate" as const },
     { label: "复试通过率", current: percentValue(currentRetestPass, currentFirstPass), previous: percentValue(previousRetestPass, previousFirstPass), type: "rate" as const },
     { label: "offer入职率", current: percentValue(currentOnboarded, currentRetestPass), previous: percentValue(previousOnboarded, previousRetestPass), type: "rate" as const },
@@ -2303,7 +3198,7 @@ function buildPeriodComparison(currentCandidates: Candidate[], previousCandidate
 
   const biggestDrop = [...metrics].sort((a, b) => a.delta - b.delta)[0];
   const biggestGain = [...metrics].sort((a, b) => b.delta - a.delta)[0];
-  const summary = previousOverview.resumeTotal || currentOverview.resumeTotal
+  const summary = previousOverview.recommendedTotal || currentOverview.recommendedTotal
     ? biggestDrop && biggestDrop.delta < 0
       ? `${biggestDrop.label} 较上期下降 ${Math.abs(biggestDrop.delta).toFixed(1)} 个百分点，这是当前最值得先复盘的环节。${biggestGain && biggestGain.delta > 0 ? `相对更稳定的是 ${biggestGain.label}，较上期提升 ${biggestGain.delta.toFixed(1)} 个百分点。` : ""}`
       : biggestGain && biggestGain.delta > 0
@@ -2316,7 +3211,7 @@ function buildPeriodComparison(currentCandidates: Candidate[], previousCandidate
 
 function buildRecruitmentAnalytics(candidates: Candidate[]) {
   const resumeTotal = candidates.length;
-  const invitedFirstInterview = candidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.stageRecommendation || "是") === "是").length;
+  const recommendedTotal = candidates.filter(isInterviewCandidate).length;
   const attendedFirstInterview = candidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.interviewStage === "初试" || candidate.interviewStage === "复试" || candidate.interviewStage === "offer") && (candidate.interviewResult !== "未到面")).length;
   const passedFirstInterview = candidates.filter((candidate) => candidate.interviewStage === "复试" || candidate.interviewStage === "offer").length;
   const attendedRetest = candidates.filter((candidate) => candidate.interviewStage === "复试" || candidate.interviewStage === "offer").length;
@@ -2325,33 +3220,25 @@ function buildRecruitmentAnalytics(candidates: Candidate[]) {
 
   const rows = [
     {
-      label: "推荐简历总数",
-      count: resumeTotal,
-      share: formatPercent(resumeTotal, resumeTotal),
-      conversion: "",
-      conversionHint: "",
-      note: "",
-    },
-    {
-      label: "通知初试人数",
-      count: invitedFirstInterview,
-      share: formatPercent(invitedFirstInterview, resumeTotal),
-      conversion: formatPercent(invitedFirstInterview, resumeTotal),
-      conversionHint: "简历有效率",
-      note: "进入面试流程的人选",
+      label: "推荐简历",
+      count: recommendedTotal,
+      share: formatPercent(recommendedTotal, recommendedTotal),
+      conversion: formatPercent(recommendedTotal, recommendedTotal),
+      conversionHint: "流程起点",
+      note: "来自面试管理推荐阶段",
     },
     {
       label: "实际参加初试人数",
       count: attendedFirstInterview,
-      share: formatPercent(attendedFirstInterview, resumeTotal),
-      conversion: formatPercent(attendedFirstInterview, invitedFirstInterview),
+      share: formatPercent(attendedFirstInterview, recommendedTotal),
+      conversion: formatPercent(attendedFirstInterview, recommendedTotal),
       conversionHint: "初试通知出席率",
       note: "剔除未到面人选",
     },
     {
       label: "初试通过人数",
       count: passedFirstInterview,
-      share: formatPercent(passedFirstInterview, resumeTotal),
+      share: formatPercent(passedFirstInterview, recommendedTotal),
       conversion: formatPercent(passedFirstInterview, attendedFirstInterview),
       conversionHint: "初试通过占比",
       note: "进入复试阶段",
@@ -2359,7 +3246,7 @@ function buildRecruitmentAnalytics(candidates: Candidate[]) {
     {
       label: "实际参加复试人数",
       count: attendedRetest,
-      share: formatPercent(attendedRetest, resumeTotal),
+      share: formatPercent(attendedRetest, recommendedTotal),
       conversion: formatPercent(attendedRetest, passedFirstInterview),
       conversionHint: "复试通知出席率",
       note: "已进入复试/offer流程",
@@ -2367,7 +3254,7 @@ function buildRecruitmentAnalytics(candidates: Candidate[]) {
     {
       label: "复试通过人数",
       count: passedRetest,
-      share: formatPercent(passedRetest, resumeTotal),
+      share: formatPercent(passedRetest, recommendedTotal),
       conversion: formatPercent(passedRetest, attendedRetest),
       conversionHint: "复试通过占比",
       note: "进入 offer 阶段",
@@ -2375,7 +3262,7 @@ function buildRecruitmentAnalytics(candidates: Candidate[]) {
     {
       label: "最终录用人数",
       count: hiredCount,
-      share: formatPercent(hiredCount, resumeTotal),
+      share: formatPercent(hiredCount, recommendedTotal),
       conversion: formatPercent(hiredCount, passedRetest),
       conversionHint: "录用人数占比",
       note: "含待入职与已入职",
@@ -2384,12 +3271,13 @@ function buildRecruitmentAnalytics(candidates: Candidate[]) {
 
   return {
     resumeTotal,
+    recommendedTotal,
     hiredCount,
     rows,
     chartRows: rows.map((row) => ({
       label: row.label,
       count: row.count,
-      shareValue: resumeTotal ? Number(((row.count / resumeTotal) * 100).toFixed(2)) : 0,
+      shareValue: recommendedTotal ? Number(((row.count / recommendedTotal) * 100).toFixed(2)) : 0,
     })),
   };
 }
@@ -2399,7 +3287,7 @@ function buildJobAnalytics(jobs: Job[], candidates: Candidate[]) {
     .map((job) => {
       const jobCandidates = candidates.filter((candidate) => candidate.jobId === job.id);
       const resumeCount = jobCandidates.length;
-      const invitedCount = jobCandidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.stageRecommendation || "是") === "是").length;
+      const invitedCount = jobCandidates.filter(isRecommendedToDepartment).length;
       const retestCount = jobCandidates.filter((candidate) => candidate.interviewStage === "复试" || candidate.interviewStage === "offer").length;
       const hiredCount = jobCandidates.filter((candidate) => candidate.interviewStage === "offer" && candidate.onboarded !== "否").length;
       if (!resumeCount) return null;
@@ -2494,7 +3382,7 @@ function buildPendingOnboardReasonAnalytics(candidates: Candidate[], jobs: Job[]
 function extractReasonTags(candidates: Candidate[]) {
   const source = candidates.flatMap((candidate) => {
     if (candidate.reasonTags?.length) return candidate.reasonTags;
-    return inferReasonTags(candidate.interviewReason || candidate.reason || "", candidate.interviewStage || "初试", candidate.onboarded);
+    return inferReasonTags(candidate.interviewReason || candidate.reason || "", candidate.interviewStage || "推荐", candidate.onboarded);
   });
 
   const counter = new Map<string, number>();
@@ -2525,7 +3413,7 @@ function buildChannelAnalytics(candidates: Candidate[]) {
 
   const rows = Array.from(groups.entries()).map(([source, items]) => {
     const resumeCount = items.length;
-    const invitedCount = items.filter((candidate) => isInterviewCandidate(candidate) && (candidate.stageRecommendation || "是") === "是").length;
+    const invitedCount = items.filter(isRecommendedToDepartment).length;
     const firstPassCount = items.filter((candidate) => candidate.interviewStage === "复试" || candidate.interviewStage === "offer").length;
     const offerCount = items.filter((candidate) => candidate.interviewStage === "offer").length;
     const onboardedCount = items.filter((candidate) => candidate.interviewStage === "offer" && candidate.onboarded === "是").length;
@@ -2702,7 +3590,7 @@ function buildRecruitmentActionPlan({
 
 function buildFocusJobAnalysis(job: Job, candidates: Candidate[]) {
   const resumeCount = candidates.length;
-  const invitedCount = candidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.stageRecommendation || "是") === "是").length;
+  const invitedCount = candidates.filter(isRecommendedToDepartment).length;
   const firstPassCount = candidates.filter((candidate) => candidate.interviewStage === "复试" || candidate.interviewStage === "offer").length;
   const retestPassCount = candidates.filter((candidate) => candidate.interviewStage === "offer").length;
   const hiredCount = candidates.filter((candidate) => candidate.interviewStage === "offer" && candidate.onboarded !== "否").length;
@@ -2774,10 +3662,13 @@ function VoiceParseView({
   onStateChange: (next: AppState) => void;
   onToast: (message: string) => void;
 }) {
-  const recordingJobs = jobs.filter((job) => job.status === "招聘中");
-  const [jobId, setJobId] = useState(currentJob.status === "招聘中" ? currentJob.id : recordingJobs[0]?.id || "");
+  const recordingJobs = useMemo(() => jobs.filter((job) => job.status === "招聘中"), [jobs]);
+  const voiceJobOptions = recordingJobs.length ? recordingJobs : jobs;
+  const defaultVoiceJobId = currentJob.status === "招聘中" ? currentJob.id : voiceJobOptions[0]?.id || "";
+  const [jobId, setJobId] = useState(defaultVoiceJobId);
   const [libraryJobId, setLibraryJobId] = useState(currentJob.id || jobs[0]?.id || "");
-  const candidates = candidatesByJob[jobId] || [];
+  const rawCandidates = candidatesByJob[jobId] || [];
+  const candidates = useMemo(() => dedupeCandidateList(rawCandidates), [rawCandidates]);
   const [candidateId, setCandidateId] = useState(candidates[0]?.id || "");
   const [status, setStatus] = useState<VoiceSessionStatus>("idle");
   const [finalTranscript, setFinalTranscript] = useState("");
@@ -2809,15 +3700,23 @@ function VoiceParseView({
   const discardCurrentRecordingRef = useRef(false);
 
   useEffect(() => {
-    if (!recordingJobs.some((job) => job.id === jobId)) setJobId((currentJob.status === "招聘中" ? currentJob.id : recordingJobs[0]?.id) || "");
-  }, [currentJob.id, currentJob.status, jobId, recordingJobs]);
+    if (!voiceJobOptions.some((job) => job.id === jobId)) setJobId(defaultVoiceJobId);
+  }, [defaultVoiceJobId, jobId, voiceJobOptions]);
 
   useEffect(() => {
     if (!jobs.some((job) => job.id === libraryJobId)) setLibraryJobId(currentJob.id || jobs[0]?.id || "");
   }, [currentJob.id, jobs, libraryJobId]);
 
   useEffect(() => {
-    const nextCandidates = candidatesByJob[jobId] || [];
+    const nextCandidates = dedupeCandidateList(candidatesByJob[jobId] || []);
+    const selectedRawCandidate = (candidatesByJob[jobId] || []).find((candidate) => candidate.id === candidateId);
+    const selectedVisibleCandidate = selectedRawCandidate
+      ? nextCandidates.find((candidate) => isLikelySameCandidate(candidate, selectedRawCandidate))
+      : null;
+    if (selectedVisibleCandidate && selectedVisibleCandidate.id !== candidateId) {
+      setCandidateId(selectedVisibleCandidate.id);
+      return;
+    }
     if (!nextCandidates.some((candidate) => candidate.id === candidateId)) {
       setCandidateId(nextCandidates[0]?.id || "");
     }
@@ -2836,7 +3735,7 @@ function VoiceParseView({
     streamRef.current?.getTracks().forEach((track) => track.stop());
   }, []);
 
-  const selectedJob = recordingJobs.find((job) => job.id === jobId) || currentJob;
+  const selectedJob = voiceJobOptions.find((job) => job.id === jobId) || currentJob;
   const librarySelectedJob = jobs.find((job) => job.id === libraryJobId) || selectedJob;
   const selectedCandidate = candidates.find((candidate) => candidate.id === candidateId) || null;
   const transcript = finalTranscript.trim();
@@ -2848,8 +3747,9 @@ function VoiceParseView({
   const supportsRecording = typeof window !== "undefined" && Boolean(window.MediaRecorder && navigator.mediaDevices?.getUserMedia);
   const voiceHistory = useMemo(() => voiceAnalysesByJob[libraryJobId] || [], [libraryJobId, voiceAnalysesByJob]);
   const selectedHistory = useMemo(() => voiceHistory.find((item) => item.id === selectedHistoryId) || null, [selectedHistoryId, voiceHistory]);
-  const historyCandidates = candidatesByJob[libraryJobId] || [];
-  const historyCandidate = selectedHistory ? historyCandidates.find((candidate) => candidate.id === selectedHistory.candidateId) || null : null;
+  const historyRawCandidates = candidatesByJob[libraryJobId] || [];
+  const historyCandidates = useMemo(() => dedupeCandidateList(historyRawCandidates), [historyRawCandidates]);
+  const historyCandidate = selectedHistory ? findVisibleCandidateByStoredId(historyCandidates, historyRawCandidates, selectedHistory.candidateId) : null;
   const historyHighlightTerms = useMemo(
     () => selectedHistory ? buildVoiceHighlightTerms(librarySelectedJob, selectedHistory.transcript, "") : [],
     [librarySelectedJob, selectedHistory],
@@ -3414,12 +4314,15 @@ function VoiceParseView({
             <h3 className="card-title">录音库</h3>
           </div>
           <div className="toolbar-right interview-filters">
-            <label className="interview-filter-field voice-library-filter">
-              <span>岗位</span>
-              <select value={libraryJobId} onChange={(event) => setLibraryJobId(event.target.value)}>
-                {jobs.map((job) => <option key={job.id} value={job.id}>{formatJobOption(job)}</option>)}
-              </select>
-            </label>
+            <div className="interview-filter-field voice-library-filter">
+              <JobSearchSwitcher
+                jobs={jobs}
+                currentJob={librarySelectedJob}
+                onChange={setLibraryJobId}
+                label="岗位"
+                placeholder="输入岗位名称 / 地点搜索"
+              />
+            </div>
             <div className="voice-library-stats">
               <Badge color="green">{voiceHistory.length} 条录音</Badge>
             </div>
@@ -3442,7 +4345,7 @@ function VoiceParseView({
               </thead>
               <tbody>
                 {voiceHistory.map((item) => {
-                  const itemCandidate = historyCandidates.find((candidate) => candidate.id === item.candidateId);
+                  const itemCandidate = findVisibleCandidateByStoredId(historyCandidates, historyRawCandidates, item.candidateId);
                   return (
                     <tr key={item.id} className={selectedHistoryId === item.id ? "voice-library-table-row active" : "voice-library-table-row"}>
                       <td><strong>{itemCandidate?.name || "未匹配人选"}</strong></td>
@@ -3500,18 +4403,22 @@ function VoiceParseView({
             </div>
           </div>
           <div className="voice-form">
-            <label className="form-field">
-              <span>关联岗位</span>
-              <select value={jobId} onChange={(event) => setJobId(event.target.value)} disabled={status === "listening"}>
-                {jobs.map((job) => <option key={job.id} value={job.id}>{formatJobOption(job)}</option>)}
-              </select>
-            </label>
-            <label className="form-field">
-              <span>关联人选</span>
-              <select value={candidateId} onChange={(event) => setCandidateId(event.target.value)} disabled={!candidates.length || status === "listening"}>
-                {candidates.length ? candidates.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.name}</option>) : <option value="">暂无候选人</option>}
-              </select>
-            </label>
+            <JobSearchSwitcher
+              jobs={voiceJobOptions}
+              currentJob={selectedJob}
+              onChange={setJobId}
+              label="关联岗位"
+              placeholder="输入岗位名称 / 地点搜索"
+              disabled={status === "listening"}
+            />
+            <CandidateSearchSwitcher
+              candidates={candidates}
+              currentCandidate={selectedCandidate}
+              onChange={setCandidateId}
+              label="关联人选"
+              placeholder="输入姓名 / 来源 / 简历关键词搜索"
+              disabled={status === "listening"}
+            />
             <section className="voice-candidate-brief full">
               <span className="meta">当前人选摘要</span>
               {selectedCandidate ? (
@@ -4020,6 +4927,28 @@ function SalaryView({
   );
 }
 
+const defaultJobScoreWeights: JobScoreWeights = {
+  experience: 30,
+  professional: 30,
+  stability: 15,
+  education: 10,
+  business: 15,
+};
+
+const scoreWeightFields: Array<{ key: keyof JobScoreWeights; label: string; hint: string }> = [
+  { key: "experience", label: "经验匹配", hint: "年限、项目规模、岗位复杂度" },
+  { key: "professional", label: "专业契合度", hint: "技能/专业能力与岗位关键词" },
+  { key: "stability", label: "稳定性", hint: "履历连续性、跳槽频率、动机风险" },
+  { key: "education", label: "学历背景", hint: "学历、专业、证书等硬性背景" },
+  { key: "business", label: "业务导向", hint: "业务理解、结果意识、经营视角" },
+];
+
+const scoreWeightTemplates: Array<{ label: string; weights: JobScoreWeights }> = [
+  { label: "社招通用", weights: defaultJobScoreWeights },
+  { label: "高管岗", weights: { experience: 25, professional: 20, stability: 15, education: 10, business: 30 } },
+  { label: "校招", weights: { experience: 10, professional: 25, stability: 10, education: 35, business: 20 } },
+];
+
 function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; onSaved: (state: AppState) => void }) {
   const [form, setForm] = useState<JobPayload>({
     title: job?.title || "",
@@ -4029,6 +4958,7 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
     level: job?.level || "",
     salaryRange: job?.salaryRange || "",
     keywords: job?.keywords || "",
+    scoreWeights: normalizeJobScoreWeights(job?.scoreWeights),
     description: job?.description || "",
     status: job?.status || "招聘中",
   });
@@ -4039,9 +4969,12 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
   const [copied, setCopied] = useState(false);
   const [titlesCopied, setTitlesCopied] = useState(false);
   const interviewQuestions = generatedQuestions.length ? generatedQuestions : buildJobQuestions(form);
+  const scoreWeightTotal = sumJobScoreWeights(form.scoreWeights);
+  const scoreWeightValid = scoreWeightTotal === 100;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    if (!scoreWeightValid) return;
     const next = job ? await api.updateJob(job.id, form) : await api.createJob(form);
     onSaved(next);
   }
@@ -4171,7 +5104,7 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
   };
 
   return (
-    <Modal className="modal-wide modal-job-editor" onClose={onClose} actions={<button className="btn primary" type="submit" form="jobForm">保存职位</button>}>
+    <Modal className="modal-wide modal-job-editor" onClose={onClose} actions={<button className="btn primary" type="submit" form="jobForm" disabled={!scoreWeightValid}>保存职位</button>}>
       <form id="jobForm" onSubmit={submit}>
         <div className="modal-body form-grid">
           <Input label="职位名称" value={form.title} onChange={(title) => setForm({ ...form, title })} />
@@ -4187,6 +5120,11 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
             </select>
           </label>
           <Input label="岗位关键词" full value={form.keywords} onChange={(keywords) => setForm({ ...form, keywords })} />
+          <ScoreWeightPanel
+            value={form.scoreWeights}
+            total={scoreWeightTotal}
+            onChange={(scoreWeights) => setForm({ ...form, scoreWeights })}
+          />
           <label className="form-field full">
             <span>职位描述</span>
             <textarea required value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
@@ -4260,6 +5198,105 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
   );
 }
 
+function ScoreWeightPanel({ value, total, onChange }: { value: JobScoreWeights; total: number; onChange: (weights: JobScoreWeights) => void }) {
+  return (
+    <details className="score-config-panel full" open>
+      <summary>
+        <div>
+          <strong>AI 评分模型配置</strong>
+          <span>上传该岗位简历时，AI 会按此权重计算综合匹配分。</span>
+        </div>
+        <Badge color={total === 100 ? "green" : "red"}>合计 {total}%</Badge>
+      </summary>
+      <div className="score-template-row">
+        {scoreWeightTemplates.map((template) => (
+          <button className="btn ghost compact" type="button" key={template.label} onClick={() => onChange(template.weights)}>
+            {template.label}
+          </button>
+        ))}
+      </div>
+      <div className="score-weight-list">
+        {scoreWeightFields.map((field) => (
+          <div className="score-weight-row" key={field.key}>
+            <div className="score-weight-label">
+              <strong>{field.label}</strong>
+              <span>{field.hint}</span>
+            </div>
+            <button className="score-weight-step" type="button" onClick={() => onChange(rebalanceJobScoreWeights(value, field.key, value[field.key] - 5))}>−</button>
+            <input
+              aria-label={`${field.label}权重`}
+              type="range"
+              min={0}
+              max={100}
+              step={5}
+              value={value[field.key]}
+              onChange={(event) => onChange(rebalanceJobScoreWeights(value, field.key, Number(event.target.value)))}
+            />
+            <span className="score-weight-value">{value[field.key]}%</span>
+            <button className="score-weight-step" type="button" onClick={() => onChange(rebalanceJobScoreWeights(value, field.key, value[field.key] + 5))}>＋</button>
+          </div>
+        ))}
+      </div>
+      {total !== 100 ? <p className="score-config-warning">权重总和必须等于 100% 后才能保存。</p> : null}
+    </details>
+  );
+}
+
+function normalizeJobScoreWeights(weights?: Partial<JobScoreWeights> | null): JobScoreWeights {
+  if (!weights) return { ...defaultJobScoreWeights };
+  const normalized: JobScoreWeights = {
+    experience: normalizeWeightValue(weights.experience, defaultJobScoreWeights.experience),
+    professional: normalizeWeightValue(weights.professional, defaultJobScoreWeights.professional),
+    stability: normalizeWeightValue(weights.stability, defaultJobScoreWeights.stability),
+    education: normalizeWeightValue(weights.education, defaultJobScoreWeights.education),
+    business: normalizeWeightValue(weights.business, defaultJobScoreWeights.business),
+  };
+  return sumJobScoreWeights(normalized) === 100 ? normalized : { ...defaultJobScoreWeights };
+}
+
+function rebalanceJobScoreWeights(weights: JobScoreWeights, changedKey: keyof JobScoreWeights, nextValue: number): JobScoreWeights {
+  const clampedValue = normalizeWeightValue(nextValue, weights[changedKey]);
+  const otherKeys = scoreWeightFields.map((field) => field.key).filter((key) => key !== changedKey);
+  const remaining = 100 - clampedValue;
+  const currentOtherTotal = otherKeys.reduce((sum, key) => sum + weights[key], 0);
+  const next = { ...weights, [changedKey]: clampedValue } as JobScoreWeights;
+
+  if (currentOtherTotal <= 0) {
+    const base = Math.floor(remaining / otherKeys.length);
+    let rest = remaining - base * otherKeys.length;
+    otherKeys.forEach((key) => {
+      next[key] = base + (rest > 0 ? 1 : 0);
+      rest -= 1;
+    });
+    return next;
+  }
+
+  const rawValues = otherKeys.map((key) => {
+    const raw = (weights[key] / currentOtherTotal) * remaining;
+    return { key, value: Math.floor(raw), fraction: raw - Math.floor(raw) };
+  });
+  let used = rawValues.reduce((sum, item) => sum + item.value, 0);
+  rawValues
+    .sort((left, right) => right.fraction - left.fraction)
+    .forEach((item) => {
+      const bonus = used < remaining ? 1 : 0;
+      next[item.key] = item.value + bonus;
+      used += bonus;
+    });
+
+  return next;
+}
+
+function sumJobScoreWeights(weights: JobScoreWeights) {
+  return scoreWeightFields.reduce((sum, field) => sum + weights[field.key], 0);
+}
+
+function normalizeWeightValue(value: unknown, fallback: number) {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) return fallback;
+  return Math.max(0, Math.min(100, Math.round(numberValue)));
+}
+
 type ResumeUploadItem = {
   id: string;
   name: string;
@@ -4270,7 +5307,28 @@ type ResumeUploadItem = {
   error?: string;
 };
 
-function ResumeModal({ job, onClose, onSaved }: { job: Job; onClose: () => void; onSaved: (state: AppState) => void }) {
+function findUploadDuplicateCandidates(candidates: Candidate[], input: { name: string; resumeText: string; files: UploadedFile[] }) {
+  const incomingItems: CandidateIdentityLike[] = input.files.length
+    ? input.files.map((file) => ({
+      name: input.files.length === 1 && input.name ? input.name : inferCandidateNameFromFileName(file.name),
+      resumeText: input.resumeText,
+      fileName: file.name,
+      fileSize: file.size,
+      fileObjectKey: file.object_key,
+      fileUrl: file.url,
+    })).filter((item) => item.name)
+    : [{
+      name: input.name || inferCandidateNameFromResumeText(input.resumeText),
+      resumeText: input.resumeText,
+    }].filter((item) => item.name);
+
+  const duplicates = incomingItems
+    .map((item) => findDuplicateCandidateInList(candidates, item))
+    .filter((candidate): candidate is Candidate => Boolean(candidate));
+  return Array.from(new Map(duplicates.map((candidate) => [candidate.id, candidate])).values());
+}
+
+function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidates: Candidate[]; onClose: () => void; onSaved: (state: AppState) => void }) {
   const [name, setName] = useState("");
   const [nameTouched, setNameTouched] = useState(false);
   const [nameAutoFilled, setNameAutoFilled] = useState(false);
@@ -4376,7 +5434,23 @@ function ResumeModal({ job, onClose, onSaved }: { job: Job; onClose: () => void;
     setError("");
     try {
       const shouldSubmitSharedName = nameTouched || uploadedFiles.length <= 1;
-      const payload: ResumeUploadPayload = { name: shouldSubmitSharedName ? name : "", source, resumeText, files: uploadedFiles.map(uploadedFileToResumePayload) };
+      const duplicateCandidates = findUploadDuplicateCandidates(candidates, {
+        name: shouldSubmitSharedName ? name : "",
+        resumeText,
+        files: uploadedFiles,
+      });
+      const duplicateAction = duplicateCandidates.length
+        ? window.confirm(`当前岗位的简历甄选中已存在 ${duplicateCandidates.map((candidate) => candidate.name).join("、")} 的简历。\n\n是否用本次提交的简历覆盖原有简历？\n\n确定：覆盖原简历\n取消：保留原简历，不重复新增`)
+          ? "overwrite"
+          : "skip"
+        : "skip";
+      const payload: ResumeUploadPayload = {
+        name: shouldSubmitSharedName ? name : "",
+        source,
+        resumeText,
+        files: uploadedFiles.map(uploadedFileToResumePayload),
+        duplicateAction,
+      };
       const result = await api.uploadResumes(job.id, payload);
       onSaved(result.state);
     } catch (uploadError) {

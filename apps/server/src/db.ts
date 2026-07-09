@@ -14,6 +14,14 @@ type CandidateRow = typeof dbSchema.candidates.$inferSelect;
 type VoiceAnalysisRow = typeof dbSchema.voiceAnalyses.$inferSelect;
 type VoiceTranscriptSegmentRow = typeof dbSchema.voiceTranscriptSegments.$inferSelect;
 
+const defaultJobScoreWeights: Job["scoreWeights"] = {
+  experience: 30,
+  professional: 30,
+  stability: 15,
+  education: 10,
+  business: 15,
+};
+
 let SQL: SqlJsStatic;
 let sqliteDb: Database;
 let appDb: AppDatabase | null = null;
@@ -76,6 +84,7 @@ export function upsertJob(job: Omit<Job, "resumeCount" | "sortOrder"> & { sortOr
         level: job.level,
         salaryRange: job.salaryRange,
         keywords: job.keywords,
+        scoreWeights: JSON.stringify(normalizeJobScoreWeights(job.scoreWeights)),
         description: job.description,
         status: job.status,
         salaryData: job.salaryData ? JSON.stringify(job.salaryData) : null,
@@ -100,6 +109,7 @@ export function upsertJob(job: Omit<Job, "resumeCount" | "sortOrder"> & { sortOr
         level: job.level,
         salaryRange: job.salaryRange,
         keywords: job.keywords,
+        scoreWeights: JSON.stringify(normalizeJobScoreWeights(job.scoreWeights)),
         description: job.description,
         status: job.status,
         salaryData: job.salaryData ? JSON.stringify(job.salaryData) : null,
@@ -168,6 +178,7 @@ export function updateCandidate(candidate: Candidate) {
       score: data.score,
       conclusion: data.conclusion,
       reason: data.reason,
+      remark: data.remark,
       resumeText: data.resumeText,
       uploadTime: data.uploadTime,
       fileName: data.fileName,
@@ -188,6 +199,9 @@ export function updateCandidate(candidate: Candidate) {
       interviewReason: data.interviewReason,
       reasonTags: data.reasonTags,
       interviewTimeline: data.interviewTimeline,
+      isInTalentPool: data.isInTalentPool,
+      talentPoolAt: data.talentPoolAt,
+      talentPoolNote: data.talentPoolNote,
     })
     .where(eq(dbSchema.candidates.id, data.id))
     .run();
@@ -337,6 +351,7 @@ function upsertJobNoPersist(job: Job) {
     level: job.level,
     salaryRange: job.salaryRange,
     keywords: job.keywords,
+    scoreWeights: JSON.stringify(normalizeJobScoreWeights(job.scoreWeights)),
     description: job.description,
     status: job.status,
     salaryData: job.salaryData ? JSON.stringify(job.salaryData) : null,
@@ -362,6 +377,7 @@ function insertCandidateNoPersist(candidate: Candidate) {
       score: data.score,
       conclusion: data.conclusion,
       reason: data.reason,
+      remark: data.remark,
       resumeText: data.resumeText,
       uploadTime: data.uploadTime,
       fileName: data.fileName,
@@ -382,6 +398,9 @@ function insertCandidateNoPersist(candidate: Candidate) {
       interviewReason: data.interviewReason,
       reasonTags: data.reasonTags,
       interviewTimeline: data.interviewTimeline,
+      isInTalentPool: data.isInTalentPool,
+      talentPoolAt: data.talentPoolAt,
+      talentPoolNote: data.talentPoolNote,
     })
     .run();
 }
@@ -400,12 +419,42 @@ function rowToJob(row: JobRow, resumeCount: number): Job {
     level: row.level,
     salaryRange: row.salaryRange || "面议",
     keywords: row.keywords,
+    scoreWeights: normalizeJobScoreWeights(row.scoreWeights),
     description: row.description,
     status: row.status as Job["status"],
     resumeCount,
     salaryData: row.salaryData ? normalizeSalaryData(JSON.parse(row.salaryData), row) : null,
     sortOrder: row.sortOrder ?? 0,
   };
+}
+
+function normalizeJobScoreWeights(value: unknown): Job["scoreWeights"] {
+  const parsed = typeof value === "string" ? safeJsonParse(value) : value;
+  const source = parsed && typeof parsed === "object" ? parsed as Partial<Job["scoreWeights"]> : {};
+  const next: Job["scoreWeights"] = {
+    experience: normalizeWeightValue(source.experience, defaultJobScoreWeights.experience),
+    professional: normalizeWeightValue(source.professional, defaultJobScoreWeights.professional),
+    stability: normalizeWeightValue(source.stability, defaultJobScoreWeights.stability),
+    education: normalizeWeightValue(source.education, defaultJobScoreWeights.education),
+    business: normalizeWeightValue(source.business, defaultJobScoreWeights.business),
+  };
+  const total = Object.values(next).reduce((sum, item) => sum + item, 0);
+  if (total !== 100) return { ...defaultJobScoreWeights };
+  return next;
+}
+
+function safeJsonParse(value: string) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeWeightValue(value: unknown, fallback: number) {
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) return fallback;
+  return Math.max(0, Math.min(100, Math.round(numberValue)));
 }
 
 function normalizeSalaryData(raw: unknown, row: JobRow): SalaryData {
@@ -517,6 +566,7 @@ function rowToCandidate(row: CandidateRow): Candidate {
     score: Number(row.score),
     conclusion: row.conclusion,
     reason: row.reason,
+    remark: row.remark || "",
     resumeText: row.resumeText,
     uploadTime: row.uploadTime,
     fileName: row.fileName,
@@ -537,6 +587,9 @@ function rowToCandidate(row: CandidateRow): Candidate {
     interviewReason: row.interviewReason || "",
     reasonTags: JSON.parse(row.reasonTags || "[]"),
     interviewTimeline: JSON.parse(row.interviewTimeline || "{}"),
+    isInTalentPool: Boolean(row.isInTalentPool),
+    talentPoolAt: row.talentPoolAt || "",
+    talentPoolNote: row.talentPoolNote || "",
   };
 }
 
@@ -575,13 +628,17 @@ function rowToVoiceTranscriptSegment(row: VoiceTranscriptSegmentRow): VoiceTrans
 }
 
 function normalizeInterviewStage(value: unknown): NonNullable<Candidate["interviewStage"]> {
+  if (value === "推荐" || value === "推荐简历") return "推荐";
   if (value === "复试" || value === "推荐复试" || value === "初试通过") return "复试";
   if (value === "offer" || value === "复试通过" || value === "入职") return "offer";
-  return "初试";
+  if (value === "初试" || value === "推荐初试") return "初试";
+  return "推荐";
 }
 
 function normalizeStageRecommendation(value: unknown): NonNullable<Candidate["stageRecommendation"]> {
-  return value === "否" ? "否" : "是";
+  if (value === "待定") return "待定";
+  if (value === "是" || value === "否") return value;
+  return "待定";
 }
 
 function normalizeOnboarded(value: unknown): NonNullable<Candidate["onboarded"]> {
@@ -610,18 +667,22 @@ function serializeCandidate(candidate: Candidate) {
     fileBlob: candidate.fileDataBase64 ? Buffer.from(candidate.fileDataBase64, "base64") : null,
     fileObjectKey: candidate.fileObjectKey ?? null,
     fileUrl: candidate.fileUrl ?? null,
+    remark: candidate.remark || "",
     evaluationJson: JSON.stringify(candidate.evaluation || {}),
     interviewPlanJson: JSON.stringify(candidate.interviewPlan || {}),
     keyPointAnalysis: JSON.stringify(candidate.keyPointAnalysis || []),
     interviewQuestions: JSON.stringify(candidate.interviewQuestions || []),
     interviewStage: normalizeInterviewStage(candidate.interviewStage),
-    stageRecommendation: candidate.stageRecommendation || "是",
+    stageRecommendation: normalizeStageRecommendation(candidate.stageRecommendation),
     interviewResult: candidate.interviewResult || "待定",
     onboarded: normalizeOnboarded(candidate.onboarded),
     reportMonth: candidate.reportMonth || formatReportMonth(),
     interviewReason: candidate.interviewReason || "",
     reasonTags: JSON.stringify(candidate.reasonTags || []),
     interviewTimeline: JSON.stringify(candidate.interviewTimeline || {}),
+    isInTalentPool: candidate.isInTalentPool ? 1 : 0,
+    talentPoolAt: candidate.talentPoolAt || "",
+    talentPoolNote: candidate.talentPoolNote || "",
   };
 }
 
@@ -729,16 +790,18 @@ function ensureSchema() {
     location TEXT NOT NULL,
     experience TEXT NOT NULL,
     level TEXT NOT NULL,
-    salary_range TEXT NOT NULL DEFAULT '面议',
-    keywords TEXT NOT NULL,
-    description TEXT NOT NULL,
+	    salary_range TEXT NOT NULL DEFAULT '面议',
+	    keywords TEXT NOT NULL,
+	    score_weights TEXT NOT NULL DEFAULT '{"experience":30,"professional":30,"stability":15,"education":10,"business":15}',
+	    description TEXT NOT NULL,
     status TEXT NOT NULL,
     salary_data TEXT,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-  );`);
-  ensureColumn("jobs", "salary_range", "TEXT NOT NULL DEFAULT '面议'");
+	  );`);
+	  ensureColumn("jobs", "salary_range", "TEXT NOT NULL DEFAULT '面议'");
+	  ensureColumn("jobs", "score_weights", `TEXT NOT NULL DEFAULT '{"experience":30,"professional":30,"stability":15,"education":10,"business":15}'`);
   sqliteDb.run(`CREATE TABLE IF NOT EXISTS candidates (
     id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -747,6 +810,7 @@ function ensureSchema() {
     score REAL NOT NULL,
     conclusion TEXT NOT NULL,
     reason TEXT NOT NULL,
+    remark TEXT NOT NULL DEFAULT '',
     resume_text TEXT NOT NULL,
     upload_time TEXT NOT NULL,
     file_name TEXT,
@@ -760,22 +824,25 @@ function ensureSchema() {
     key_point_analysis TEXT NOT NULL DEFAULT '[]',
     interview_questions TEXT NOT NULL DEFAULT '[]',
     interview_recommendation TEXT NOT NULL DEFAULT '待定',
-    stage_recommendation TEXT NOT NULL DEFAULT '是',
+	    stage_recommendation TEXT NOT NULL DEFAULT '待定',
     interview_result TEXT NOT NULL DEFAULT '待定',
     onboarded TEXT NOT NULL DEFAULT '待入职',
     report_month TEXT NOT NULL DEFAULT '',
-    interview_stage TEXT NOT NULL DEFAULT '初试',
+	    interview_stage TEXT NOT NULL DEFAULT '推荐',
     interview_reason TEXT NOT NULL DEFAULT '',
     reason_tags TEXT NOT NULL DEFAULT '[]',
     interview_timeline TEXT NOT NULL DEFAULT '{}',
+    is_in_talent_pool INTEGER NOT NULL DEFAULT 0,
+    talent_pool_at TEXT NOT NULL DEFAULT '',
+    talent_pool_note TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );`);
   ensureColumn("candidates", "interview_recommendation", "TEXT NOT NULL DEFAULT '待定'");
-  ensureColumn("candidates", "stage_recommendation", "TEXT NOT NULL DEFAULT '是'");
+	  ensureColumn("candidates", "stage_recommendation", "TEXT NOT NULL DEFAULT '待定'");
   ensureColumn("candidates", "interview_result", "TEXT NOT NULL DEFAULT '待定'");
   ensureColumn("candidates", "onboarded", "TEXT NOT NULL DEFAULT '待入职'");
   ensureColumn("candidates", "report_month", "TEXT NOT NULL DEFAULT ''");
-  ensureColumn("candidates", "interview_stage", "TEXT NOT NULL DEFAULT '初试'");
+	  ensureColumn("candidates", "interview_stage", "TEXT NOT NULL DEFAULT '推荐'");
   ensureColumn("candidates", "interview_reason", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("candidates", "reason_tags", "TEXT NOT NULL DEFAULT '[]'");
   ensureColumn("candidates", "interview_timeline", "TEXT NOT NULL DEFAULT '{}'");
@@ -783,6 +850,10 @@ function ensureSchema() {
   ensureColumn("candidates", "interview_plan_json", "TEXT NOT NULL DEFAULT '{}'");
   ensureColumn("candidates", "file_object_key", "TEXT");
   ensureColumn("candidates", "file_url", "TEXT");
+  ensureColumn("candidates", "remark", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("candidates", "is_in_talent_pool", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("candidates", "talent_pool_at", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("candidates", "talent_pool_note", "TEXT NOT NULL DEFAULT ''");
   sqliteDb.run(`CREATE TABLE IF NOT EXISTS voice_analyses (
     id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,

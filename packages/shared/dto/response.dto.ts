@@ -31,6 +31,10 @@ export declare namespace ResponseDTO {
     state: SchemaDTO.AppState;
   }
 
+  export interface TalentRevivalScript {
+    script: string;
+  }
+
   export interface SalaryResearch {
     salaryData: SchemaDTO.SalaryData;
   }

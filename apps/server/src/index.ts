@@ -95,6 +95,14 @@ await server.register(multipart, {
 });
 await initDb();
 
+const defaultJobScoreWeights: Job["scoreWeights"] = {
+  experience: 30,
+  professional: 30,
+  stability: 15,
+  education: 10,
+  business: 15,
+};
+
 const jobSchema = z.object({
   title: z.string().min(1),
   dept: z.string().min(1),
@@ -103,14 +111,30 @@ const jobSchema = z.object({
   level: z.string().min(1),
   salaryRange: z.string().min(1),
   keywords: z.string().min(1),
+  scoreWeights: z.object({
+    experience: z.number().int().min(0).max(100),
+    professional: z.number().int().min(0).max(100),
+    stability: z.number().int().min(0).max(100),
+    education: z.number().int().min(0).max(100),
+    business: z.number().int().min(0).max(100),
+  }).refine((weights) => Object.values(weights).reduce((sum, item) => sum + item, 0) === 100, "AI评分模型权重总和必须等于100%").default(defaultJobScoreWeights),
   description: z.string().min(1),
   status: z.enum(["招聘中", "暂停", "已关闭"]),
 });
+
+const scoreWeightLabels: Array<[keyof Job["scoreWeights"], string]> = [
+  ["experience", "经验匹配"],
+  ["professional", "专业契合度"],
+  ["stability", "稳定性"],
+  ["education", "学历背景"],
+  ["business", "业务导向"],
+];
 
 const resumeSchema = z.object({
   name: z.string().optional().default(""),
   source: z.string().optional().default("本地上传"),
   resumeText: z.string().optional().default(""),
+  duplicateAction: z.enum(["skip", "overwrite"]).optional().default("skip"),
   files: z
     .array(
       z.object({
@@ -324,7 +348,7 @@ server.post("/api/jobs/:id/resumes", async (request) => {
   if (!body.files.length && !body.name) throw server.httpErrors.badRequest("文本录入请填写候选人姓名");
 
   const candidates = await buildCandidatesFromResumeInput(job, body);
-  insertCandidates(candidates);
+  saveCandidatesWithDuplicateHandling(candidates, job.id, body.duplicateAction);
   setSetting("currentJobId", job.id);
   return { state: getState() };
 });
@@ -337,23 +361,106 @@ server.post("/api/candidates/:id/mark-interview", async (request) => {
     ...candidate,
     conclusion: "已邀面试",
     score: Math.max(candidate.score, 75),
-    interviewStage: "初试",
-    stageRecommendation: "是",
+    interviewStage: "推荐",
+    stageRecommendation: "待定",
     interviewResult: "待定",
     reportMonth: candidate.reportMonth || formatReportMonth(),
-    interviewTimeline: {
-      ...(candidate.interviewTimeline || {}),
-      recommendedAt: candidate.interviewTimeline?.recommendedAt || formatDateStamp(),
-    },
+    interviewTimeline: candidate.interviewTimeline || {},
   });
   return getState();
+});
+
+server.post("/api/candidates/:id/talent-pool", async (request) => {
+  const params = z.object({ id: z.string() }).parse(request.params);
+  const body = z.object({ note: z.string().trim().max(500).optional() }).parse(request.body ?? {});
+  const candidate = getCandidateById(params.id);
+  if (!candidate) throw server.httpErrors.notFound("候选人不存在");
+  updateCandidate({
+    ...candidate,
+    isInTalentPool: true,
+    talentPoolAt: candidate.talentPoolAt || new Date().toLocaleString("zh-CN"),
+    talentPoolNote: body.note || candidate.talentPoolNote || "",
+  });
+  return getState();
+});
+
+server.post("/api/candidates/:id/recommend-to-job", async (request) => {
+  const params = z.object({ id: z.string() }).parse(request.params);
+  const body = z.object({
+    jobId: z.string().min(1),
+    duplicateAction: z.enum(["skip", "overwrite"]).optional().default("skip"),
+  }).parse(request.body ?? {});
+  const candidate = getCandidateById(params.id);
+  if (!candidate) throw server.httpErrors.notFound("候选人不存在");
+  const targetJob = getJob(body.jobId);
+  if (!targetJob) throw server.httpErrors.notFound("目标岗位不存在");
+  if (targetJob.status !== "招聘中") throw server.httpErrors.badRequest("只能推荐至招聘中的岗位");
+
+  const recommendationDate = formatBacktrackRecommendationDate();
+  const remark = `由人才库于 ${recommendationDate} 回溯推荐`;
+  const summary = candidate.evaluation?.summary || candidate.reason || "该候选人来自人才库回溯推荐，建议结合目标岗位重新筛选。";
+  const clonedCandidate: Candidate = {
+    ...candidate,
+    id: `c_${Date.now()}_${nanoid(6)}`,
+    jobId: targetJob.id,
+    source: `人才库回溯 · ${candidate.source}`,
+    conclusion: "待筛选",
+    reason: summary,
+    remark,
+    uploadTime: new Date().toLocaleDateString("zh-CN"),
+    evaluation: {
+      summary,
+      strengths: candidate.evaluation?.strengths || [],
+      weaknesses: candidate.evaluation?.weaknesses || [],
+      risks: candidate.evaluation?.risks || [],
+      interviewFocuses: candidate.evaluation?.interviewFocuses || [],
+      scoreDimensions: candidate.evaluation?.scoreDimensions || [],
+    },
+    interviewPlan: undefined,
+    interviewQuestions: [],
+    interviewStage: undefined,
+    stageRecommendation: "待定",
+    interviewResult: "待定",
+    onboarded: "待入职",
+    reportMonth: formatReportMonth(),
+    interviewReason: "",
+    reasonTags: [],
+    interviewTimeline: {},
+    isInTalentPool: false,
+    talentPoolAt: "",
+    talentPoolNote: "",
+  };
+
+  const existingCandidate = findExistingCandidateInJob(clonedCandidate, targetJob.id);
+  if (existingCandidate) {
+    if (body.duplicateAction === "overwrite") {
+      updateCandidate(mergeCandidateResumeOverwrite(existingCandidate, clonedCandidate));
+    }
+    setSetting("currentJobId", targetJob.id);
+    return getState();
+  }
+
+  insertCandidates([clonedCandidate]);
+  setSetting("currentJobId", targetJob.id);
+  return getState();
+});
+
+server.post("/api/candidates/:id/talent-revival-script", async (request) => {
+  const params = z.object({ id: z.string().min(1) }).parse(request.params);
+  const body = z.object({ jobId: z.string().min(1) }).parse(request.body ?? {});
+  const candidate = getCandidateById(params.id);
+  if (!candidate) throw server.httpErrors.notFound("候选人不存在");
+  const job = getJob(body.jobId);
+  if (!job) throw server.httpErrors.notFound("目标岗位不存在");
+  const script = await generateTalentRevivalScript(candidate, job);
+  return { script };
 });
 
 server.patch("/api/candidates/:id/interview-stage", async (request) => {
   const params = z.object({ id: z.string() }).parse(request.params);
   const body = z.object({
-    interviewStage: z.enum(["初试", "复试", "offer"]),
-    stageRecommendation: z.enum(["是", "否"]).default("是"),
+    interviewStage: z.enum(["推荐", "初试", "复试", "offer"]),
+    stageRecommendation: z.enum(["待定", "是", "否"]).default("待定"),
     interviewResult: z.enum(["通过", "淘汰", "待定", "未到面"]).default("待定"),
     onboarded: z.enum(["待入职", "是", "否"]).default("待入职"),
     reportMonth: z.string().trim().min(1).default(formatReportMonth()),
@@ -369,12 +476,15 @@ server.patch("/api/candidates/:id/interview-stage", async (request) => {
   }).parse(request.body);
   const candidate = getCandidateById(params.id);
   if (!candidate) throw server.httpErrors.notFound("候选人不存在");
-  const reasonTags = normalizeReasonTags(body.reasonTags.length ? body.reasonTags : inferReasonTags(body.interviewReason, body.interviewStage, body.onboarded), body.interviewStage, body.onboarded);
-  const timeline = mergeInterviewTimeline(candidate, body);
+  const stageRecommendation = resolveStageRecommendation(body.interviewStage, body.stageRecommendation);
+  const reasonTags = shouldManageReasonTags(body.interviewStage, body.interviewResult, body.onboarded)
+    ? normalizeReasonTags(body.reasonTags.length ? body.reasonTags : inferReasonTags(body.interviewReason, body.interviewStage, body.onboarded), body.interviewStage, body.onboarded)
+    : [];
+  const timeline = mergeInterviewTimeline(candidate, { ...body, stageRecommendation });
   updateCandidate({
     ...candidate,
     interviewStage: body.interviewStage,
-    stageRecommendation: body.stageRecommendation,
+    stageRecommendation,
     interviewResult: body.interviewResult,
     onboarded: body.onboarded,
     reportMonth: body.reportMonth,
@@ -819,10 +929,10 @@ async function enrichCandidateAssessmentWithDeepSeek(candidate: Candidate, job: 
     "你是一名严谨的招聘评估专家，负责根据岗位要求对候选人简历进行严格评估。",
     "请根据以下岗位信息与候选人简历，对候选人进行全面、客观、严谨的评估。",
     "请严格输出 JSON，不要输出 markdown，不要输出额外说明。",
-    "JSON 字段必须包含：score(number), summary(string), strengths(string[]), weaknesses(string[]), risks(string[]), interviewFocuses(string[]).",
+    "JSON 字段必须包含：score(number), scoreDimensions([{key,label,weight,score,reason}]), summary(string), strengths(string[]), weaknesses(string[]), risks(string[]), interviewFocuses(string[]).",
     "要求：",
-    "1. score 为 0-100 分的综合匹配度评分。",
-    "2. summary 为 100 字以内的 AI 总结。",
+    "1. score 为 0-100 分的综合匹配度评分，必须严格依据下方【AI评分模型配置】进行加权计算。",
+    "2. scoreDimensions 必须逐项返回 experience/professional/stability/education/business 五个维度，每项 score 为该维度0-100分，weight 为配置权重，reason 用一句话说明简历依据。",
     "3. strengths 输出 3-5 点核心优势。",
     "4. weaknesses 输出 2-3 点主要劣势/差距。",
     "5. risks 输出 2-3 点风险点提示。",
@@ -836,6 +946,11 @@ async function enrichCandidateAssessmentWithDeepSeek(candidate: Candidate, job: 
     `经验要求：${job.experience}`,
     `工作地点：${job.location}`,
     `职位描述：${job.description}`,
+    "",
+    "【AI评分模型配置】",
+    ...scoreWeightLabels.map(([key, label]) => `${label}(${key})：${job.scoreWeights[key]}%`),
+    "评分要求：请先判断五个维度各自的0-100分，再按“维度分 × 权重”加权得出最终score；最终score必须接近五个维度加权求和结果。",
+    "如果简历未提供某维度明确证据，该维度必须保守评分，不可用其他维度强行补足；例如学历未体现时，学历背景应低分或保守分。",
     "",
     "【候选人简历】",
     resumeExcerpt,
@@ -863,6 +978,13 @@ async function enrichCandidateAssessmentWithDeepSeek(candidate: Candidate, job: 
     const parsed = safeJsonParse(content);
     const schema = z.object({
       score: z.number().min(0).max(100),
+      scoreDimensions: z.array(z.object({
+        key: z.enum(["experience", "professional", "stability", "education", "business"]),
+        label: z.string().default(""),
+        weight: z.number().min(0).max(100),
+        score: z.number().min(0).max(100),
+        reason: z.string().default(""),
+      })).default([]),
       summary: z.string().default(""),
       strengths: z.array(z.string()).default([]),
       weaknesses: z.array(z.string()).default([]),
@@ -876,6 +998,7 @@ async function enrichCandidateAssessmentWithDeepSeek(candidate: Candidate, job: 
       weaknesses: result.weaknesses.map((item) => item.trim()).filter(Boolean).slice(0, 3),
       risks: result.risks.map((item) => item.trim()).filter(Boolean).slice(0, 3),
       interviewFocuses: result.interviewFocuses.map((item) => item.trim()).filter(Boolean).slice(0, 5),
+      scoreDimensions: normalizeScoreDimensions(result.scoreDimensions, job),
     };
     return applyCandidateEvaluation(candidate, {
       ...fallback,
@@ -1085,6 +1208,91 @@ async function generateCandidateInterviewPlan(candidate: Candidate, job: Job): P
     requestLog("deepseek_interview_plan_exception", { message: error instanceof Error ? error.message : String(error) });
     return fallback;
   }
+}
+
+async function generateTalentRevivalScript(candidate: Candidate, job: Job) {
+  const fallback = buildFallbackTalentRevivalScript(candidate, job);
+  if (!deepseekApiKey) return fallback;
+
+  const matchedKeywords = candidate.keyPointAnalysis
+    .filter((item) => item.matched)
+    .map((item) => item.keyword)
+    .slice(0, 5);
+  const resumeExcerpt = buildResumeAssessmentExcerpt(candidate.resumeText).slice(0, 1800);
+  const prompt = [
+    "你是一名资深猎头顾问和高端人才寻访专家，擅长唤醒沉淀超过3个月的人才库候选人。",
+    "",
+    "【核心原则】",
+    "1. 不要直接问候选人“是否在看机会”“是否考虑机会”，这太直白、像群发。",
+    "2. 要告诉候选人：我为什么非要找你，而不是找别人，制造专业、克制、不可替代感。",
+    "3. 话术要像真实猎头/资深HR的一对一私信：短、准、有判断、有尊重。",
+    "4. 不能夸大岗位，不承诺薪资/级别/录用结果，不制造焦虑。",
+    "5. 适合微信/短信直接发送，控制在120-180字。",
+    "",
+    "【岗位信息】",
+    `职位名称：${job.title}`,
+    `部门：${job.dept}`,
+    `地点：${job.location}`,
+    `薪资范围：${job.salaryRange}`,
+    `关键考核点：${job.keywords}`,
+    `职位描述：${job.description}`,
+    "",
+    "【候选人信息】",
+    `姓名：${candidate.name}`,
+    `AI摘要：${candidate.evaluation?.summary || candidate.reason}`,
+    `匹配分：${candidate.score}`,
+    `已命中关键词：${matchedKeywords.length ? matchedKeywords.join("、") : "暂无明确命中"}`,
+    `简历摘录：${resumeExcerpt}`,
+    "",
+    "【任务】",
+    "请生成一段“高价值猎头感”的回访唤醒话术。",
+    "必须体现：",
+    "- 你注意到候选人过往经历里的一个具体亮点；",
+    "- 当前岗位为什么与他的某项经历高度相关；",
+    "- 邀请方式要轻，不强推，只说想简短同步一个判断；",
+    "- 不出现“你是否在看机会/考虑机会/换工作”等直白措辞。",
+    "",
+    "请严格输出 JSON，不要输出 markdown，不要输出额外说明。",
+    "JSON 格式：{\"script\":\"...\"}",
+  ].join("\n");
+
+  try {
+    const response = await deepseekJsonRequest({
+      systemPrompt: "你是一名克制、专业、有猎头质感的人才沟通文案专家。你只输出可直接复制给候选人的私信话术 JSON。",
+      userPrompt: prompt,
+      temperature: 0.55,
+      timeoutMs: deepseekTimeoutMs,
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      requestLog("deepseek_talent_revival_error", { status: response.status, text, candidateId: candidate.id, jobId: job.id });
+      return fallback;
+    }
+
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) return fallback;
+    const parsed = safeJsonParse(content);
+    const result = z.object({ script: z.string().min(20).max(400) }).parse(parsed);
+    return result.script.trim();
+  } catch (error) {
+    requestLog("deepseek_talent_revival_exception", {
+      message: error instanceof Error ? error.message : String(error),
+      candidateId: candidate.id,
+      jobId: job.id,
+    });
+    return fallback;
+  }
+}
+
+function buildFallbackTalentRevivalScript(candidate: Candidate, job: Job) {
+  const matchedKeywords = candidate.keyPointAnalysis
+    .filter((item) => item.matched)
+    .map((item) => item.keyword)
+    .slice(0, 2);
+  const highlight = matchedKeywords.length ? matchedKeywords.join("、") : job.keywords.split(/[、,，;；\s]+/).filter(Boolean).slice(0, 2).join("、") || "过往经历";
+  return `${candidate.name}您好，我这边最近在看一个${job.location}的${job.title}方向，第一时间想到您，是因为您过往经历里关于${highlight}的沉淀，和这个岗位真正要解决的问题很贴近。我不想用群发式岗位介绍打扰您，只是想把这个判断简短同步给您，您方便时我发您2分钟看一下背景即可。`;
 }
 
 function buildFallbackInterviewPlan(candidate: Candidate, job: Job): CandidateInterviewPlan {
@@ -1311,6 +1519,7 @@ function applyCandidateEvaluation(candidate: Candidate, evaluation: CandidateEva
       weaknesses: evaluation.weaknesses,
       risks: evaluation.risks,
       interviewFocuses: evaluation.interviewFocuses,
+      scoreDimensions: evaluation.scoreDimensions,
     },
     keyPointAnalysis,
   } satisfies Candidate;
@@ -1320,9 +1529,14 @@ function buildFallbackCandidateEvaluation(candidate: Candidate, job: Job) {
   const keywords = normalizeKeywords(job.keywords);
   const matched = candidate.keyPointAnalysis.filter((item) => item.matched).map((item) => item.keyword);
   const missed = candidate.keyPointAnalysis.filter((item) => !item.matched).map((item) => item.keyword);
+  const dimensionScores = buildFallbackScoreDimensions(candidate, job, matched, keywords);
+  const score = clampScoreValue(scoreWeightLabels.reduce(
+    (sum, [key]) => sum + dimensionScores[key] * (job.scoreWeights[key] / 100),
+    0,
+  ));
   return {
-    score: candidate.score,
-    summary: candidate.reason,
+    score,
+    summary: `${candidate.reason} 当前按岗位评分模型加权后为 ${score} 分。`,
     strengths: matched.length
       ? matched.slice(0, 4).map((keyword) => `简历中已覆盖“${keyword}”相关经历，可在面试中进一步核验深度与规模。`)
       : ["简历已有一定基础信息，但岗位核心证据仍需通过面试补充判断。"],
@@ -1334,7 +1548,105 @@ function buildFallbackCandidateEvaluation(candidate: Candidate, job: Job) {
       missed.length ? `当前风险集中在 ${missed.slice(0, 2).join("、")} 等关键要求的直接证据不足。` : "若项目结果缺少量化指标，可能存在经验包装风险。",
     ].slice(0, 3),
     interviewFocuses: (matched.concat(missed).length ? matched.concat(missed) : keywords).slice(0, 5),
+    scoreDimensions: buildScoreDimensionsFromScores(dimensionScores, job),
   };
+}
+
+function normalizeScoreDimensions(
+  dimensions: Array<{ key: keyof Job["scoreWeights"]; label: string; weight: number; score: number; reason: string }>,
+  job: Job,
+) {
+  const scoreMap = new Map(dimensions.map((item) => [item.key, item]));
+  return scoreWeightLabels.map(([key, label]) => {
+    const item = scoreMap.get(key);
+    return {
+      key,
+      label,
+      weight: job.scoreWeights[key],
+      score: clampScoreValue(item?.score ?? 0),
+      reason: item?.reason?.trim() || "简历未提供足够直接证据，按岗位评分模型保守计分。",
+    };
+  });
+}
+
+function buildScoreDimensionsFromScores(scores: Record<keyof Job["scoreWeights"], number>, job: Job) {
+  return scoreWeightLabels.map(([key, label]) => ({
+    key,
+    label,
+    weight: job.scoreWeights[key],
+    score: clampScoreValue(scores[key]),
+    reason: buildFallbackScoreReason(key, scores[key]),
+  }));
+}
+
+function buildFallbackScoreReason(key: keyof Job["scoreWeights"], score: number) {
+  const level = score >= 80 ? "证据较充分" : score >= 65 ? "证据中等" : "证据偏弱";
+  const reasonMap: Record<keyof Job["scoreWeights"], string> = {
+    experience: `经验匹配${level}，主要依据简历年限、经历复杂度与岗位经验要求的匹配情况。`,
+    professional: `专业契合度${level}，主要依据岗位关键词、专业技能和项目内容的覆盖情况。`,
+    stability: `稳定性${level}，主要依据履历连续性、跳槽/空窗等风险线索。`,
+    education: `学历背景${level}，主要依据简历中学历、专业、证书等硬性背景信息。`,
+    business: `业务导向${level}，主要依据业务结果、指标意识、经营视角和跨团队推动线索。`,
+  };
+  return reasonMap[key];
+}
+
+function buildFallbackScoreDimensions(
+  candidate: Candidate,
+  job: Job,
+  matched: string[],
+  keywords: string[],
+): Record<keyof Job["scoreWeights"], number> {
+  const resumeText = candidate.resumeText;
+  const keywordRatio = keywords.length ? matched.length / keywords.length : 0.5;
+  const resumeYears = inferResumeYears(resumeText);
+  const requiredYears = inferRequiredYears(job.experience);
+  const experienceScore = resumeYears === null || requiredYears === null
+    ? candidate.score
+    : resumeYears >= requiredYears
+      ? Math.min(95, 72 + Math.min(18, (resumeYears - requiredYears) * 3))
+      : Math.max(45, 70 - (requiredYears - resumeYears) * 8);
+  const professionalScore = clampScoreValue(52 + keywordRatio * 42 + (/主导|搭建|架构|体系|优化|落地|项目|数据|绩效|招聘|组件|工程化/.test(resumeText) ? 6 : 0));
+  const stabilityScore = /频繁|短期|空窗|离职|跳槽/.test(resumeText)
+    ? 62
+    : /年以上|长期|稳定|任职/.test(resumeText)
+      ? 84
+      : 74;
+  const educationScore = /博士|硕士/.test(resumeText)
+    ? 90
+    : /本科/.test(resumeText)
+      ? 82
+      : /大专|专科/.test(resumeText)
+        ? 70
+        : 64;
+  const businessScore = /业务|增长|营收|利润|客户|市场|指标|结果|目标|成本|效率|转化|战略|经营/.test(resumeText)
+    ? 84
+    : /协同|推动|沟通|复盘|管理/.test(resumeText)
+      ? 76
+      : 66;
+
+  return {
+    experience: clampScoreValue(experienceScore),
+    professional: clampScoreValue(professionalScore),
+    stability: clampScoreValue(stabilityScore),
+    education: clampScoreValue(educationScore),
+    business: clampScoreValue(businessScore),
+  };
+}
+
+function inferResumeYears(text: string) {
+  const matches = Array.from(text.matchAll(/(\d{1,2})\s*年(?:以上)?/g))
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value));
+  return matches.length ? Math.max(...matches) : null;
+}
+
+function inferRequiredYears(experience: string) {
+  if (/无经验|应届|校招/.test(experience)) return 0;
+  const matches = Array.from(experience.matchAll(/(\d{1,2})/g))
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value));
+  return matches.length ? Math.min(...matches) : null;
 }
 
 async function analyzeVoiceSegmentWithDeepSeek(
@@ -2314,6 +2626,7 @@ function mergeInterviewTimeline(
   candidate: Candidate,
   body: {
     interviewStage: NonNullable<Candidate["interviewStage"]>;
+    stageRecommendation: NonNullable<Candidate["stageRecommendation"]>;
     interviewResult: NonNullable<Candidate["interviewResult"]>;
     onboarded: NonNullable<Candidate["onboarded"]>;
     interviewTimeline: Candidate["interviewTimeline"];
@@ -2323,8 +2636,11 @@ function mergeInterviewTimeline(
   const current = candidate.interviewTimeline || {};
   const next = { ...current, ...(body.interviewTimeline || {}) };
 
-  if (!next.recommendedAt && (candidate.interviewTimeline?.recommendedAt || candidate.interviewStage || candidate.stageRecommendation === "是")) {
+  if (body.interviewStage !== "推荐" && !next.recommendedAt) {
     next.recommendedAt = candidate.interviewTimeline?.recommendedAt || stamp;
+  }
+  if (body.interviewStage === "推荐" && body.stageRecommendation !== "是") {
+    delete next.recommendedAt;
   }
   if (body.interviewStage === "复试" && body.interviewResult !== "未到面") {
     next.firstInterviewPassedAt = next.firstInterviewPassedAt || stamp;
@@ -2336,22 +2652,41 @@ function mergeInterviewTimeline(
   if (body.onboarded === "是") {
     next.onboardedAt = next.onboardedAt || stamp;
   }
+  if (body.interviewStage === "推荐") {
+    delete next.firstInterviewPassedAt;
+    delete next.secondInterviewPassedAt;
+    delete next.offerAt;
+  }
   if (body.onboarded !== "是" && next.onboardedAt && body.interviewStage !== "offer") {
     delete next.onboardedAt;
   }
   return next;
 }
 
+function resolveStageRecommendation(
+  stage: NonNullable<Candidate["interviewStage"]>,
+  recommendation: NonNullable<Candidate["stageRecommendation"]>,
+): NonNullable<Candidate["stageRecommendation"]> {
+  if (stage !== "推荐") return "是";
+  return recommendation === "否" ? "否" : "待定";
+}
+
 function normalizeReasonTags(tags: string[], stage: NonNullable<Candidate["interviewStage"]> = "初试", onboarded?: Candidate["onboarded"]) {
   const options = getReasonTagOptions(stage);
   const mapped = tags.map((item) => mapReasonTagByStage(item, stage, onboarded));
-  if (stage === "offer" && onboarded === "待入职" && !mapped.includes("待入职")) {
-    mapped.unshift("待入职");
-  }
   return Array.from(new Set(mapped.filter((item): item is string => {
     if (!item) return false;
     return options.includes(item);
   }))).slice(0, 6);
+}
+
+function shouldManageReasonTags(
+  stage: NonNullable<Candidate["interviewStage"]>,
+  interviewResult: NonNullable<Candidate["interviewResult"]>,
+  onboarded?: Candidate["onboarded"],
+) {
+  if (stage === "offer") return onboarded !== "是";
+  return interviewResult === "淘汰" || interviewResult === "未到面";
 }
 
 function inferReasonTags(reason: string, stage: NonNullable<Candidate["interviewStage"]> = "初试", onboarded?: Candidate["onboarded"]) {
@@ -2359,12 +2694,12 @@ function inferReasonTags(reason: string, stage: NonNullable<Candidate["interview
   if (!source) return [];
   if (stage === "offer") {
     const matched: string[] = [];
-    if (/薪资|工资|预算|福利|社保|公积金|补贴/.test(source)) matched.push("薪资福利");
-    if (/其他offer|别家|他家|对比offer|接到.*offer/.test(source)) matched.push("接到其他offer");
-    if (/身体|家庭|家里|照顾|生病|怀孕/.test(source)) matched.push("身体/家庭原因");
+    if (/薪资|工资|预算|福利|社保|公积金|补贴/.test(source)) matched.push("薪资不匹配");
+    if (/发展|成长|晋升|平台|预期|空间|职业规划|其他offer|别家|他家|对比offer|接到.*offer/.test(source)) matched.push("发展不符合预期");
     if (/岗位调整|编制调整|hc调整|职位调整/.test(source)) matched.push("岗位调整");
-    if (/待入职|到岗中|入职中|未到入职日/.test(source) || onboarded === "待入职") matched.push("待入职");
-    if (!matched.length && source) matched.push("其他");
+    if (/部门|团队|直属|领导|汇报|组织|业务线/.test(source)) matched.push("部门对比");
+    if (/身体|家庭|家里|家人|照顾|生病|怀孕|个人原因|其他/.test(source)) matched.push("其他（身体、家人等）");
+    if (!matched.length && source) matched.push("其他（身体、家人等）");
     return normalizeReasonTags(matched, stage, onboarded);
   }
   const presets: Array<[RegExp, string]> = [
@@ -2391,14 +2726,14 @@ function mapReasonTagByStage(tag: string, stage: NonNullable<Candidate["intervie
   if (!value) return null;
   if (stage !== "offer") return generalReasonTagOptions.includes(value) ? value : null;
   if (offerReasonTagOptions.includes(value)) return value;
-  if (value === "薪资不匹配") return "薪资福利";
-  if (value === "offer流失") return "接到其他offer";
-  if (value === "待入职" || onboarded === "待入职") return "待入职";
+  if (value === "薪资福利") return "薪资不匹配";
+  if (value === "接到其他offer" || value === "offer流失") return "发展不符合预期";
+  if (value === "身体/家庭原因" || value === "其他") return "其他（身体、家人等）";
   return null;
 }
 
 const generalReasonTagOptions = ["薪资不匹配", "稳定性风险", "技能不符", "未到面", "offer流失", "求职动机不足", "通勤地点受限", "管理经验不足", "沟通表达一般"];
-const offerReasonTagOptions = ["薪资福利", "接到其他offer", "身体/家庭原因", "岗位调整", "待入职", "其他"];
+const offerReasonTagOptions = ["薪资不匹配", "发展不符合预期", "岗位调整", "部门对比", "其他（身体、家人等）"];
 type WhisperTranscriber = (
   audio: Float32Array,
   options: {
@@ -3535,9 +3870,10 @@ function buildVirtualSalaryResearchJob(filters: SalaryFilters): Job {
     location: filters.region,
     experience: filters.experience,
     level: "调研岗位",
-    salaryRange: "待调研",
-    keywords: `${filters.role}、${filters.industry}、${filters.education}`,
-    description: `这是一个独立的薪酬调研请求，目标岗位为${filters.role}，地区为${filters.region}，经验要求为${filters.experience}，行业为${filters.industry}，学历为${filters.education}。请仅基于公开招聘信息与公开报告完成市场薪酬研究。`,
+	    salaryRange: "待调研",
+	    keywords: `${filters.role}、${filters.industry}、${filters.education}`,
+	    scoreWeights: defaultJobScoreWeights,
+	    description: `这是一个独立的薪酬调研请求，目标岗位为${filters.role}，地区为${filters.region}，经验要求为${filters.experience}，行业为${filters.industry}，学历为${filters.education}。请仅基于公开招聘信息与公开报告完成市场薪酬研究。`,
     status: "招聘中",
     resumeCount: 0,
     salaryData: null,
@@ -3637,4 +3973,102 @@ server.log.info({ dbPath: getDatabasePath() }, "SQLite database ready");
 function formatReportMonth(date = new Date()) {
   const month = String(date.getMonth() + 1).padStart(2, "0");
   return `${date.getFullYear()}年${month}月`;
+}
+
+function formatBacktrackRecommendationDate(date = new Date()) {
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}年${month}月${day}日`;
+}
+
+function findExistingCandidateInJob(sourceCandidate: Candidate, targetJobId: string) {
+  const matchedCandidates = getCandidates(targetJobId).filter((candidate) => isSameCandidateResume(candidate, sourceCandidate));
+  return matchedCandidates.sort((left, right) => getExistingCandidatePriority(right) - getExistingCandidatePriority(left))[0] || null;
+}
+
+function saveCandidatesWithDuplicateHandling(candidates: Candidate[], jobId: string, duplicateAction: "skip" | "overwrite") {
+  const newCandidates: Candidate[] = [];
+  candidates.forEach((candidate) => {
+    const existingCandidate = findExistingCandidateInJob(candidate, jobId);
+    if (!existingCandidate) {
+      newCandidates.push(candidate);
+      return;
+    }
+    if (duplicateAction === "overwrite") {
+      updateCandidate(mergeCandidateResumeOverwrite(existingCandidate, candidate));
+    }
+  });
+  if (newCandidates.length) insertCandidates(newCandidates);
+}
+
+function mergeCandidateResumeOverwrite(existingCandidate: Candidate, incomingCandidate: Candidate): Candidate {
+  return {
+    ...existingCandidate,
+    name: incomingCandidate.name || existingCandidate.name,
+    source: incomingCandidate.source || existingCandidate.source,
+    score: incomingCandidate.score,
+    conclusion: incomingCandidate.conclusion || existingCandidate.conclusion,
+    reason: incomingCandidate.reason || existingCandidate.reason,
+    remark: incomingCandidate.remark || existingCandidate.remark,
+    resumeText: incomingCandidate.resumeText || existingCandidate.resumeText,
+    uploadTime: incomingCandidate.uploadTime || existingCandidate.uploadTime,
+    fileName: incomingCandidate.fileName ?? existingCandidate.fileName,
+    fileType: incomingCandidate.fileType ?? existingCandidate.fileType,
+    fileSize: incomingCandidate.fileSize ?? existingCandidate.fileSize,
+    fileDataBase64: incomingCandidate.fileDataBase64 ?? existingCandidate.fileDataBase64,
+    fileObjectKey: incomingCandidate.fileObjectKey ?? existingCandidate.fileObjectKey,
+    fileUrl: incomingCandidate.fileUrl ?? existingCandidate.fileUrl,
+    evaluation: incomingCandidate.evaluation || existingCandidate.evaluation,
+    interviewPlan: incomingCandidate.interviewPlan || existingCandidate.interviewPlan,
+    keyPointAnalysis: incomingCandidate.keyPointAnalysis?.length ? incomingCandidate.keyPointAnalysis : existingCandidate.keyPointAnalysis,
+    interviewQuestions: incomingCandidate.interviewQuestions?.length ? incomingCandidate.interviewQuestions : existingCandidate.interviewQuestions,
+  };
+}
+
+function isSameCandidateResume(candidate: Candidate, sourceCandidate: Candidate) {
+  if (candidate.id === sourceCandidate.id) return true;
+  if (candidate.fileObjectKey && sourceCandidate.fileObjectKey && candidate.fileObjectKey === sourceCandidate.fileObjectKey) return true;
+  if (candidate.fileUrl && sourceCandidate.fileUrl && candidate.fileUrl === sourceCandidate.fileUrl) return true;
+
+  const sameName = normalizeCandidateIdentityText(candidate.name) === normalizeCandidateIdentityText(sourceCandidate.name);
+  if (!sameName) return false;
+
+  const candidateResumeText = normalizeCandidateIdentityText(candidate.resumeText);
+  const sourceResumeText = normalizeCandidateIdentityText(sourceCandidate.resumeText);
+  if (candidateResumeText && sourceResumeText && candidateResumeText === sourceResumeText) return true;
+
+  const candidateFileName = normalizeCandidateIdentityText(candidate.fileName || "");
+  const sourceFileName = normalizeCandidateIdentityText(sourceCandidate.fileName || "");
+  if (candidateFileName && sourceFileName && candidateFileName === sourceFileName && candidate.fileSize && sourceCandidate.fileSize && candidate.fileSize === sourceCandidate.fileSize) {
+    return true;
+  }
+
+  const candidateContacts = extractCandidateIdentityContacts(candidate.resumeText);
+  const sourceContacts = extractCandidateIdentityContacts(sourceCandidate.resumeText);
+  if (candidateContacts.length && sourceContacts.length) {
+    return candidateContacts.some((contact) => sourceContacts.includes(contact));
+  }
+
+  return sameName;
+}
+
+function getExistingCandidatePriority(candidate: Candidate) {
+  let priority = 0;
+  if (!candidate.source.startsWith("人才库回溯")) priority += 30;
+  if (candidate.isInTalentPool) priority += 12;
+  if (candidate.interviewStage && candidate.interviewStage !== "推荐") priority += 10;
+  if (candidate.conclusion !== "待筛选") priority += 6;
+  if (candidate.fileObjectKey || candidate.fileUrl) priority += 4;
+  if (candidate.evaluation?.summary || candidate.keyPointAnalysis?.length) priority += 3;
+  return priority;
+}
+
+function normalizeCandidateIdentityText(value: string) {
+  return value.replace(/\s+/g, "").trim().toLowerCase();
+}
+
+function extractCandidateIdentityContacts(text: string) {
+  const phoneMatches = text.match(/1[3-9]\d{9}/g) || [];
+  const emailMatches = text.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi) || [];
+  return Array.from(new Set([...phoneMatches, ...emailMatches].map((item) => item.toLowerCase())));
 }
