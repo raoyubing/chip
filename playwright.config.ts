@@ -14,7 +14,7 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: "rm -f apps/server/data/xiaosongshu.e2e.sqlite && PORT=5274 DB_PATH=data/xiaosongshu.e2e.sqlite pnpm dev:server",
+      command: "rm -f apps/server/data/xiaosongshu.e2e.sqlite && DB_PATH=data/xiaosongshu.e2e.sqlite pnpm --filter @xiaosongshu/server demo:load -- --reset && PORT=5274 DB_PATH=data/xiaosongshu.e2e.sqlite pnpm dev:server",
       url: "http://127.0.0.1:5274/api/state",
       reuseExistingServer: false,
       timeout: 30_000,

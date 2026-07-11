@@ -1,4 +1,18 @@
-:root {
+@tailwind components;
+@tailwind utilities;
+
+:root,
+body {
+  --primary-1: 244, 248, 246;
+  --primary-2: 232, 240, 237;
+  --primary-3: 201, 224, 213;
+  --primary-4: 146, 200, 174;
+  --primary-5: 46, 125, 89;
+  --primary-6: 26, 107, 74;
+  --primary-7: 15, 76, 58;
+  --primary-8: 12, 64, 49;
+  --primary-9: 9, 52, 40;
+  --primary-10: 6, 39, 30;
   --green-900: #0f4c3a;
   --green-700: #1a6b4a;
   --green-100: #e8f0ed;
@@ -339,8 +353,94 @@ textarea:focus {
   box-shadow: 0 0 0 3px rgba(26, 107, 74, 0.12);
 }
 
+.arco-select {
+  width: 100%;
+}
+
+.arco-select-boundary {
+  display: block;
+  width: 100%;
+}
+
+.arco-select .arco-select-view {
+  min-height: 38px;
+  color: var(--text);
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  transition: 0.18s ease;
+}
+
+.arco-select .arco-select-view:hover,
+.arco-select .arco-select-view-focus {
+  border-color: var(--green-700);
+}
+
+.arco-select .arco-select-view-focus {
+  box-shadow: 0 0 0 3px rgba(26, 107, 74, 0.12);
+}
+
+.arco-select-popup {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 16px 36px rgba(15, 76, 58, 0.14);
+}
+
+.arco-select-popup .arco-select-option-selected {
+  color: var(--green-900);
+  background: var(--green-50);
+  font-weight: 700;
+}
+
+.arco-search-switcher .arco-select-view {
+  min-height: 40px;
+  border-radius: 12px;
+  font-weight: 700;
+}
+
 .file-input {
   padding: 9px;
+}
+
+.resume-upload,
+.resume-upload.arco-upload-drag {
+  width: 100%;
+}
+
+.resume-upload.arco-upload-drag {
+  min-height: 132px;
+  padding: 0;
+  background: var(--green-50);
+  border: 1px dashed rgba(26, 107, 74, 0.34);
+  border-radius: 12px;
+}
+
+.resume-upload.arco-upload-drag:hover {
+  background: #eef6f2;
+  border-color: var(--green-700);
+}
+
+.resume-upload-trigger {
+  display: grid;
+  place-items: center;
+  gap: 7px;
+  min-height: 130px;
+  padding: 18px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.resume-upload-trigger svg {
+  color: var(--green-700);
+  font-size: 28px;
+}
+
+.resume-upload-trigger strong {
+  color: var(--green-900);
+}
+
+.resume-upload-trigger span {
+  font-size: 12px;
 }
 
 .upload-file-list {
@@ -522,6 +622,15 @@ textarea:focus {
   outline: none;
   border-color: var(--green-700);
   box-shadow: 0 0 0 3px rgba(15, 76, 58, 0.08);
+}
+
+.interview-filter-field .arco-select-view {
+  min-height: 42px;
+  color: var(--text);
+  background: #ffffff;
+  border-color: var(--line);
+  border-radius: 14px;
+  font-weight: 700;
 }
 
 .filter-tabs {
@@ -1647,6 +1756,20 @@ textarea:focus {
   min-width: 132px;
 }
 
+.decision-select .arco-select-view {
+  min-height: 38px;
+  border-radius: 12px;
+}
+
+.reason-tags-select {
+  width: 190px;
+}
+
+.reason-tags-select .arco-select-view {
+  min-height: 38px;
+  border-radius: 12px;
+}
+
 .month-input {
   width: 128px;
   min-height: 38px;
@@ -2354,6 +2477,30 @@ textarea:focus {
 
 .field input:focus,
 .field select:focus {
+  border-color: var(--green-700);
+  box-shadow: 0 0 0 4px rgba(26, 107, 74, 0.08);
+}
+
+.field .arco-input-wrapper,
+.field .arco-select-view {
+  min-height: 42px;
+  width: 100%;
+  color: var(--text);
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  transition: 0.18s ease;
+}
+
+.field .arco-input-wrapper .arco-input {
+  min-height: auto;
+  padding: 0 4px;
+  border: 0;
+  box-shadow: none;
+}
+
+.field .arco-input-wrapper:focus-within,
+.field .arco-select-view-focus {
   border-color: var(--green-700);
   box-shadow: 0 0 0 4px rgba(26, 107, 74, 0.08);
 }
@@ -3091,6 +3238,10 @@ textarea:focus {
 .talent-overwrite-option input {
   margin-top: 4px;
   accent-color: var(--green);
+}
+
+.talent-overwrite-option .arco-checkbox {
+  margin-top: 4px;
 }
 
 .talent-overwrite-option span {

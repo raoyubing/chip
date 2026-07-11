@@ -6,6 +6,9 @@
   "pnpm": {
     "overrides": {
       "onnxruntime-node": "1.21.0"
+    },
+    "patchedDependencies": {
+      "@arco-design/web-react@2.66.15": "patches/@arco-design__web-react@2.66.15.patch"
     }
   },
   "scripts": {

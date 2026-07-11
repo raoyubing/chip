@@ -1,8 +1,21 @@
-import React, { FormEvent, useEffect, useId, useMemo, useRef, useState } from "react";
+import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import * as echarts from "echarts";
+import {
+  Button as ArcoButton,
+  Checkbox as ArcoCheckbox,
+  ConfigProvider,
+  Input as ArcoInput,
+  Select as ArcoSelect,
+  Tag as ArcoTag,
+  Upload as ArcoUpload,
+  type ButtonProps as ArcoButtonProps,
+} from "@arco-design/web-react";
+import { IconSearch, IconUpload } from "@arco-design/web-react/icon";
+import zhCN from "@arco-design/web-react/es/locale/zh-CN";
 import { api, type JobCopilotResult, type JobPayload, type ResumeUploadPayload } from "./api";
 import type { AppState, Candidate, CandidateInterviewPlan, CandidateInterviewPlanQuestion, InterviewMethodKey, Job, JobScoreWeights, ResumeFilePayload, SalaryData, SalaryFilters, UploadedFile, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceRecruiterCoachReport, VoiceSegmentInsight } from "./types";
+import "@arco-design/web-react/dist/css/arco.css";
 import "./styles.css";
 
 const views = [
@@ -240,7 +253,7 @@ function App() {
             <small>如果前端已打开但页面不显示，通常是后端服务没有启动，或 `5175` 端口暂时不可用。</small>
           </div>
           <div className="loading-actions">
-            <button className="btn primary" type="button" onClick={() => void loadState()}>重新连接</button>
+            <Button className="btn primary" type="button" onClick={() => void loadState()}>重新连接</Button>
           </div>
         </section>
       </div>
@@ -256,7 +269,7 @@ function App() {
             <p>状态初始化未完成，请点击重试重新加载。</p>
           </div>
           <div className="loading-actions">
-            <button className="btn primary" type="button" onClick={() => void loadState()}>重新加载</button>
+            <Button className="btn primary" type="button" onClick={() => void loadState()}>重新加载</Button>
           </div>
         </section>
       </div>
@@ -277,8 +290,8 @@ function App() {
             <small>可以先新增一个职位，之后再上传简历和维护面试流程。</small>
           </div>
           <div className="loading-actions">
-            <button className="btn" type="button" onClick={() => void loadState()}>刷新状态</button>
-            <button className="btn primary" type="button" onClick={() => setModal({ type: "job" })}>新增职位</button>
+            <Button className="btn" type="button" onClick={() => void loadState()}>刷新状态</Button>
+            <Button className="btn primary" type="button" onClick={() => setModal({ type: "job" })}>新增职位</Button>
           </div>
         </section>
         {modal?.type === "job" && <JobModal job={modal.job} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); showToast("职位已新增"); }} />}
@@ -291,7 +304,7 @@ function App() {
   const showJobSwitcher = activeView === "jobs" || activeView === "candidates";
 
   return (
-    <div className="app-shell">
+    <div className="app-shell min-w-0">
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><SquirrelLogo /></div>
@@ -299,9 +312,9 @@ function App() {
         </div>
         <nav className="nav" aria-label="主导航">
           {views.map(([view, label, icon]) => (
-            <button key={view} className={`nav-item ${activeView === view ? "active" : ""}`} onClick={() => setActiveView(view)}>
+            <Button key={view} className={`nav-item ${activeView === view ? "active" : ""}`} onClick={() => setActiveView(view)}>
               <span className="nav-icon">{icon}</span><span>{label}</span>
-            </button>
+            </Button>
           ))}
         </nav>
         <div className="sidebar-footer"><span className="online-dot" /><span>SQLite 本地服务</span></div>
@@ -363,96 +376,28 @@ function JobSearchSwitcher({
   placeholder?: string;
   disabled?: boolean;
 }) {
-  const selectedLabel = currentJob ? formatJobOption(currentJob) : "";
-  const inputId = useId();
-  const [query, setQuery] = useState(selectedLabel);
-  const [open, setOpen] = useState(false);
-  const [showAll, setShowAll] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const keepAllOnFocusRef = useRef(false);
-
-  useEffect(() => {
-    if (!open) setQuery(selectedLabel);
-  }, [open, selectedLabel]);
-
-  const keyword = query.trim().toLowerCase();
-  const filteredJobs = keyword && !showAll
-    ? jobs.filter((job) => `${job.title} ${job.dept} ${job.location}`.toLowerCase().includes(keyword))
-    : jobs;
   const isDisabled = disabled || !jobs.length;
 
-  const selectJob = (job: Job) => {
-    setQuery(formatJobOption(job));
-    setOpen(false);
-    setShowAll(false);
-    onChange(job.id);
-  };
-
-  const commitFirstMatch = () => {
-    if (filteredJobs[0]) selectJob(filteredJobs[0]);
-  };
-
-  const toggleAllJobs = () => {
-    if (isDisabled) return;
-    const shouldOpen = !open || !showAll;
-    keepAllOnFocusRef.current = shouldOpen;
-    setOpen(shouldOpen);
-    setShowAll(shouldOpen);
-    if (shouldOpen) inputRef.current?.focus();
-  };
-
   return (
-    <div className="job-switcher job-search">
-      <label htmlFor={inputId}>{label}</label>
-      <div className="job-search-box">
-        <input
-          ref={inputRef}
-          id={inputId}
-          value={query}
-          placeholder={jobs.length ? placeholder : "暂无可选岗位"}
-          disabled={isDisabled}
-          autoComplete="off"
-          onFocus={() => {
-            setOpen(true);
-            if (!keepAllOnFocusRef.current) setShowAll(false);
-            keepAllOnFocusRef.current = false;
-          }}
-          onChange={(event) => { setQuery(event.target.value); setOpen(true); setShowAll(false); }}
-          onBlur={() => window.setTimeout(() => { setOpen(false); setShowAll(false); }, 120)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              commitFirstMatch();
-            }
-          }}
-        />
-        <button
-          type="button"
-          className="job-search-arrow"
-          aria-label="展开岗位列表"
-          disabled={isDisabled}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={toggleAllJobs}
-        >
-          ⌄
-        </button>
-        {open && jobs.length > 0 && (
-          <div className="job-search-menu">
-            {filteredJobs.length ? filteredJobs.map((job) => (
-              <button
-                type="button"
-                key={job.id}
-                className={`job-search-option ${job.id === currentJob?.id ? "active" : ""}`}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => selectJob(job)}
-              >
-                <strong>{job.title}</strong>
-                <span>{job.dept} · {job.location}</span>
-              </button>
-            )) : <div className="job-search-empty">未找到匹配岗位</div>}
-          </div>
-        )}
-      </div>
+    <div className="job-switcher job-search arco-search-switcher">
+      <label>{label}</label>
+      <ArcoSelect
+        showSearch
+        allowClear={false}
+        disabled={isDisabled}
+        value={currentJob?.id}
+        placeholder={jobs.length ? placeholder : "暂无可选岗位"}
+        notFoundContent="未找到匹配岗位"
+        options={jobs.map((job) => ({
+          value: job.id,
+          label: `${job.title} · ${job.location} · ${job.dept}`,
+        }))}
+        renderFormat={(_, value) => {
+          const selectedJob = jobs.find((job) => job.id === String(value)) || currentJob || jobs[0];
+          return selectedJob ? formatJobOption(selectedJob) : "";
+        }}
+        onChange={(value) => onChange(String(value))}
+      />
     </div>
   );
 }
@@ -472,137 +417,34 @@ function CandidateSearchSwitcher({
   placeholder?: string;
   disabled?: boolean;
 }) {
-  const selectedLabel = currentCandidate ? formatCandidateOption(currentCandidate) : "";
-  const inputId = useId();
-  const [query, setQuery] = useState(selectedLabel);
-  const [open, setOpen] = useState(false);
-  const [showAll, setShowAll] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const keepAllOnFocusRef = useRef(false);
-
-  useEffect(() => {
-    if (!open) setQuery(selectedLabel);
-  }, [open, selectedLabel]);
-
-  const keyword = normalizeSearchKeyword(query);
-  const filteredCandidates = keyword && !showAll
-    ? candidates.filter((candidate) => buildCandidateSearchText(candidate).includes(keyword))
-    : candidates;
   const isDisabled = disabled || !candidates.length;
 
-  const selectCandidate = (candidate: Candidate) => {
-    setQuery(formatCandidateOption(candidate));
-    setOpen(false);
-    setShowAll(false);
-    onChange(candidate.id);
-  };
-
-  const commitBestMatch = () => {
-    const exactCandidate = findBestCandidateTextMatch(candidates, query);
-    if (exactCandidate) {
-      selectCandidate(exactCandidate);
-      return;
-    }
-    if (filteredCandidates[0]) selectCandidate(filteredCandidates[0]);
-  };
-
-  const toggleAllCandidates = () => {
-    if (isDisabled) return;
-    const shouldOpen = !open || !showAll;
-    keepAllOnFocusRef.current = shouldOpen;
-    setOpen(shouldOpen);
-    setShowAll(shouldOpen);
-    if (shouldOpen) inputRef.current?.focus();
-  };
-
   return (
-    <div className="job-switcher job-search candidate-search">
-      <label htmlFor={inputId}>{label}</label>
-      <div className="job-search-box">
-        <input
-          ref={inputRef}
-          id={inputId}
-          value={query}
-          placeholder={candidates.length ? placeholder : "当前岗位暂无候选人"}
-          disabled={isDisabled}
-          autoComplete="off"
-          onFocus={() => {
-            setOpen(true);
-            if (!keepAllOnFocusRef.current) setShowAll(false);
-            keepAllOnFocusRef.current = false;
-          }}
-          onChange={(event) => {
-            const nextQuery = event.target.value;
-            setQuery(nextQuery);
-            setOpen(true);
-            setShowAll(false);
-            const exactCandidate = findBestCandidateTextMatch(candidates, nextQuery);
-            if (exactCandidate) onChange(exactCandidate.id);
-          }}
-          onBlur={() => window.setTimeout(() => {
-            if (query.trim()) commitBestMatch();
-            setOpen(false);
-            setShowAll(false);
-          }, 120)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              commitBestMatch();
-            }
-          }}
-        />
-        <button
-          type="button"
-          className="job-search-arrow"
-          aria-label="展开人选列表"
-          disabled={isDisabled}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={toggleAllCandidates}
-        >
-          ⌄
-        </button>
-        {open && candidates.length > 0 && (
-          <div className="job-search-menu">
-            {filteredCandidates.length ? filteredCandidates.map((candidate) => (
-              <button
-                type="button"
-                key={candidate.id}
-                className={`job-search-option ${candidate.id === currentCandidate?.id ? "active" : ""}`}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => selectCandidate(candidate)}
-              >
-                <strong>{candidate.name}</strong>
-                <span>{candidate.source} · {candidate.conclusion} · {candidate.score}分</span>
-              </button>
-            )) : <div className="job-search-empty">未找到匹配人选</div>}
-          </div>
-        )}
-      </div>
+    <div className="job-switcher job-search candidate-search arco-search-switcher">
+      <label>{label}</label>
+      <ArcoSelect
+        showSearch
+        allowClear={false}
+        disabled={isDisabled}
+        value={currentCandidate?.id}
+        placeholder={candidates.length ? placeholder : "当前岗位暂无候选人"}
+        notFoundContent="未找到匹配人选"
+        options={candidates.map((candidate) => ({
+          value: candidate.id,
+          label: `${candidate.name} · ${candidate.source} · ${candidate.conclusion} · ${candidate.score}分`,
+        }))}
+        renderFormat={(_, value) => {
+          const selectedCandidate = candidates.find((candidate) => candidate.id === String(value)) || currentCandidate || candidates[0];
+          return selectedCandidate ? formatCandidateOption(selectedCandidate) : "";
+        }}
+        onChange={(value) => onChange(String(value))}
+      />
     </div>
   );
 }
 
 function formatCandidateOption(candidate: Candidate) {
   return candidate.name;
-}
-
-function normalizeSearchKeyword(value: string) {
-  return value.trim().toLowerCase().replace(/\s+/g, "");
-}
-
-function buildCandidateSearchText(candidate: Candidate) {
-  return normalizeSearchKeyword(`${candidate.name} ${candidate.source} ${candidate.conclusion} ${candidate.reason} ${candidate.resumeText}`);
-}
-
-function findBestCandidateTextMatch(candidates: Candidate[], query: string) {
-  const keyword = normalizeSearchKeyword(query);
-  if (!keyword) return null;
-  const exactName = candidates.find((candidate) => normalizeSearchKeyword(candidate.name) === keyword);
-  if (exactName) return exactName;
-  const exactOption = candidates.find((candidate) => normalizeSearchKeyword(formatCandidateOption(candidate)) === keyword);
-  if (exactOption) return exactOption;
-  const matched = candidates.filter((candidate) => buildCandidateSearchText(candidate).includes(keyword));
-  return matched.length === 1 ? matched[0] : null;
 }
 
 function EditableOptionSwitcher({
@@ -618,110 +460,23 @@ function EditableOptionSwitcher({
   placeholder: string;
   onChange: (value: string) => void;
 }) {
-  const [query, setQuery] = useState(value);
-  const [open, setOpen] = useState(false);
-  const [showAll, setShowAll] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const keepAllOnFocusRef = useRef(false);
   const mergedOptions = Array.from(new Set([value, ...options].filter(Boolean)));
 
-  useEffect(() => {
-    if (!open) setQuery(value);
-  }, [open, value]);
-
-  const keyword = query.trim().toLowerCase();
-  const filteredOptions = keyword && !showAll
-    ? mergedOptions.filter((option) => option.toLowerCase().includes(keyword))
-    : mergedOptions;
-
-  const selectOption = (option: string) => {
-    setQuery(option);
-    setOpen(false);
-    setShowAll(false);
-    onChange(option);
-  };
-
-  const commitQuery = () => {
-    const next = query.trim();
-    if (!next) return;
-    if (filteredOptions[0]) {
-      selectOption(filteredOptions[0]);
-      return;
-    }
-    setQuery(next);
-    setOpen(false);
-    setShowAll(false);
-    onChange(next);
-  };
-
-  const toggleAllOptions = () => {
-    if (!mergedOptions.length) return;
-    const shouldOpen = !open || !showAll;
-    keepAllOnFocusRef.current = shouldOpen;
-    setOpen(shouldOpen);
-    setShowAll(shouldOpen);
-    if (shouldOpen) inputRef.current?.focus();
-  };
-
   return (
-    <div className="job-switcher job-search">
+    <div className="job-switcher job-search arco-search-switcher">
       <label>{label}</label>
-      <div className="job-search-box">
-        <input
-          ref={inputRef}
-          value={query}
-          placeholder={placeholder}
-          autoComplete="off"
-          onFocus={() => {
-            setOpen(true);
-            if (!keepAllOnFocusRef.current) setShowAll(false);
-            keepAllOnFocusRef.current = false;
-          }}
-          onChange={(event) => {
-            setQuery(event.target.value);
-            onChange(event.target.value);
-            setOpen(true);
-            setShowAll(false);
-          }}
-          onBlur={() => window.setTimeout(() => {
-            const next = query.trim();
-            if (next) onChange(next);
-            setOpen(false);
-            setShowAll(false);
-          }, 120)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") {
-              event.preventDefault();
-              commitQuery();
-            }
-          }}
-        />
-        <button
-          type="button"
-          className="job-search-arrow"
-          aria-label={`展开${label}列表`}
-          disabled={!mergedOptions.length}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={toggleAllOptions}
-        >
-          ⌄
-        </button>
-        {open && mergedOptions.length > 0 && (
-          <div className="job-search-menu">
-            {filteredOptions.length ? filteredOptions.map((option) => (
-              <button
-                type="button"
-                key={option}
-                className={`job-search-option ${option === value ? "active" : ""}`}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => selectOption(option)}
-              >
-                <strong>{option}</strong>
-              </button>
-            )) : <div className="job-search-empty">未找到匹配选项，可直接输入使用</div>}
-          </div>
-        )}
-      </div>
+      <ArcoSelect
+        showSearch
+        allowCreate
+        value={value || undefined}
+        placeholder={placeholder}
+        notFoundContent="未找到匹配选项，可直接输入使用"
+        options={mergedOptions}
+        onChange={(next) => onChange(String(next))}
+        onInputValueChange={(next, reason) => {
+          if (reason === "manual") onChange(next);
+        }}
+      />
     </div>
   );
 }
@@ -827,23 +582,23 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
                 ["quarter", "季度数据"],
                 ["year", "年数据"],
               ] as Array<[AnalyticsGranularity, string]>).map(([value, label]) => (
-                <button
+                <Button
                   key={value}
                   type="button"
                   className={`segment ${granularity === value ? "active" : ""}`}
                   onClick={() => setGranularity(value)}
                 >
                   {label}
-                </button>
+                </Button>
               ))}
             </div>
             <label className="interview-filter-field">
               <span>{granularity === "month" ? "统计月份" : granularity === "quarter" ? "统计季度" : "统计年份"}</span>
-              <select value={selectedPeriod} onChange={(event) => setSelectedPeriod(event.target.value)}>
+              <Select value={selectedPeriod} onChange={(event) => setSelectedPeriod(event.target.value)}>
                 {periodOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </select>
+              </Select>
             </label>
-            <button className="btn ghost" onClick={onClearData}>清空本地数据</button>
+            <Button className="btn ghost" onClick={onClearData}>清空本地数据</Button>
           </div>
         </div>
       </section>
@@ -857,10 +612,10 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
           <div className="toolbar-right analytics-filters">
             <label className="interview-filter-field analytics-scope-field">
               <span>复盘范围</span>
-              <select value={insightJobId} onChange={(event) => setInsightJobId(event.target.value)}>
+              <Select value={insightJobId} onChange={(event) => setInsightJobId(event.target.value)}>
                 <option value="all">全部岗位</option>
                 {insightJobOptions.map((job) => <option key={job.id} value={job.id}>{formatJobOption(job)}</option>)}
-              </select>
+              </Select>
             </label>
           </div>
         </div>
@@ -1020,9 +775,9 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
             </div>
             <div className="analytics-focus-summary">{focusJobAnalysis.summary}</div>
             <div className="toolbar-left">
-              <button className="btn primary" onClick={() => onJump("candidates")}>查看候选人</button>
-              <button className="btn" onClick={() => onJump("interviews")}>查看面试管理</button>
-              <button className="btn" onClick={() => onJump("salary")}>查看薪酬调研</button>
+              <Button className="btn primary" onClick={() => onJump("candidates")}>查看候选人</Button>
+              <Button className="btn" onClick={() => onJump("interviews")}>查看面试管理</Button>
+              <Button className="btn" onClick={() => onJump("salary")}>查看薪酬调研</Button>
             </div>
           </div>
         </section>
@@ -1083,9 +838,9 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
               <div className="toolbar-right analytics-filters">
                 <label className="interview-filter-field analytics-scope-field">
                   <span>选择渠道</span>
-                  <select value={selectedChannel} onChange={(event) => setSelectedChannel(event.target.value)}>
+                  <Select value={selectedChannel} onChange={(event) => setSelectedChannel(event.target.value)}>
                     {channelAnalytics.rows.map((item) => <option key={item.source} value={item.source}>{item.source}</option>)}
-                  </select>
+                  </Select>
                 </label>
               </div>
             ) : null}
@@ -1293,15 +1048,15 @@ function JobsView({
             <p className="helper-text">默认聚焦招聘中岗位，已关闭岗位会归档保留。</p>
           </div>
           <div className="toolbar-right">
-            <button className="btn" onClick={() => downloadJson(state)}>导出数据</button>
-            <button className="btn primary" onClick={onCreate}>新增职位</button>
+            <Button className="btn" onClick={() => downloadJson(state)}>导出数据</Button>
+            <Button className="btn primary" onClick={onCreate}>新增职位</Button>
           </div>
         </div>
         <div className="filter-tabs">
           {filters.map((filter) => (
-            <button key={filter} className={`filter-tab ${statusFilter === filter ? "active" : ""}`} onClick={() => setStatusFilter(filter)}>
+            <Button key={filter} className={`filter-tab ${statusFilter === filter ? "active" : ""}`} onClick={() => setStatusFilter(filter)}>
               {filter}<span>{filter === "全部" ? state.jobs.length : state.jobs.filter((job) => job.status === filter).length}</span>
-            </button>
+            </Button>
           ))}
         </div>
       </section>
@@ -1346,9 +1101,9 @@ function JobsView({
             <div><span className="meta">关键词</span><KeywordList keywords={selectedJob.keywords} /></div>
             <div><span className="meta">职位描述</span><p className="desc spaced-small">{selectedJob.description}</p></div>
             <div className="toolbar-left">
-              <button className="btn primary" onClick={() => onEdit(selectedJob)}>编辑职位</button>
-              {selectedJob.status !== "已关闭" && <button className="btn" onClick={() => handleCloseJob(selectedJob)}>关闭招聘</button>}
-              <button className="btn danger" onClick={() => onDelete(selectedJob)}>删除职位</button>
+              <Button className="btn primary" onClick={() => onEdit(selectedJob)}>编辑职位</Button>
+              {selectedJob.status !== "已关闭" && <Button className="btn" onClick={() => handleCloseJob(selectedJob)}>关闭招聘</Button>}
+              <Button className="btn danger" onClick={() => onDelete(selectedJob)}>删除职位</Button>
             </div>
           </div>
         </section>
@@ -1379,7 +1134,7 @@ function CandidatesView({ candidates, selectedId, onSelect, onUpload, onMark, on
   };
 
   return <>
-    <section className="card pad"><div className="toolbar"><div><h3 className="card-title">{currentJob.title} · 简历甄选</h3><p className="helper-text">按当前职位查看候选人，并基于岗位关键考核点生成分析。</p></div><div className="toolbar-right"><button className="btn primary" onClick={onUpload}>上传/录入简历</button></div></div></section>
+    <section className="card pad"><div className="toolbar"><div><h3 className="card-title">{currentJob.title} · 简历甄选</h3><p className="helper-text">按当前职位查看候选人，并基于岗位关键考核点生成分析。</p></div><div className="toolbar-right"><Button className="btn primary" onClick={onUpload}>上传/录入简历</Button></div></div></section>
     <div className="candidate-layout"><section className="card pad">{sortedCandidates.length ? <div className="candidate-list">{sortedCandidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} selected={candidate.id === selected?.id} onSelect={() => selectCandidate(candidate.id)} onOpenResume={() => selectCandidate(candidate.id, "resume")} />)}</div> : <div className="empty"><div><strong>暂无简历</strong><br />点击“上传/录入简历”添加候选人。</div></div>}</section><section key={selected?.id || "empty"} className="card pad candidate-detail-card">{selected ? <CandidateDetail candidate={selected} activeTab={detailTab} onTabChange={setDetailTab} onMark={onMark} onAddToTalentPool={onAddToTalentPool} onDelete={onDelete} onStateChange={onStateChange} currentJob={currentJob} /> : <div className="empty"><div><strong>暂无候选人详情</strong><br />上传或录入简历后可查看甄选结论。</div></div>}</section></div>
   </>;
 }
@@ -1404,7 +1159,7 @@ function CandidateCard({ candidate, selected, onSelect, onOpenResume }: { candid
       <div className="candidate-body">
         <div className="candidate-topline"><div><h4>{candidate.name}</h4>{profileTags.length > 0 && <div className="candidate-profile-tags">{profileTags.map((tag) => <span key={`${tag.label}-${tag.value}`}>{tag.label}：{tag.value}</span>)}</div>}</div><div className="candidate-badge-stack"><Badge color={scoreColor(candidate.score)}>{candidate.conclusion}</Badge>{candidate.isInTalentPool ? <Badge color="green">已入库</Badge> : null}</div></div>
         <p className="reason">{candidate.reason}</p>
-        <button className="btn ghost" type="button" onClick={(event) => { event.stopPropagation(); onOpenResume(); }}>查看简历</button>
+        <Button className="btn ghost" type="button" onClick={(event) => { event.stopPropagation(); onOpenResume(); }}>查看简历</Button>
       </div>
     </article>
   );
@@ -1559,9 +1314,9 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
 
       <section className="card pad">
         <div className="talent-filter-grid">
-          <label className="field"><span>搜索人才</span><input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入姓名、岗位、关键词、经历内容" /></label>
-          <label className="field"><span>原岗位</span><select value={jobId} onChange={(event) => setJobId(event.target.value)}><option value="all">全部岗位</option>{jobs.map((job) => <option key={job.id} value={job.id}>{job.title} · {job.dept}</option>)}</select></label>
-          <label className="field"><span>画像筛选</span><select value={profileFilter} onChange={(event) => setProfileFilter(event.target.value)}><option value="all">全部画像</option><option value="high">高画像（85分+）</option><option value="reusable">可复用（已流失可复活）</option><option value="interviewed">已进入面试流程</option></select></label>
+          <label className="field"><span>搜索人才</span><ArcoInput prefix={<IconSearch />} value={keyword} onChange={setKeyword} placeholder="输入姓名、岗位、关键词、经历内容" allowClear /></label>
+          <label className="field"><span>原岗位</span><Select value={jobId} onChange={(event) => setJobId(event.target.value)}><option value="all">全部岗位</option>{jobs.map((job) => <option key={job.id} value={job.id}>{job.title} · {job.dept}</option>)}</Select></label>
+          <label className="field"><span>画像筛选</span><Select value={profileFilter} onChange={(event) => setProfileFilter(event.target.value)}><option value="all">全部画像</option><option value="high">高画像（85分+）</option><option value="reusable">可复用（已流失可复活）</option><option value="interviewed">已进入面试流程</option></Select></label>
         </div>
       </section>
 
@@ -1612,8 +1367,8 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
                       <td><TalentFreshnessHat candidate={candidate} /></td>
                       <td>
                         <div className="talent-action-buttons">
-                          <button className="btn ghost compact" type="button" onClick={() => { setSelectedTalentId(candidate.id); setPreviewError(""); }}>查看档案</button>
-                          <button className="btn blue compact" type="button" onClick={() => setRecommendCandidate(candidate)}>🔄 推荐至当前岗位</button>
+                          <Button className="btn ghost compact" type="button" onClick={() => { setSelectedTalentId(candidate.id); setPreviewError(""); }}>查看档案</Button>
+                          <Button className="btn blue compact" type="button" onClick={() => setRecommendCandidate(candidate)}>🔄 推荐至当前岗位</Button>
                         </div>
                       </td>
                     </tr>
@@ -1660,7 +1415,7 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
             <span className="meta">简历原文</span>
             <div className="toolbar-right compact-actions">
               <span className="helper-text">{selectedTalent.fileName || selectedTalent.source}</span>
-              {selectedTalent.fileObjectKey ? <button className="btn ghost compact" type="button" onClick={previewTalentFile}>预览原件</button> : null}
+              {selectedTalent.fileObjectKey ? <Button className="btn ghost compact" type="button" onClick={previewTalentFile}>预览原件</Button> : null}
             </div>
           </div>
           {previewError ? <div className="tool-error spaced-small">{previewError}</div> : null}
@@ -1676,14 +1431,14 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
                 <h3>推荐至当前岗位</h3>
                 <p className="helper-text">将 {recommendCandidate.name} 的简历副本与 AI 摘要回溯推荐到招聘中岗位。</p>
               </div>
-              <button className="btn ghost compact" type="button" onClick={() => setRecommendCandidate(null)}>关闭</button>
+              <Button className="btn ghost compact" type="button" onClick={() => setRecommendCandidate(null)}>关闭</Button>
             </header>
             <div className="modal-body talent-recommend-body">
               <label className="field">
                 <span>选择招聘中岗位</span>
-                <select value={recommendTargetJobId} onChange={(event) => setRecommendTargetJobId(event.target.value)}>
+                <Select value={recommendTargetJobId} onChange={(event) => setRecommendTargetJobId(event.target.value)}>
                   {ongoingJobs.map((job) => <option key={job.id} value={job.id}>{job.title} · {job.location}</option>)}
-                </select>
+                </Select>
               </label>
               <div className="talent-recommend-preview">
                 <strong>系统备注</strong>
@@ -1697,18 +1452,14 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
                     <p>系统建议先用低压、高价值的方式唤醒沟通：不问是否在看机会，而是告诉 TA 为什么这次非要找 TA。</p>
                     <small>已入库约 {recommendCandidateAgeDays} 天，不阻止推荐，但建议先复制话术预热。</small>
                   </div>
-                  <button className="btn gold compact" type="button" onClick={copyTalentRevivalScript} disabled={revivalScriptLoading || !recommendTargetJobId}>
+                  <Button className="btn gold compact" type="button" onClick={copyTalentRevivalScript} disabled={revivalScriptLoading || !recommendTargetJobId}>
                     {revivalScriptLoading ? "生成中..." : revivalScriptCopied ? "已复制" : "复制话术"}
-                  </button>
+                  </Button>
                 </div>
               ) : null}
               {recommendDuplicateCandidate ? (
                 <label className="talent-overwrite-option">
-                  <input
-                    type="checkbox"
-                    checked={overwriteExistingRecommend}
-                    onChange={(event) => setOverwriteExistingRecommend(event.target.checked)}
-                  />
+                  <ArcoCheckbox checked={overwriteExistingRecommend} onChange={setOverwriteExistingRecommend} />
                   <span>
                     <strong>简历甄选中已有 {recommendDuplicateCandidate.name} 的简历</strong>
                     <small>勾选后，将用人才库这份简历覆盖原简历；不勾选则保留原简历，且不重复显示。</small>
@@ -1718,8 +1469,8 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
               {recommendError ? <div className="tool-error">{recommendError}</div> : null}
             </div>
             <footer className="modal-foot">
-              <button className="btn" type="button" onClick={() => setRecommendCandidate(null)}>取消</button>
-              <button className="btn blue" type="button" onClick={submitRecommendToJob} disabled={recommendLoading || !recommendTargetJobId || !ongoingJobs.length}>{recommendLoading ? "推荐中..." : "确认推荐"}</button>
+              <Button className="btn" type="button" onClick={() => setRecommendCandidate(null)}>取消</Button>
+              <Button className="btn blue" type="button" onClick={submitRecommendToJob} disabled={recommendLoading || !recommendTargetJobId || !ongoingJobs.length}>{recommendLoading ? "推荐中..." : "确认推荐"}</Button>
             </footer>
           </section>
         </div>
@@ -1908,7 +1659,7 @@ function TalentOutcomeTag({ outcome, count }: { outcome: typeof talentOutcomePre
   const [open, setOpen] = useState(false);
   return (
     <div className={`talent-outcome-tag ${outcome.key} ${open ? "open" : ""}`}>
-      <button
+      <Button
         className="talent-outcome-trigger"
         type="button"
         onClick={(event) => {
@@ -1918,7 +1669,7 @@ function TalentOutcomeTag({ outcome, count }: { outcome: typeof talentOutcomePre
         aria-expanded={open}
       >
         <i>{outcome.icon}</i>{outcome.label}{typeof count === "number" ? <em>{count}</em> : null}
-      </button>
+      </Button>
       {open ? (
         <div className="talent-outcome-popover">
           <strong>{outcome.label}</strong>
@@ -2008,7 +1759,7 @@ function TalentFreshnessHat({ candidate, compact = false }: { candidate: Candida
   const [open, setOpen] = useState(false);
   return (
     <div className={`talent-freshness ${freshness.key} ${compact ? "compact" : ""} ${open ? "open" : ""}`}>
-      <button
+      <Button
         className="talent-freshness-trigger"
         type="button"
         onClick={(event) => {
@@ -2018,7 +1769,7 @@ function TalentFreshnessHat({ candidate, compact = false }: { candidate: Candida
         aria-expanded={open}
       >
         <i>{freshness.icon}</i>{freshness.label}
-      </button>
+      </Button>
       {open ? (
         <div className="talent-freshness-popover">
           <strong>入库时间：{formatTalentArchiveTime(candidate)}</strong>
@@ -2143,9 +1894,9 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onAddToTal
           ["interview", "面试问题"],
           ["resume", "简历原文"],
         ].map(([key, label]) => (
-          <button key={key} type="button" role="tab" className={`detail-tab ${activeTab === key ? "active" : ""}`} onClick={() => onTabChange(key as CandidateDetailTab)}>
+          <Button key={key} type="button" role="tab" className={`detail-tab ${activeTab === key ? "active" : ""}`} onClick={() => onTabChange(key as CandidateDetailTab)}>
             {label}
-          </button>
+          </Button>
         ))}
       </div>
 
@@ -2198,15 +1949,15 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onAddToTal
             <div className="row-between">
               <div><span className="meta">面试方法与问题生成</span><p className="helper-text">AI 会基于岗位 JD、简历摘要、命中/未命中关键点和风险项生成更严谨的面试方案。</p></div>
               <div className="toolbar-right compact-actions">
-                <button className="btn" type="button" onClick={generateInterviewPlan} disabled={planLoading}>{planLoading ? "生成中..." : interviewPlan ? "重新生成" : "生成方案"}</button>
-                <button className="btn ghost compact" type="button" onClick={copyInterviewPack} disabled={planLoading}>{copied ? "已复制" : "一键复制"}</button>
+                <Button className="btn" type="button" onClick={generateInterviewPlan} disabled={planLoading}>{planLoading ? "生成中..." : interviewPlan ? "重新生成" : "生成方案"}</Button>
+                <Button className="btn ghost compact" type="button" onClick={copyInterviewPack} disabled={planLoading}>{copied ? "已复制" : "一键复制"}</Button>
               </div>
             </div>
             <div className="method-tabs compact">
               {interviewMethods.map((method) => (
-                <button key={method.key} type="button" className={`method-tab ${methodKey === method.key ? "active" : ""}`} onClick={() => { setMethodKey(method.key); setCopied(false); }}>
+                <Button key={method.key} type="button" className={`method-tab ${methodKey === method.key ? "active" : ""}`} onClick={() => { setMethodKey(method.key); setCopied(false); }}>
                   <strong>{method.label}</strong><span>{method.desc}</span>
-                </button>
+                </Button>
               ))}
             </div>
             <div className="interview-method-summary"><strong>{interviewPack.methodLabel}</strong><span>{interviewPack.focus}</span></div>
@@ -2340,7 +2091,7 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onAddToTal
             <span className="meta">简历文本</span>
             <div className="toolbar-right compact-actions">
               <span className="helper-text">{candidate.fileName || candidate.source}</span>
-              {candidate.fileObjectKey ? <button className="btn ghost compact" type="button" onClick={previewCandidateFile}>预览原件</button> : null}
+              {candidate.fileObjectKey ? <Button className="btn ghost compact" type="button" onClick={previewCandidateFile}>预览原件</Button> : null}
             </div>
           </div>
           {previewError ? <div className="tool-error spaced-small">{previewError}</div> : null}
@@ -2349,9 +2100,9 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onAddToTal
       )}
 
       <div className="toolbar-left detail-actions">
-        <button className="btn primary" type="button" onClick={() => onMark(candidate.id)}>标记面试</button>
-        <button className="btn" type="button" onClick={() => onAddToTalentPool(candidate.id)} disabled={Boolean(candidate.isInTalentPool)}>{candidate.isInTalentPool ? "已入人才库" : "进入人才库"}</button>
-        <button className="btn danger" type="button" onClick={onDelete}>删除候选人</button>
+        <Button className="btn primary" type="button" onClick={() => onMark(candidate.id)}>标记面试</Button>
+        <Button className="btn" type="button" onClick={() => onAddToTalentPool(candidate.id)} disabled={Boolean(candidate.isInTalentPool)}>{candidate.isInTalentPool ? "已入人才库" : "进入人才库"}</Button>
+        <Button className="btn danger" type="button" onClick={onDelete}>删除候选人</Button>
       </div>
     </div>
   );
@@ -2695,25 +2446,25 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedMonth, onMon
           <div className="toolbar-right interview-filters">
             <label className="interview-filter-field">
               <span>当前进行中岗位</span>
-              <select value={selectedJobId} onChange={(event) => onJobChange(event.target.value)}>
+              <Select value={selectedJobId} onChange={(event) => onJobChange(event.target.value)}>
                 <option value="all">全部</option>
                 {jobs.map((job) => <option key={job.id} value={job.id}>{formatJobOption(job)}</option>)}
-              </select>
+              </Select>
             </label>
             <label className="interview-filter-field">
               <span>统计月份</span>
-              <select value={selectedMonth} onChange={(event) => onMonthChange(event.target.value)}>
+              <Select value={selectedMonth} onChange={(event) => onMonthChange(event.target.value)}>
                 <option value="all">全部</option>
                 {monthOptions.map((month) => <option key={month} value={month}>{month}</option>)}
-              </select>
+              </Select>
             </label>
           </div>
         </div>
         <div className="stage-filter-tabs">
           {interviewStages.map((stage) => (
-            <button key={stage} type="button" className={`stage-filter ${activeStage === stage ? "active" : ""}`} onClick={() => onStageChange(stage)}>
+            <Button key={stage} type="button" className={`stage-filter ${activeStage === stage ? "active" : ""}`} onClick={() => onStageChange(stage)}>
               {formatInterviewStageLabel(stage)}<span>{candidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.interviewStage || "推荐") === stage).length}</span>
-            </button>
+            </Button>
           ))}
         </div>
       </section>
@@ -2828,15 +2579,15 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
     <tr>
       <td><strong>{candidate.name}</strong><span className="meta">{candidate.uploadTime}</span></td>
       <td>
-        <input className="month-input" value={reportMonth} onChange={(event) => setReportMonth(event.target.value)} onBlur={() => setReportMonth((value) => normalizeReportMonth(value))} placeholder="2026年06月" />
+        <TextInput className="month-input" value={reportMonth} onChange={(event) => setReportMonth(event.target.value)} onBlur={() => setReportMonth((value) => normalizeReportMonth(value))} placeholder="2026年06月" />
       </td>
       {showJobColumn && <td><strong>{job?.title || "未知岗位"}</strong></td>}
       <td>{candidate.source.split(" · ")[0]}</td>
       <td>
         {activeStage === "推荐" ? (
-          <select className="decision-select recommendation-select" value={stageRecommendation} onChange={(event) => setStageRecommendation(event.target.value as NonNullable<Candidate["stageRecommendation"]>)}>
+          <Select className="decision-select recommendation-select" value={stageRecommendation} onChange={(event) => setStageRecommendation(event.target.value as NonNullable<Candidate["stageRecommendation"]>)}>
             {["待定", "是", "否"].map((item) => <option key={item} value={item}>{item}</option>)}
-          </select>
+          </Select>
         ) : (
           <div className="stage-status-pill">已进入{formatInterviewStageLabel(activeStage)}</div>
         )}
@@ -2847,13 +2598,13 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
             {stageRecommendation === "是" ? "保存后进入初试" : stageRecommendation === "否" ? "暂不推进初试" : "等待推荐确认"}
           </div>
         ) : activeStage === "offer" ? (
-          <select className="decision-select recommendation-select" value={onboarded} onChange={(event) => setOnboarded(event.target.value as NonNullable<Candidate["onboarded"]>)}>
+          <Select className="decision-select recommendation-select" value={onboarded} onChange={(event) => setOnboarded(event.target.value as NonNullable<Candidate["onboarded"]>)}>
             {["待入职", "是", "否"].map((item) => <option key={item} value={item}>{item}</option>)}
-          </select>
+          </Select>
         ) : (
-          <select className="decision-select recommendation-select" value={interviewResult} onChange={(event) => setInterviewResult(event.target.value as NonNullable<Candidate["interviewResult"]>)}>
+          <Select className="decision-select recommendation-select" value={interviewResult} onChange={(event) => setInterviewResult(event.target.value as NonNullable<Candidate["interviewResult"]>)}>
             {["通过", "淘汰", "待定", "未到面"].map((item) => <option key={item} value={item}>{item}</option>)}
-          </select>
+          </Select>
         )}
       </td>
       <td>
@@ -2868,7 +2619,7 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
       </td>
       <td>
         <div className="decision-reason-block">
-          <textarea className="decision-reason interview-remark" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="可填写面试判断、跟进情况、风险说明等备注" />
+          <TextArea className="decision-reason interview-remark" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="可填写面试判断、跟进情况、风险说明等备注" />
           <div className="timeline-brief">
             {timeline.recommendedAt && <span>推荐初试：{timeline.recommendedAt}</span>}
             {timeline.firstInterviewPassedAt && <span>初试通过：{timeline.firstInterviewPassedAt}</span>}
@@ -2880,19 +2631,19 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
       </td>
       <td>
         <div className="interview-actions">
-          <button className="btn compact" type="button" disabled={saving} onClick={save}>{saving ? "保存中" : "保存"}</button>
-          <button className="btn compact ghost" type="button" disabled={saving} onClick={() => setEditingFlow((value) => !value)}>{editingFlow ? "收起" : "修改流程"}</button>
+          <Button className="btn compact" type="button" disabled={saving} onClick={save}>{saving ? "保存中" : "保存"}</Button>
+          <Button className="btn compact ghost" type="button" disabled={saving} onClick={() => setEditingFlow((value) => !value)}>{editingFlow ? "收起" : "修改流程"}</Button>
           {editingFlow && (
             <div className="flow-edit-panel">
               <label>
                 <span>回退/调整至</span>
-                <select className="decision-select stage-select" value={targetStage} onChange={(event) => setTargetStage(event.target.value as NonNullable<Candidate["interviewStage"]>)}>
+                <Select className="decision-select stage-select" value={targetStage} onChange={(event) => setTargetStage(event.target.value as NonNullable<Candidate["interviewStage"]>)}>
                   {interviewStages.map((item) => <option key={item} value={item}>{formatInterviewStageLabel(item)}</option>)}
-                </select>
+                </Select>
               </label>
               <div className="interview-action-row">
-                <button className="btn compact primary" type="button" disabled={saving} onClick={adjustFlow}>确认调整</button>
-                <button className="btn compact" type="button" disabled={saving} onClick={() => { setTargetStage(stage); setEditingFlow(false); }}>取消</button>
+                <Button className="btn compact primary" type="button" disabled={saving} onClick={adjustFlow}>确认调整</Button>
+                <Button className="btn compact" type="button" disabled={saving} onClick={() => { setTargetStage(stage); setEditingFlow(false); }}>取消</Button>
               </div>
             </div>
           )}
@@ -2903,42 +2654,16 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
 }
 
 function ReasonTagsDropdown({ value, options, onChange }: { value: string[]; options: string[]; onChange: (next: string[]) => void }) {
-  const [open, setOpen] = useState(false);
-  const wrapRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const handleClick = (event: MouseEvent) => {
-      if (!wrapRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, []);
-
-  const toggleTag = (tag: string) => {
-    onChange(value.includes(tag) ? value.filter((item) => item !== tag) : [...value, tag].slice(0, 6));
-  };
-
   return (
-    <div className={`reason-tags-dropdown ${open ? "open" : ""}`} ref={wrapRef}>
-      <button type="button" className="reason-tags-trigger" onClick={() => setOpen((current) => !current)}>
-        <strong>{value.length ? value.join("、") : "选择标签"}</strong>
-      </button>
-      {open && (
-        <div className="reason-tags-menu">
-          {options.map((item) => {
-            const checked = value.includes(item);
-            return (
-              <label key={item} className={`reason-tags-option ${checked ? "active" : ""}`}>
-                <input type="checkbox" checked={checked} onChange={() => toggleTag(item)} />
-                <span>{item}</span>
-              </label>
-            );
-          })}
-        </div>
-      )}
-    </div>
+    <ArcoSelect
+      className="reason-tags-select"
+      mode="multiple"
+      maxTagCount={1}
+      placeholder="选择标签"
+      value={value}
+      options={options}
+      onChange={(next) => onChange((next as string[]).slice(0, 6))}
+    />
   );
 }
 
@@ -4157,13 +3882,13 @@ function VoiceParseView({
         <div className="voice-head-actions">
           <Badge color={sourceAnalysis.recommendation === "建议推进" ? "green" : sourceAnalysis.recommendation === "建议复核" ? "gold" : "red"}>{sourceAnalysis.recommendation}</Badge>
           {!readOnly && (
-            <button className="btn primary compact" type="button" onClick={saveToLibrary} disabled={saving || !sourceTranscript.trim()}>
+            <Button className="btn primary compact" type="button" onClick={saveToLibrary} disabled={saving || !sourceTranscript.trim()}>
               {saving ? "保存中..." : "保存到录音库"}
-            </button>
+            </Button>
           )}
-          <button className="btn ghost compact" type="button" onClick={() => void copyBundle("all", "all", sourceAnalysis, sourceCandidate, sourceTranscript, sourceSessionStartedAt, sourceManualNotes)} disabled={!sourceTranscript.trim() && !sourceManualNotes.trim()}>
+          <Button className="btn ghost compact" type="button" onClick={() => void copyBundle("all", "all", sourceAnalysis, sourceCandidate, sourceTranscript, sourceSessionStartedAt, sourceManualNotes)} disabled={!sourceTranscript.trim() && !sourceManualNotes.trim()}>
             {copiedKey === "all" ? "已复制" : "复制全部"}
-          </button>
+          </Button>
         </div>
       </div>
       <section className="voice-section-panel">
@@ -4172,9 +3897,9 @@ function VoiceParseView({
             <h4>候选人评估</h4>
             <p>聚焦候选人回答内容，快速提炼推荐理由、优劣势与岗位风险点。</p>
           </div>
-          <button className="btn ghost compact" type="button" onClick={() => void copyBundle("candidate", "candidate", sourceAnalysis, sourceCandidate, sourceTranscript, sourceSessionStartedAt, sourceManualNotes)} disabled={!sourceTranscript.trim() && !sourceManualNotes.trim()}>
+          <Button className="btn ghost compact" type="button" onClick={() => void copyBundle("candidate", "candidate", sourceAnalysis, sourceCandidate, sourceTranscript, sourceSessionStartedAt, sourceManualNotes)} disabled={!sourceTranscript.trim() && !sourceManualNotes.trim()}>
             {copiedKey === "candidate" ? "已复制" : "复制候选人评估"}
-          </button>
+          </Button>
         </div>
         <div className="voice-main-card">
           <section className="voice-item-block voice-summary-block">
@@ -4201,9 +3926,9 @@ function VoiceParseView({
             <h4>招聘者建议</h4>
             <p>聚焦你的提问方式、信息采集完整度和追问深度，方便当场调整节奏。</p>
           </div>
-          <button className="btn ghost compact" type="button" onClick={() => void copyBundle("recruiter", "recruiter", sourceAnalysis, sourceCandidate, sourceTranscript, sourceSessionStartedAt, sourceManualNotes)} disabled={!sourceTranscript.trim() && !sourceManualNotes.trim()}>
+          <Button className="btn ghost compact" type="button" onClick={() => void copyBundle("recruiter", "recruiter", sourceAnalysis, sourceCandidate, sourceTranscript, sourceSessionStartedAt, sourceManualNotes)} disabled={!sourceTranscript.trim() && !sourceManualNotes.trim()}>
             {copiedKey === "recruiter" ? "已复制" : "复制招聘者建议"}
-          </button>
+          </Button>
         </div>
         <div className="voice-main-card recruiter-main-card">
           <section className="voice-item-block">
@@ -4352,10 +4077,10 @@ function VoiceParseView({
                       <td><strong>{librarySelectedJob.title}</strong></td>
                       <td><span className="meta">{item.createdAt}</span></td>
                       <td>
-                        <button className="btn compact ghost" type="button" onClick={() => setSelectedHistoryId(item.id)}>录音详情</button>
+                        <Button className="btn compact ghost" type="button" onClick={() => setSelectedHistoryId(item.id)}>录音详情</Button>
                       </td>
                       <td>
-                        <button
+                        <Button
                           className="btn compact danger"
                           type="button"
                           onClick={async () => {
@@ -4376,7 +4101,7 @@ function VoiceParseView({
                           disabled={deletingHistory}
                         >
                           删除
-                        </button>
+                        </Button>
                       </td>
                     </tr>
                   );
@@ -4439,13 +4164,13 @@ function VoiceParseView({
             </section>
             <section className="voice-control-panel full">
               <div className="voice-control-actions">
-                <button className="btn primary" type="button" onClick={startSession} disabled={!supportsRecording || !selectedCandidate || status === "listening"}>
+                <Button className="btn primary" type="button" onClick={startSession} disabled={!supportsRecording || !selectedCandidate || status === "listening"}>
                   {status === "idle" ? "开始录音" : "重新开始"}
-                </button>
-                <button className="btn" type="button" onClick={pauseSession} disabled={status !== "listening"}>暂停</button>
-                <button className="btn" type="button" onClick={resumeSession} disabled={status !== "paused"}>继续</button>
-                <button className="btn" type="button" onClick={stopSession} disabled={status !== "listening" && status !== "paused"}>结束</button>
-                <button className="btn ghost" type="button" onClick={clearSession}>清空</button>
+                </Button>
+                <Button className="btn" type="button" onClick={pauseSession} disabled={status !== "listening"}>暂停</Button>
+                <Button className="btn" type="button" onClick={resumeSession} disabled={status !== "paused"}>继续</Button>
+                <Button className="btn" type="button" onClick={stopSession} disabled={status !== "listening" && status !== "paused"}>结束</Button>
+                <Button className="btn ghost" type="button" onClick={clearSession}>清空</Button>
               </div>
               <small className="helper-text">
                 {supportsRecording
@@ -4456,7 +4181,7 @@ function VoiceParseView({
             </section>
             <label className="form-field full">
               <span>实时转写</span>
-              <textarea
+              <TextArea
                 value={transcript}
                 readOnly
                 placeholder="点击“开始录音”后，这里会实时出现转写内容。"
@@ -4464,7 +4189,7 @@ function VoiceParseView({
             </label>
             <label className="form-field full">
               <span>补充备注</span>
-              <textarea
+              <TextArea
                 value={manualNotes}
                 onChange={(event) => setManualNotes(event.target.value)}
                 placeholder="可手动补充候选人未被准确识别的关键信息，分析区会同步更新。"
@@ -4547,8 +4272,8 @@ function VoiceHistoryDetailModal({
       onClose={onClose}
       actions={(
         <>
-          <button className="btn ghost" type="button" onClick={onCopy}>{copied ? "已复制" : "复制板块"}</button>
-          <button className="btn danger" type="button" onClick={onDelete} disabled={deleting}>{deleting ? "删除中..." : "删除录音"}</button>
+          <Button className="btn ghost" type="button" onClick={onCopy}>{copied ? "已复制" : "复制板块"}</Button>
+          <Button className="btn danger" type="button" onClick={onDelete} disabled={deleting}>{deleting ? "删除中..." : "删除录音"}</Button>
         </>
       )}
     >
@@ -4682,9 +4407,9 @@ function SalaryView({
             <p className="helper-text">作为独立调研工具，按岗位、地区、经验、行业、学历组合生成公开数据薪酬研究结果。</p>
           </div>
           <div className="toolbar-right">
-            <button className="btn primary" onClick={applyRefresh} disabled={loading}>
+            <Button className="btn primary" onClick={applyRefresh} disabled={loading}>
               {loading ? "刷新中..." : data ? "刷新薪酬大盘" : "生成薪酬大盘"}
-            </button>
+            </Button>
           </div>
         </div>
         <div className="salary-filter-row">
@@ -4704,9 +4429,9 @@ function SalaryView({
           />
           <label className="interview-filter-field">
             <span>经验</span>
-            <select value={filters.experience} onChange={(event) => setFilters({ ...filters, experience: event.target.value })}>
+            <Select value={filters.experience} onChange={(event) => setFilters({ ...filters, experience: event.target.value })}>
               {salaryExperienceOptions.map((item) => <option key={item} value={item}>{item}</option>)}
-            </select>
+            </Select>
           </label>
           <EditableOptionSwitcher
             label="行业"
@@ -4717,9 +4442,9 @@ function SalaryView({
           />
           <label className="interview-filter-field">
             <span>学历</span>
-            <select value={filters.education} onChange={(event) => setFilters({ ...filters, education: event.target.value })}>
+            <Select value={filters.education} onChange={(event) => setFilters({ ...filters, education: event.target.value })}>
               {salaryEducationOptions.map((item) => <option key={item} value={item}>{item}</option>)}
-            </select>
+            </Select>
           </label>
         </div>
       </section>
@@ -4997,7 +4722,7 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
             <div className="tool-block">
               <div className="row-between tool-heading-row">
                 <span className="tool-label">优化描述</span>
-                <button className="btn ghost compact" type="button" onClick={() => setForm({ ...form, description })}>一键覆盖职位描述</button>
+                <Button className="btn ghost compact" type="button" onClick={() => setForm({ ...form, description })}>一键覆盖职位描述</Button>
               </div>
               {renderJdDescription(description)}
             </div>
@@ -5013,9 +4738,9 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
               <div className="tool-block">
                 <div className="row-between tool-heading-row">
                   <span className="tool-label">社交渠道主动搜寻标题</span>
-                  <button className="btn ghost compact" type="button" onClick={() => copySourcingTitles(result.sourcingTitles)}>
+                  <Button className="btn ghost compact" type="button" onClick={() => copySourcingTitles(result.sourcingTitles)}>
                     {titlesCopied ? "已复制" : "复制标题"}
-                  </button>
+                  </Button>
                 </div>
                 <div className="sourcing-title-list">
                   {result.sourcingTitles.map((item, index) => (
@@ -5056,7 +4781,7 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
               <div className="tool-block">
                 <div className="row-between tool-heading-row">
                   <span className="tool-label">优化描述</span>
-                  <button className="btn ghost compact" type="button" onClick={() => setForm({ ...form, description })}>一键覆盖职位描述</button>
+                  <Button className="btn ghost compact" type="button" onClick={() => setForm({ ...form, description })}>一键覆盖职位描述</Button>
                 </div>
                 {renderJdDescription(description)}
               </div>
@@ -5064,9 +4789,9 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
                 <div className="tool-block">
                   <div className="row-between tool-heading-row">
                     <span className="tool-label">社交渠道主动搜寻标题</span>
-                    <button className="btn ghost compact" type="button" onClick={() => copySourcingTitles(result.sourcingTitles)}>
+                    <Button className="btn ghost compact" type="button" onClick={() => copySourcingTitles(result.sourcingTitles)}>
                       {titlesCopied ? "已复制" : "复制标题"}
-                    </button>
+                    </Button>
                   </div>
                   <div className="sourcing-title-list">
                     {result.sourcingTitles.map((item, index) => (
@@ -5104,7 +4829,7 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
   };
 
   return (
-    <Modal className="modal-wide modal-job-editor" onClose={onClose} actions={<button className="btn primary" type="submit" form="jobForm" disabled={!scoreWeightValid}>保存职位</button>}>
+    <Modal className="modal-wide modal-job-editor" onClose={onClose} actions={<Button className="btn primary" type="submit" form="jobForm" disabled={!scoreWeightValid}>保存职位</Button>}>
       <form id="jobForm" onSubmit={submit}>
         <div className="modal-body form-grid">
           <Input label="职位名称" value={form.title} onChange={(title) => setForm({ ...form, title })} />
@@ -5115,9 +4840,9 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
           <Input label="薪资范围" value={form.salaryRange} onChange={(salaryRange) => setForm({ ...form, salaryRange })} />
           <label className="form-field">
             <span>招聘状态</span>
-            <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as Job["status"] })}>
+            <Select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as Job["status"] })}>
               {["招聘中", "暂停", "已关闭"].map((status) => <option key={status}>{status}</option>)}
-            </select>
+            </Select>
           </label>
           <Input label="岗位关键词" full value={form.keywords} onChange={(keywords) => setForm({ ...form, keywords })} />
           <ScoreWeightPanel
@@ -5127,7 +4852,7 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
           />
           <label className="form-field full">
             <span>职位描述</span>
-            <textarea required value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
+            <TextArea required value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
           </label>
 
           <div className="job-tool-grid full">
@@ -5138,9 +4863,9 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
                   <p>基于当前职位信息，调用模型生成更适合发布的岗位卖点、职责表达和行动建议。</p>
                 </div>
                 <div className="job-tool-actions">
-                  <button type="button" className="btn ghost" onClick={optimize} disabled={copilotLoading !== null}>
+                  <Button type="button" className="btn ghost" onClick={optimize} disabled={copilotLoading !== null}>
                     {copilotLoading === "jd" ? "生成中..." : "生成"}
-                  </button>
+                  </Button>
                 </div>
               </div>
               <div className={`tool-result ${jdResult ? "" : "empty-mini"}`}>{jdResult?.html || "点击生成后，将展示岗位标题、关键词和职位描述优化建议。"}</div>
@@ -5153,10 +4878,10 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
                   <p>围绕岗位关键词与核心职责，调用 DeepSeek 生成 STAR 行为面试问题与深度追问。</p>
                 </div>
                 <div className="job-tool-actions">
-                  <button type="button" className="btn ghost" onClick={refreshInterviewQuestions} disabled={copilotLoading !== null}>
+                  <Button type="button" className="btn ghost" onClick={refreshInterviewQuestions} disabled={copilotLoading !== null}>
                     {copilotLoading === "questions" ? "生成中..." : "生成"}
-                  </button>
-                  <button type="button" className="btn ghost" onClick={copyQuestions}>{copied ? "已复制" : "复制"}</button>
+                  </Button>
+                  <Button type="button" className="btn ghost" onClick={copyQuestions}>{copied ? "已复制" : "复制"}</Button>
                 </div>
               </div>
               {copilotError ? <div className="tool-error">{copilotError}</div> : null}
@@ -5210,9 +4935,9 @@ function ScoreWeightPanel({ value, total, onChange }: { value: JobScoreWeights; 
       </summary>
       <div className="score-template-row">
         {scoreWeightTemplates.map((template) => (
-          <button className="btn ghost compact" type="button" key={template.label} onClick={() => onChange(template.weights)}>
+          <Button className="btn ghost compact" type="button" key={template.label} onClick={() => onChange(template.weights)}>
             {template.label}
-          </button>
+          </Button>
         ))}
       </div>
       <div className="score-weight-list">
@@ -5222,7 +4947,7 @@ function ScoreWeightPanel({ value, total, onChange }: { value: JobScoreWeights; 
               <strong>{field.label}</strong>
               <span>{field.hint}</span>
             </div>
-            <button className="score-weight-step" type="button" onClick={() => onChange(rebalanceJobScoreWeights(value, field.key, value[field.key] - 5))}>−</button>
+            <Button className="score-weight-step" type="button" onClick={() => onChange(rebalanceJobScoreWeights(value, field.key, value[field.key] - 5))}>−</Button>
             <input
               aria-label={`${field.label}权重`}
               type="range"
@@ -5233,7 +4958,7 @@ function ScoreWeightPanel({ value, total, onChange }: { value: JobScoreWeights; 
               onChange={(event) => onChange(rebalanceJobScoreWeights(value, field.key, Number(event.target.value)))}
             />
             <span className="score-weight-value">{value[field.key]}%</span>
-            <button className="score-weight-step" type="button" onClick={() => onChange(rebalanceJobScoreWeights(value, field.key, value[field.key] + 5))}>＋</button>
+            <Button className="score-weight-step" type="button" onClick={() => onChange(rebalanceJobScoreWeights(value, field.key, value[field.key] + 5))}>＋</Button>
           </div>
         ))}
       </div>
@@ -5466,7 +5191,7 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
         <div className="modal-body form-grid">
           <label className="form-field">
             <span>候选人姓名（文本录入时必填）</span>
-            <input
+            <TextInput
               required={!uploadItems.length}
               value={name}
               onChange={(event) => {
@@ -5478,26 +5203,34 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
           </label>
           <label className="form-field">
             <span>来源渠道</span>
-            <select value={source} onChange={(event) => setSource(event.target.value)}>
+            <Select value={source} onChange={(event) => setSource(event.target.value)}>
               <option value="BOSS">BOSS</option>
               <option value="智联">智联</option>
               <option value="猎聘">猎聘</option>
               <option value="内推">内推</option>
               <option value="其他">其他</option>
-            </select>
+            </Select>
           </label>
           <label className="form-field full">
             <span>上传简历文件（支持单个或多个）</span>
-            <input
-              className="file-input"
-              type="file"
+            <ArcoUpload
+              className="resume-upload"
+              drag
               multiple
+              autoUpload={false}
+              showUploadList={false}
               accept=".txt,.md,.pdf,.doc,.docx,.rtf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.heic,.heif,.csv,.json,.xml,.html,.htm,image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-              onChange={(event) => {
-                handleFilesChange(Array.from(event.target.files || []));
-                event.currentTarget.value = "";
+              beforeUpload={(file, files) => {
+                if (file === files[0]) handleFilesChange(files);
+                return false;
               }}
-            />
+            >
+              <div className="resume-upload-trigger">
+                <IconUpload />
+                <strong>点击或拖拽简历到这里</strong>
+                <span>支持批量选择 PDF、Word、图片与文本文件</span>
+              </div>
+            </ArcoUpload>
             <small className="helper-text">文件会先上传到 RustFS，后端再读取原件提取 PDF / Word / 图片 / TXT 等正文并生成候选人分析。</small>
           </label>
           {uploadItems.length ? (
@@ -5509,8 +5242,8 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
                     <span>{formatFileSize(item.size)} · {item.status === "uploading" ? "上传中" : item.status === "done" ? "已上传" : item.error || "上传失败"}</span>
                   </div>
                   <div className="toolbar-right compact-actions">
-                    {item.status === "done" ? <button className="btn ghost compact" type="button" onClick={() => void previewUploadItem(item)}>预览</button> : null}
-                    <button className="btn ghost compact" type="button" onClick={() => removeUploadItem(item)}>移除</button>
+                    {item.status === "done" ? <Button className="btn ghost compact" type="button" onClick={() => void previewUploadItem(item)}>预览</Button> : null}
+                    <Button className="btn ghost compact" type="button" onClick={() => removeUploadItem(item)}>移除</Button>
                   </div>
                 </div>
               ))}
@@ -5518,13 +5251,13 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
           ) : null}
           <label className="form-field full">
             <span>简历文本</span>
-            <textarea value={resumeText} onChange={(event) => handleResumeTextChange(event.target.value)} placeholder="可直接粘贴简历文本；若同时上传文件，会作为补充文本参与识别、整理与分析" />
+            <TextArea value={resumeText} onChange={(event) => handleResumeTextChange(event.target.value)} placeholder="可直接粘贴简历文本；若同时上传文件，会作为补充文本参与识别、整理与分析" />
           </label>
           {error ? <div className="tool-error full">{error}</div> : null}
         </div>
         <div className="modal-foot">
-          <button className="btn" type="button" onClick={onClose}>取消</button>
-          <button className="btn primary" disabled={loading || hasUploading}>{hasUploading ? "上传中..." : loading ? "分析中..." : "分析并生成候选人"}</button>
+          <Button className="btn" type="button" onClick={onClose}>取消</Button>
+          <Button className="btn primary" disabled={loading || hasUploading}>{hasUploading ? "上传中..." : loading ? "分析中..." : "分析并生成候选人"}</Button>
         </div>
       </form>
     </Modal>
@@ -5780,7 +5513,7 @@ function Modal({ title, onClose, actions, children, className }: { title?: strin
     <div className="modal-root">
       <div className={className ? `modal ${className}` : "modal"}>
         <div className={`modal-head ${!title ? "no-title" : ""}`}>
-          <button className="btn" onClick={onClose}>关闭</button>
+          <Button className="btn" onClick={onClose}>关闭</Button>
           {title && <h3>{title}</h3>}
           <div className="modal-actions">{actions}</div>
         </div>
@@ -5789,11 +5522,84 @@ function Modal({ title, onClose, actions, children, className }: { title?: strin
     </div>
   );
 }
-function Input({ label, value, onChange, full }: { label: string; value: string; onChange: (value: string) => void; full?: boolean }) { return <label className={`form-field ${full ? "full" : ""}`}><span>{label}</span><input required value={value} onChange={(event) => onChange(event.target.value)} /></label>; }
+function Button({ className = "", type = "button", children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
+  const classes = className.split(/\s+/);
+
+  if (!classes.includes("btn")) {
+    return <button {...props} className={className} type={type}>{children}</button>;
+  }
+
+  const visualType: ArcoButtonProps["type"] = classes.includes("primary") || classes.includes("blue") ? "primary" : classes.includes("ghost") ? "secondary" : "default";
+  const status: ArcoButtonProps["status"] = classes.includes("danger") ? "danger" : "default";
+  const size: ArcoButtonProps["size"] = classes.includes("compact") ? "mini" : "default";
+
+  return (
+    <ArcoButton
+      {...(props as unknown as ArcoButtonProps)}
+      className={className}
+      htmlType={type}
+      size={size}
+      status={status}
+      type={visualType}
+    >
+      {children}
+    </ArcoButton>
+  );
+}
+function Select({ className, value, onChange, children, disabled, placeholder }: {
+  className?: string;
+  value?: string;
+  onChange?: (event: { target: { value: string } }) => void;
+  children: React.ReactNode;
+  disabled?: boolean;
+  placeholder?: string;
+}) {
+  const options = React.Children.toArray(children).flatMap((child, index) => {
+    if (!React.isValidElement<{ value?: string; disabled?: boolean; children?: React.ReactNode }>(child)) return [];
+    const optionValue = child.props.value ?? (typeof child.props.children === "string" || typeof child.props.children === "number" ? String(child.props.children) : String(index));
+    return [{ value: optionValue, label: child.props.children, disabled: child.props.disabled }];
+  });
+
+  return (
+    <span className="arco-select-boundary" onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}>
+      <ArcoSelect
+        className={className}
+        value={value}
+        disabled={disabled}
+        placeholder={placeholder}
+        options={options}
+        showSearch={options.length > 6}
+        onChange={(next) => onChange?.({ target: { value: String(next) } })}
+      />
+    </span>
+  );
+}
+function TextInput({ className, value, onChange, onBlur, placeholder, required, readOnly }: {
+  className?: string;
+  value: string;
+  onChange?: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  onBlur?: React.FocusEventHandler<HTMLInputElement>;
+  placeholder?: string;
+  required?: boolean;
+  readOnly?: boolean;
+}) {
+  return <ArcoInput className={className} value={value} onChange={(_, event) => onChange?.(event)} onBlur={onBlur} placeholder={placeholder} required={required} readOnly={readOnly} />;
+}
+function TextArea({ className, value, onChange, placeholder, required, readOnly }: {
+  className?: string;
+  value: string;
+  onChange?: (event: React.ChangeEvent<HTMLTextAreaElement>) => void;
+  placeholder?: string;
+  required?: boolean;
+  readOnly?: boolean;
+}) {
+  return <ArcoInput.TextArea className={className} value={value} onChange={(_, event) => onChange?.(event)} placeholder={placeholder} required={required} readOnly={readOnly} />;
+}
+function Input({ label, value, onChange, full }: { label: string; value: string; onChange: (value: string) => void; full?: boolean }) { return <label className={`form-field ${full ? "full" : ""}`}><span>{label}</span><ArcoInput required value={value} onChange={onChange} /></label>; }
 function StatCard({ label, value, extra }: { label: string; value: React.ReactNode; extra: string }) { return <section className="card stat-card"><div className="stat-label">{label}</div><div className="stat-value">{value}</div><div className="stat-extra">{extra}</div></section>; }
 function Metric({ label, value }: { label: string; value: React.ReactNode }) { return <div className="salary-metric"><span>{label}</span><strong>{value}</strong></div>; }
 function CardHeader({ title, desc, action }: { title: string; desc: string; action?: React.ReactNode }) { return <div className="card-header"><div><h3>{title}</h3><p>{desc}</p></div>{action}</div>; }
-function Badge({ color, children }: { color: string; children: React.ReactNode }) { return <span className={`badge ${color}`}>{children}</span>; }
+function Badge({ color, children }: { color: string; children: React.ReactNode }) { return <ArcoTag className={`badge ${color}`}>{children}</ArcoTag>; }
 function KeywordList({ keywords }: { keywords: string }) { return <div className="kv spaced-small">{splitKeywords(keywords).map((keyword) => <span key={keyword}>{keyword}</span>)}</div>; }
 function splitKeywords(keywords = "") { return keywords.split(/[、,，;；\s]+/).map(k => k.trim()).filter(Boolean); }
 function normalizeJdDescription(text: string) {
@@ -6328,4 +6134,8 @@ function downloadJson(state: AppState) { const url = URL.createObjectURL(new Blo
 
 function SquirrelLogo() { return <svg className="squirrel-logo" viewBox="0 0 96 96" focusable="false" aria-hidden="true"><path className="logo-fill" d="M62.5 72.5c11.7-.8 19.4-8.7 19.4-20.1 0-10.9-7.7-19.3-18.1-20.3 6.9 6.3 6.1 15.3-1.8 21.5 4.2 4.6 4.2 12.3.5 18.9Z" /><path className="logo-inner" d="M67.8 42.1c4.5 3 6.8 7 6.6 11.5-.2 5.9-4.5 10.5-11.3 12.2" /><path className="logo-fill" d="M26.5 57.9c0-12.1 9.5-21.7 22.1-21.7 13 0 22.8 9.7 22.8 22.2 0 12.9-10.1 22.8-22.7 22.8S26.5 71.3 26.5 57.9Z" /><path className="logo-fill" d="M29 33.3c-3.5-6.1.2-13.4 7-13.8 4.8-.3 8.7 3.2 9.1 8.2 2.5-.6 5.2-.6 7.8 0 .8-4.8 4.9-8 9.6-7.2 6.2 1.1 8.7 8.2 5.1 13.7 3.4 3.8 5.2 8.9 5.1 14.4-.2 12.3-9.7 21.2-23.4 21.2-14.3 0-24-8.9-24.2-21.3-.1-6.1 1.4-11.1 3.9-15.2Z" /><path className="logo-line" d="M40.8 59.2c4.5 3.4 12.1 3.4 16.6 0" /><ellipse className="logo-eye" cx="39.7" cy="45.9" rx="3.8" ry="5.1" /><ellipse className="logo-eye" cx="59.4" cy="45.9" rx="3.8" ry="5.1" /><path className="logo-eye" d="M46.8 52.7c1.7-1.4 4.4-1.4 6.1 0 .5.4.4 1.2-.2 1.6l-2 1.3c-.6.4-1.4.4-2 0l-1.9-1.3c-.6-.4-.7-1.2 0-1.6Z" /><path className="logo-line" d="M32.2 62.5c2 9.1 8.4 14.1 16.4 14.1" /></svg>; }
 
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(
+  <ConfigProvider locale={zhCN}>
+    <App />
+  </ConfigProvider>,
+);
