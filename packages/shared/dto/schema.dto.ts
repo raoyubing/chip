@@ -3,6 +3,7 @@ import type * as Shared from "../index.js";
 export declare namespace SchemaDTO {
   export type JobStatus = Shared.JobStatus;
   export type SalaryFilters = Shared.SalaryFilters;
+  export type RegionNode = Shared.RegionNode;
   export type SalaryData = Shared.SalaryData;
   export type Job = Shared.Job;
   export type CandidateTimeline = Shared.CandidateTimeline;

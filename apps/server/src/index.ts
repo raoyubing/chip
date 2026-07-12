@@ -8,10 +8,12 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import wavefile from "wavefile";
 import { z } from "zod";
+import { bossIndustryCodeByName, normalizeBossIndustryName } from "@xiaosongshu/shared";
 import { createCandidate, normalizeKeywords } from "./analyzer.js";
 import { loadLocalEnv, serverRoot } from "./env.js";
 import { fileService } from "./file-service.js";
 import { extractResumeTextFromFile } from "./resume-parser.js";
+import { getRegionDirectory } from "./region-service.js";
 import {
   closeJob,
   deleteCandidate,
@@ -69,20 +71,6 @@ const bossScraperOutputDir = resolveServerPath(process.env.BOSS_SCRAPER_OUTPUT_D
 const bossScraperCdpPort = Number(process.env.BOSS_SCRAPER_CDP_PORT || 9222);
 const bossScraperPages = clampInteger(Number(process.env.BOSS_SCRAPER_PAGES || 1), 1, 10);
 const bossScraperTimeoutMs = Number(process.env.BOSS_SCRAPER_TIMEOUT_MS || 180000);
-const bossScraperIndustryCodes: Record<string, string> = {
-  "互联网": "100020",
-  "互联网/AI": "100020",
-  "AI": "100020",
-  "移动互联网": "100019",
-  "计算机软件": "100021",
-  "软件": "100021",
-  "电子商务": "100001",
-  "电商": "100001",
-  "游戏": "100002",
-  "社交网络": "100003",
-  "社交网络与媒体": "100003",
-};
-
 await server.register(cors, { origin: true });
 await server.register(sensible);
 await server.register(multipart, {
@@ -109,7 +97,9 @@ const jobSchema = z.object({
   location: z.string().min(1),
   experience: z.string().min(1),
   level: z.string().min(1),
-  salaryRange: z.string().min(1),
+  salaryRange: z.string().trim()
+    .refine((value) => Boolean(normalizeJobSalaryRangeInput(value)), "薪资范围格式必须为 20k - 30k")
+    .transform((value) => normalizeJobSalaryRangeInput(value) || value),
   keywords: z.string().min(1),
   scoreWeights: z.object({
     experience: z.number().int().min(0).max(100),
@@ -121,6 +111,15 @@ const jobSchema = z.object({
   description: z.string().min(1),
   status: z.enum(["招聘中", "暂停", "已关闭"]),
 });
+
+function normalizeJobSalaryRangeInput(value: string) {
+  const matched = value.match(/^(\d+)\s*k?\s*[-~—]\s*(\d+)\s*k?$/i);
+  if (!matched) return "";
+  const low = Number(matched[1]);
+  const high = Number(matched[2]);
+  if (!Number.isInteger(low) || !Number.isInteger(high) || low <= 0 || high <= 0 || high < low) return "";
+  return `${low}k - ${high}k`;
+}
 
 const scoreWeightLabels: Array<[keyof Job["scoreWeights"], string]> = [
   ["experience", "经验匹配"],
@@ -232,6 +231,8 @@ const candidateInterviewPlanSchema = z.object({
 });
 
 server.get("/api/health", async () => ({ ok: true }));
+
+server.get("/api/regions", async () => getRegionDirectory());
 
 server.post("/api/files/upload", async (request) => {
   const file = await request.file();
@@ -3604,12 +3605,8 @@ function getBossDegreeCode(value: string) {
 }
 
 function getBossIndustryCode(value: string) {
-  const normalized = value.trim();
-  if (!normalized) return "";
-  const directCode = bossScraperIndustryCodes[normalized];
-  if (directCode) return directCode;
-  const matchedEntry = Object.entries(bossScraperIndustryCodes).find(([label]) => normalized.includes(label) || label.includes(normalized));
-  return matchedEntry?.[1] || "";
+  if (!value.trim()) return "";
+  return bossIndustryCodeByName[normalizeBossIndustryName(value)] || "";
 }
 
 function parseBingRssItems(xml: string) {

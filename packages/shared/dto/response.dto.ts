@@ -39,6 +39,11 @@ export declare namespace ResponseDTO {
     salaryData: SchemaDTO.SalaryData;
   }
 
+  export interface RegionDirectory {
+    source: "gaode-local";
+    regions: SchemaDTO.RegionNode[];
+  }
+
   export type VoiceTranscript = SchemaDTO.VoiceTranscriptResult;
 
   export interface VoiceSegmentAnalyze {

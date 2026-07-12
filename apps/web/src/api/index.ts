@@ -1,6 +1,7 @@
 import { candidateApi } from "./candidate.api";
 import { fileApi } from "./file.api";
 import { jobApi } from "./job.api";
+import { regionApi } from "./region.api";
 import { salaryApi } from "./salary.api";
 import { voiceApi } from "./voice.api";
 
@@ -10,6 +11,7 @@ export type { VoiceAnalysisPayload, VoiceChunkPayload, VoiceFinalEvaluatePayload
 
 export const api = {
   ...jobApi,
+  ...regionApi,
   ...fileApi,
   ...candidateApi,
   ...salaryApi,

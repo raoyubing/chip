@@ -3,10 +3,12 @@ import { createRoot } from "react-dom/client";
 import * as echarts from "echarts";
 import {
   Button as ArcoButton,
+  Cascader as ArcoCascader,
   Checkbox as ArcoCheckbox,
   ConfigProvider,
   Input as ArcoInput,
   Modal as ArcoModal,
+  Radio as ArcoRadio,
   Select as ArcoSelect,
   Slider as ArcoSlider,
   Tag as ArcoTag,
@@ -14,6 +16,10 @@ import {
   type ButtonProps as ArcoButtonProps,
 } from "@arco-design/web-react";
 import {
+  IconArchive,
+  IconCalendarClock,
+  IconDashboard,
+  IconExperiment,
   IconDelete,
   IconFileAudio,
   IconPause,
@@ -22,25 +28,38 @@ import {
   IconRecordStop,
   IconRedo,
   IconSearch,
+  IconUser,
+  IconUserGroup,
   IconUpload,
 } from "@arco-design/web-react/icon";
 import zhCN from "@arco-design/web-react/es/locale/zh-CN";
+import { bossIndustryGroups, normalizeBossIndustryName, type RegionNode } from "@xiaosongshu/shared";
 import { api, type JobCopilotResult, type JobPayload, type ResumeUploadPayload } from "./api";
 import type { AppState, Candidate, CandidateInterviewPlan, CandidateInterviewPlanQuestion, InterviewMethodKey, Job, JobScoreWeights, ResumeFilePayload, SalaryData, SalaryFilters, UploadedFile, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceRecruiterCoachReport, VoiceSegmentInsight } from "./types";
 import "@arco-design/web-react/dist/css/arco.css";
 import "./styles.css";
 
 const views = [
-  ["dashboard", "工作台概览", "◎"],
-  ["jobs", "职位管理", "▦"],
-  ["candidates", "简历甄选", "◉"],
-  ["talent", "人才库", "☆"],
-  ["interviews", "面试管理", "◌"],
-  ["voice", "访音解析", "◇"],
-  ["salary", "薪酬调研", "⌁"],
+  ["dashboard", "工作台概览", IconDashboard],
+  ["jobs", "职位管理", IconArchive],
+  ["candidates", "简历甄选", IconUser],
+  ["talent", "人才库", IconUserGroup],
+  ["interviews", "面试管理", IconCalendarClock],
+  ["voice", "访音解析", IconFileAudio],
+  ["salary", "薪酬调研", IconExperiment],
 ] as const;
 
 type View = (typeof views)[number][0];
+
+const viewDescriptions: Record<View, string> = {
+  dashboard: "从全局看清招聘节奏，把今天最重要的事情放在前面。",
+  jobs: "整理岗位画像与招聘进度，让每个职位都有清晰的生长路径。",
+  candidates: "快速看懂简历亮点与风险，轻松找到更合适的人选。",
+  talent: "把遇见过的好人才好好收藏，需要时随时重新连接。",
+  interviews: "顺着招聘流程推进每一次沟通，不错过重要节点。",
+  voice: "记录真实对话，把零散信息整理成清楚、可行动的判断。",
+  salary: "用公开市场信息校准薪酬，让岗位更有吸引力也更务实。",
+};
 
 type VoiceSessionStatus = "idle" | "listening" | "paused" | "stopped";
 type VoiceRecommendation = "建议推进" | "建议复核" | "暂缓推进";
@@ -341,21 +360,23 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <div className="brand-mark"><SquirrelLogo /></div>
-          <div><h1>小松鼠</h1><p>Workbench</p></div>
+          <div><h1>小松鼠</h1><p>轻松招到对的人</p></div>
         </div>
         <nav className="nav" aria-label="主导航">
-          {views.map(([view, label, icon]) => (
+          {views.map(([view, label, ViewIcon]) => (
             <Button key={view} className={`nav-item ${activeView === view ? "active" : ""}`} onClick={() => setActiveView(view)}>
-              <span className="nav-icon">{icon}</span><span>{label}</span>
+              <span className="nav-icon"><ViewIcon /></span><span>{label}</span>
             </Button>
           ))}
         </nav>
-        <div className="sidebar-footer"><span className="online-dot" /><span>SQLite 本地服务</span></div>
       </aside>
 
       <main className="main">
         <header className="topbar">
-          <div><p className="eyebrow">Recruitment Workbench</p><h2>{title}</h2></div>
+          <div className="page-heading">
+            <h2>{title}</h2>
+            <p className="page-subtitle">{viewDescriptions[activeView]}</p>
+          </div>
           {showJobSwitcher && (
             <div className="topbar-actions">
               <JobSearchSwitcher
@@ -493,29 +514,338 @@ function EditableOptionSwitcher({
   placeholder: string;
   onChange: (value: string) => void;
 }) {
-  const mergedOptions = Array.from(new Set([value, ...options].filter(Boolean)));
+  const [searchText, setSearchText] = useState("");
+  const normalizedSearchText = searchText.trim().toLocaleLowerCase();
+  const hasMatchingOption = normalizedSearchText
+    ? options.some((option) => option.toLocaleLowerCase().includes(normalizedSearchText))
+    : false;
+  const customOption = normalizedSearchText && !hasMatchingOption ? searchText.trim() : "";
+  const mergedOptions = Array.from(new Set([value, ...options, customOption].filter(Boolean)));
 
   return (
     <div className="job-switcher job-search arco-search-switcher">
       <label>{label}</label>
       <ArcoSelect
         showSearch
-        allowCreate
         value={value || undefined}
         placeholder={placeholder}
         notFoundContent="未找到匹配选项，可直接输入使用"
         options={mergedOptions}
-        onChange={(next) => onChange(String(next))}
+        onChange={(next) => {
+          setSearchText("");
+          onChange(String(next));
+        }}
         onInputValueChange={(next, reason) => {
-          if (reason === "manual") onChange(next);
+          if (reason === "manual") {
+            setSearchText(next);
+            const normalizedNext = next.trim().toLocaleLowerCase();
+            const hasMatch = normalizedNext
+              ? options.some((option) => option.toLocaleLowerCase().includes(normalizedNext))
+              : false;
+            if (normalizedNext && !hasMatch) onChange(next.trim());
+          } else if (reason === "optionListHide") {
+            setSearchText("");
+          }
         }}
       />
     </div>
   );
 }
 
+type RegionCascaderOption = {
+  value: string;
+  label: string;
+  children?: RegionCascaderOption[];
+};
+
+type RegionDirectoryResponse = Awaited<ReturnType<typeof api.regions>>;
+let regionDirectoryPromise: Promise<RegionDirectoryResponse> | null = null;
+
+function loadRegionDirectory() {
+  regionDirectoryPromise ||= api.regions();
+  return regionDirectoryPromise;
+}
+
+function SalaryRegionSwitcher({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <div className="job-switcher job-search arco-search-switcher salary-region-switcher">
+      <label>地区</label>
+      <RegionCascaderControl value={value} onChange={onChange} />
+    </div>
+  );
+}
+
+function RegionCascaderField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="form-field region-cascader-field">
+      <span>{label}</span>
+      <RegionCascaderControl value={value} onChange={onChange} />
+    </label>
+  );
+}
+
+function RegionCascaderControl({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [regions, setRegions] = useState<RegionNode[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+
+  useEffect(() => {
+    let active = true;
+    loadRegionDirectory()
+      .then((result) => {
+        if (!active) return;
+        setRegions(result.regions);
+        setLoadError("");
+      })
+      .catch((error) => {
+        if (!active) return;
+        setLoadError(error instanceof Error ? error.message : "地区数据加载失败");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const options = useMemo(() => toRegionCascaderOptions(regions), [regions]);
+  const selectedPath = useMemo(() => findRegionPath(regions, value), [regions, value]);
+
+  return (
+    <ArcoCascader
+      className="region-cascader"
+      dropdownMenuClassName="region-cascader-menu"
+      dropdownMenuColumnStyle={{ minWidth: 148 }}
+      options={options}
+      value={selectedPath}
+      disabled={loading || !options.length}
+      placeholder={loading ? "地区加载中..." : "选择省 / 市 / 区"}
+      showSearch
+      filterOption={regionCascaderFilterOption}
+      expandTrigger="click"
+      changeOnSelect
+      notFoundContent={loadError || "未找到地区"}
+      onChange={(next, selectedOptions) => {
+        const labels = getSelectedRegionLabels(selectedOptions);
+        const fallbackLabels = getCascaderPathValue(next).map((code) => findRegionLabel(options, code)).filter(Boolean);
+        onChange((labels.length ? labels : fallbackLabels).join(" / "));
+      }}
+    />
+  );
+}
+
+function toRegionCascaderOptions(nodes: RegionNode[]): RegionCascaderOption[] {
+  return nodes.map((node) => ({
+    value: node.code,
+    label: node.name,
+    ...(node.children.length ? { children: toRegionCascaderOptions(node.children) } : {}),
+  }));
+}
+
+function findRegionPath(nodes: RegionNode[], value: string): string[] {
+  if (!value.trim()) return [];
+  const segments = value.split(/\s*[\/／]\s*/).filter(Boolean);
+  const codePath = findRegionCodePath(nodes, value.split(/[\/／,\s，、]+/).filter(Boolean));
+  if (codePath.length) return codePath;
+
+  if (segments.length > 1) {
+    let currentNodes = nodes;
+    const path: string[] = [];
+    for (const segment of segments) {
+      const match = currentNodes.find((node) => regionNamesMatch(node.name, segment));
+      if (!match) return findRegionPathByJoinedName(nodes, value);
+      path.push(match.code);
+      currentNodes = match.children;
+    }
+    return path;
+  }
+
+  const target = segments[0] || value.trim();
+  const find = (currentNodes: RegionNode[], parentPath: string[]): string[] => {
+    for (const node of currentNodes) {
+      const path = [...parentPath, node.code];
+      const childPath = find(node.children, path);
+      if (childPath.length) return childPath;
+      if (regionNamesMatch(node.name, target)) return path;
+    }
+    return [];
+  };
+  const exactPath = find(nodes, []);
+  return exactPath.length ? exactPath : findRegionPathByJoinedName(nodes, value);
+}
+
+type RegionCascaderSearchOption = {
+  label?: unknown;
+  pathLabel?: unknown[];
+  parent?: RegionCascaderSearchOption | null;
+};
+
+function regionCascaderFilterOption(inputValue: string, option: RegionCascaderSearchOption) {
+  const target = normalizeRegionSearchText(inputValue);
+  if (!target) return true;
+  const labels = getRegionSearchLabels(option);
+  const normalizedLabels = labels.map(normalizeRegionSearchText).filter(Boolean);
+  const joinedLabels = normalizeRegionSearchText(labels.join(""));
+  return normalizedLabels.some((label) => label.includes(target) || target.includes(label)) || joinedLabels.includes(target);
+}
+
+function getRegionSearchLabels(option: RegionCascaderSearchOption): string[] {
+  if (Array.isArray(option.pathLabel) && option.pathLabel.length) {
+    return option.pathLabel.map((label) => String(label)).filter(Boolean);
+  }
+
+  const labels: string[] = [];
+  let current: RegionCascaderSearchOption | null | undefined = option;
+  while (current) {
+    if (typeof current.label === "string" || typeof current.label === "number") labels.unshift(String(current.label));
+    current = current.parent;
+  }
+  return labels;
+}
+
+function getSelectedRegionLabels(selectedOptions: unknown): string[] {
+  const pathOptions = getCascaderOptionPath(selectedOptions);
+  return pathOptions.map((option) => getCascaderOptionLabel(option)).filter(Boolean);
+}
+
+function getCascaderOptionPath(value: unknown): unknown[] {
+  if (!Array.isArray(value)) return [];
+  const firstOptionPath = value.find((item) => Array.isArray(item));
+  if (firstOptionPath) return getCascaderOptionPath(firstOptionPath);
+  return value;
+}
+
+function getCascaderOptionLabel(option: unknown): string {
+  if (!option || typeof option !== "object" || !("label" in option)) return "";
+  const label = (option as { label?: unknown }).label;
+  return typeof label === "string" || typeof label === "number" ? String(label) : "";
+}
+
+function getCascaderPathValue(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const nestedPath = value.find((item) => Array.isArray(item));
+  if (nestedPath) return getCascaderPathValue(nestedPath);
+  return value
+    .map((item) => (typeof item === "string" || typeof item === "number" ? String(item) : ""))
+    .filter(Boolean);
+}
+
+function findRegionCodePath(nodes: RegionNode[], codes: string[]): string[] {
+  if (!codes.length) return [];
+  const normalizedCodes = codes.map((code) => code.trim()).filter(Boolean);
+  if (!normalizedCodes.length) return [];
+
+  let currentNodes = nodes;
+  const path: string[] = [];
+  for (const code of normalizedCodes) {
+    const match = currentNodes.find((node) => node.code === code);
+    if (!match) return normalizedCodes.length === 1 ? findRegionPathByCode(nodes, code) : [];
+    path.push(match.code);
+    currentNodes = match.children;
+  }
+  return path;
+}
+
+function findRegionPathByCode(nodes: RegionNode[], code: string): string[] {
+  const find = (currentNodes: RegionNode[], parentPath: string[]): string[] => {
+    for (const node of currentNodes) {
+      const path = [...parentPath, node.code];
+      if (node.code === code) return path;
+      const childPath = find(node.children, path);
+      if (childPath.length) return childPath;
+    }
+    return [];
+  };
+  return find(nodes, []);
+}
+
+function findRegionPathByJoinedName(nodes: RegionNode[], value: string): string[] {
+  const target = normalizeRegionSearchText(value);
+  if (!target) return [];
+
+  const find = (currentNodes: RegionNode[], parentPath: string[], parentNames: string[]): string[] => {
+    for (const node of currentNodes) {
+      const path = [...parentPath, node.code];
+      const names = [...parentNames, node.name];
+      const currentName = normalizeRegionSearchText(names.join(""));
+      if (currentName === target || currentName.endsWith(target)) return path;
+      const childPath = find(node.children, path, names);
+      if (childPath.length) return childPath;
+    }
+    return [];
+  };
+  return find(nodes, [], []);
+}
+
+function findRegionLabel(options: RegionCascaderOption[], code: string): string {
+  for (const option of options) {
+    if (option.value === code) return option.label;
+    const childLabel = option.children ? findRegionLabel(option.children, code) : "";
+    if (childLabel) return childLabel;
+  }
+  return "";
+}
+
+function regionNamesMatch(left: string, right: string) {
+  return normalizeRegionName(left) === normalizeRegionName(right);
+}
+
+function normalizeRegionName(value: string) {
+  return value.trim().replace(/特别行政区$|维吾尔自治区$|壮族自治区$|回族自治区$|自治区$|省$|市$|地区$|盟$|城区$|区$/g, "");
+}
+
+function normalizeRegionSearchText(value: string) {
+  return value
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[\/／\s,，、-]+/g, "")
+    .replace(/特别行政区|维吾尔自治区|壮族自治区|回族自治区|自治区|省|市|地区|盟|城区|区/g, "");
+}
+
+function BossIndustrySwitcher({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="interview-filter-field boss-industry-switcher">
+      <span>行业</span>
+      <ArcoSelect
+        showSearch
+        value={normalizeBossIndustryName(value)}
+        placeholder="搜索 BOSS 行业"
+        notFoundContent="未找到 BOSS 行业选项"
+        onChange={(next) => onChange(String(next))}
+      >
+        {bossIndustryGroups.map((group) => (
+          <ArcoSelect.OptGroup key={group.code} label={group.name}>
+            {group.options.map(([code, name]) => <ArcoSelect.Option key={code} value={name}>{name}</ArcoSelect.Option>)}
+          </ArcoSelect.OptGroup>
+        ))}
+      </ArcoSelect>
+    </label>
+  );
+}
+
 function formatJobOption(job: Job) {
   return `${job.title} · ${job.location}`;
+}
+
+function SectionTabs({ value, options, onChange, ariaLabel }: {
+  value: string;
+  options: Array<{ value: string; label: React.ReactNode }>;
+  onChange: (value: string) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <div className="section-tabs-shell" aria-label={ariaLabel}>
+      <ArcoRadio.Group
+        className="section-radio-tabs"
+        type="button"
+        mode="fill"
+        value={value}
+        options={options}
+        onChange={(next) => onChange(String(next))}
+      />
+    </div>
+  );
 }
 
 function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { state: AppState; currentJob: Job; onJump: (view: View) => void; onClearData: () => void; onSelectJob: (jobId: string) => Promise<void> }) {
@@ -526,6 +856,7 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
   const [focusJobId, setFocusJobId] = useState(currentJob.id);
   const [insightJobId, setInsightJobId] = useState<string>("all");
   const [selectedChannel, setSelectedChannel] = useState<string>("");
+  const [activeSection, setActiveSection] = useState<"overview" | "jobs" | "flow" | "actions">("overview");
 
   useEffect(() => {
     if (!selectedPeriod || !periodOptions.some((option) => option.value === selectedPeriod)) {
@@ -595,12 +926,26 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
 
   return (
     <>
-      <div className="grid cols-4 dashboard-summary-grid">
-        <section className="card dashboard-summary-card"><span className="dashboard-summary-label">招聘中岗位</span><strong className="dashboard-summary-value">{activeJobs.length}</strong><span className="dashboard-summary-extra">{selectedPeriod === "all" ? "当前在招" : `${formatAnalyticsGranularity(granularity)}筛选视角`}</span></section>
-        <section className="card dashboard-summary-card"><span className="dashboard-summary-label">推荐简历数</span><strong className="dashboard-summary-value">{overview.recommendedTotal}</strong><span className="dashboard-summary-extra">{selectedPeriod === "all" ? "面试管理流程起点" : `周期：${selectedPeriod}`}</span></section>
-        <section className="card dashboard-summary-card"><span className="dashboard-summary-label">最终录用人数</span><strong className="dashboard-summary-value">{overview.hiredCount}</strong><span className="dashboard-summary-extra">{pendingOffers ? `${pendingOffers} 位待入职` : "已含入职转化"}</span></section>
-        <section className="card dashboard-summary-card"><span className="dashboard-summary-label">实际入职人数</span><strong className="dashboard-summary-value">{completedOffers}</strong><span className="dashboard-summary-extra">{overview.recommendedTotal ? `录用转化 ${formatPercent(overview.hiredCount, overview.recommendedTotal)}` : "暂无数据"}</span></section>
-      </div>
+      <SectionTabs
+        ariaLabel="工作台内容分区"
+        value={activeSection}
+        onChange={(value) => setActiveSection(value as "overview" | "jobs" | "flow" | "actions")}
+        options={[
+          { value: "overview", label: "招聘概览" },
+          { value: "jobs", label: "职位分析" },
+          { value: "flow", label: "流程复盘" },
+          { value: "actions", label: "问题与行动" },
+        ]}
+      />
+
+      {activeSection === "overview" ? (
+        <div className="grid cols-4 dashboard-summary-grid section-panel-enter">
+          <section className="card dashboard-summary-card"><span className="dashboard-summary-label">招聘中岗位</span><strong className="dashboard-summary-value">{activeJobs.length}</strong><span className="dashboard-summary-extra">{selectedPeriod === "all" ? "当前在招" : `${formatAnalyticsGranularity(granularity)}筛选视角`}</span></section>
+          <section className="card dashboard-summary-card"><span className="dashboard-summary-label">推荐简历数</span><strong className="dashboard-summary-value">{overview.recommendedTotal}</strong><span className="dashboard-summary-extra">{selectedPeriod === "all" ? "面试管理流程起点" : `周期：${selectedPeriod}`}</span></section>
+          <section className="card dashboard-summary-card"><span className="dashboard-summary-label">最终录用人数</span><strong className="dashboard-summary-value">{overview.hiredCount}</strong><span className="dashboard-summary-extra">{pendingOffers ? `${pendingOffers} 位待入职` : "已含入职转化"}</span></section>
+          <section className="card dashboard-summary-card"><span className="dashboard-summary-label">实际入职人数</span><strong className="dashboard-summary-value">{completedOffers}</strong><span className="dashboard-summary-extra">{overview.recommendedTotal ? `录用转化 ${formatPercent(overview.hiredCount, overview.recommendedTotal)}` : "暂无数据"}</span></section>
+        </div>
+      ) : null}
 
       <section className="card pad analytics-toolbar-card">
         <div className="toolbar analytics-toolbar">
@@ -636,7 +981,7 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
         </div>
       </section>
 
-      <section className="card pad analytics-toolbar-card">
+      {activeSection === "overview" ? <section className="card pad analytics-toolbar-card section-panel-enter">
         <div className="analytics-table-head">
           <div>
             <h3 className="card-title">{formatComparisonLabel(granularity)}</h3>
@@ -663,9 +1008,9 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
           ))}
         </div>
         <div className="analytics-focus-summary">{periodComparison.summary}</div>
-      </section>
+      </section> : null}
 
-      <div className="grid cols-2 analytics-grid">
+      {activeSection === "flow" ? <div className="grid cols-2 analytics-grid section-panel-enter">
         <section className="card pad analytics-funnel-card">
           <div className="analytics-table-head">
             <div>
@@ -705,9 +1050,9 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
           <CardHeader title="招聘通过情况漏斗分析图" desc={selectedPeriod === "all" ? "全部周期汇总" : `${formatAnalyticsGranularity(granularity)}：${selectedPeriod}`} />
           <RecruitmentAnalyticsChart rows={overview.chartRows} />
         </section>
-      </div>
+      </div> : null}
 
-      <div className="grid dashboard-job-analysis-stack">
+      {activeSection === "jobs" ? <div className="grid dashboard-job-analysis-stack section-panel-enter">
         <div className="grid cols-2 dashboard-job-overview-grid">
           <section className="card"><CardHeader title="职位简历量" desc="所有在招岗位的简历量情况" /><JobBarChart jobs={activeJobs} /></section>
           <section className="card pad pending-onboard-card">
@@ -814,9 +1159,9 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
             </div>
           </div>
         </section>
-      </div>
+      </div> : null}
 
-      <div className="grid cols-1 dashboard-review-grid">
+      {activeSection === "actions" ? <div className="grid cols-1 dashboard-review-grid section-panel-enter">
         <section className="card pad analytics-review-board">
           <div className="analytics-table-head">
             <div>
@@ -858,9 +1203,9 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
             </div>
           </div>
         </section>
-      </div>
+      </div> : null}
 
-      <div className="grid cols-2 dashboard-insight-grid">
+      {activeSection === "flow" ? <div className="grid cols-2 dashboard-insight-grid section-panel-enter">
         <section className="card pad analytics-funnel-card">
           <div className="analytics-table-head">
             <div>
@@ -978,9 +1323,9 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
             </div>
           </div>
         </section>
-      </div>
+      </div> : null}
 
-      <div className="grid cols-2 dashboard-action-grid">
+      {activeSection === "actions" ? <div className="grid cols-2 dashboard-action-grid section-panel-enter">
         <section className="card pad analytics-funnel-card">
           <div className="analytics-table-head">
             <div>
@@ -994,12 +1339,6 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
               {issueReview.topReasons.length ? issueReview.topReasons.map((item) => (
                 <span key={item.label}>{item.label} · {item.count}</span>
               )) : <span>暂无可复盘标签</span>}
-            </div>
-          </div>
-          <div className="analytics-issue-card">
-            <strong>标准标签建议</strong>
-            <div className="analytics-tag-list">
-              {generalReasonTagOptions.map((item) => <span key={item}>{item}</span>)}
             </div>
           </div>
         </section>
@@ -1023,7 +1362,7 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
             )) : <div className="empty"><div><strong>暂无行动建议</strong><br />请先沉淀更多简历与面试结果。</div></div>}
           </div>
         </section>
-      </div>
+      </div> : null}
     </>
   );
 }
@@ -1334,7 +1673,6 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
     <div className="talent-page">
       <section className="card pad talent-hero-card">
         <div>
-          <p className="eyebrow">Talent Archive</p>
           <h3 className="card-title">人才库</h3>
           <p className="helper-text">从简历甄选进入人才库后，候选人简历、原岗位、AI 评分与关键画像会持续保留，方便未来岗位重新开启时快速追溯。</p>
         </div>
@@ -3427,6 +3765,7 @@ function VoiceParseView({
   const defaultVoiceJobId = currentJob.status === "招聘中" ? currentJob.id : voiceJobOptions[0]?.id || "";
   const [jobId, setJobId] = useState(defaultVoiceJobId);
   const [libraryJobId, setLibraryJobId] = useState(currentJob.id || jobs[0]?.id || "");
+  const [activeVoiceSection, setActiveVoiceSection] = useState<"workbench" | "library">("workbench");
   const rawCandidates = candidatesByJob[jobId] || [];
   const candidates = useMemo(() => dedupeCandidateList(rawCandidates), [rawCandidates]);
   const [candidateId, setCandidateId] = useState(candidates[0]?.id || "");
@@ -4068,7 +4407,21 @@ function VoiceParseView({
 
   return (
     <div className="voice-page">
-      <section className="card pad">
+      <SectionTabs
+        ariaLabel="访音解析内容分区"
+        value={activeVoiceSection}
+        onChange={(value) => {
+          setActiveVoiceSection(value as "workbench" | "library");
+          if (value === "workbench") setSelectedHistoryId("");
+        }}
+        options={[
+          { value: "workbench", label: "访音工作台" },
+          { value: "library", label: `录音库 · ${voiceHistory.length}` },
+        ]}
+      />
+
+      {activeVoiceSection === "library" ? <>
+      <section className="card pad section-panel-enter">
         <div className="voice-library-head">
           <div>
             <h3 className="card-title voice-section-title"><IconFileAudio />录音库</h3>
@@ -4148,8 +4501,9 @@ function VoiceParseView({
           )}
         </div>
       </section>
+      </> : null}
 
-      <div className="voice-layout">
+      {activeVoiceSection === "workbench" ? <div className="voice-layout section-panel-enter">
         <section className="card pad voice-workbench">
           <div className="toolbar voice-workbench-head">
             <div className="voice-workbench-copy">
@@ -4269,7 +4623,7 @@ function VoiceParseView({
             </div>
           )}
         </section>
-      </div>
+      </div> : null}
       {selectedHistory && historyCandidate && (
         <VoiceHistoryDetailModal
           job={librarySelectedJob}
@@ -4385,11 +4739,183 @@ function isInterviewCandidate(candidate: Candidate) {
 }
 
 
-const salaryRegionOptions = ["北京", "上海", "深圳", "广州", "杭州", "成都", "武汉"] as const;
 const salaryExperienceOptions = ["无经验", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"] as const;
-const salaryIndustryOptions = ["互联网/AI", "互联网", "企业服务", "消费品/零售", "制造业", "金融", "教育", "医疗健康"] as const;
 const salaryEducationOptions = ["大专", "本科", "硕士"] as const;
-const salaryRoleOptions = ["HRBP", "招聘专员", "前端工程师", "产品经理", "销售经理", "运营经理"] as const;
+const salaryRoleOptions = [
+  "HRBP",
+  "人力资源专员",
+  "人力资源助理",
+  "人力资源经理",
+  "人力资源总监",
+  "招聘专员",
+  "招聘经理",
+  "招聘总监",
+  "培训专员",
+  "培训经理",
+  "绩效专员",
+  "薪酬福利专员",
+  "员工关系专员",
+  "HRIS专员",
+  "行政专员",
+  "行政助理",
+  "行政经理",
+  "前台",
+  "总经理助理",
+  "秘书",
+  "财务专员",
+  "会计",
+  "出纳",
+  "会计主管",
+  "财务经理",
+  "财务总监",
+  "审计专员",
+  "税务专员",
+  "成本会计",
+  "资金专员",
+  "法务专员",
+  "法务经理",
+  "律师",
+  "合规专员",
+  "风控专员",
+  "产品经理",
+  "产品助理",
+  "产品总监",
+  "项目经理",
+  "项目专员",
+  "项目总监",
+  "PMO专员",
+  "交付经理",
+  "解决方案经理",
+  "前端工程师",
+  "前端开发工程师",
+  "后端开发工程师",
+  "全栈开发工程师",
+  "Java开发工程师",
+  "Python开发工程师",
+  "Go开发工程师",
+  "C++开发工程师",
+  ".NET开发工程师",
+  "PHP开发工程师",
+  "嵌入式开发工程师",
+  "硬件工程师",
+  "Android开发工程师",
+  "iOS开发工程师",
+  "移动端开发工程师",
+  "算法工程师",
+  "机器学习工程师",
+  "深度学习工程师",
+  "自然语言处理工程师",
+  "数据工程师",
+  "数据分析师",
+  "数据科学家",
+  "数据产品经理",
+  "BI工程师",
+  "数据库工程师",
+  "测试工程师",
+  "自动化测试工程师",
+  "测试开发工程师",
+  "运维工程师",
+  "DevOps工程师",
+  "SRE工程师",
+  "云计算工程师",
+  "网络工程师",
+  "网络安全工程师",
+  "信息安全工程师",
+  "系统工程师",
+  "技术支持工程师",
+  "技术负责人",
+  "技术经理",
+  "架构师",
+  "技术总监",
+  "UI设计师",
+  "UX设计师",
+  "交互设计师",
+  "视觉设计师",
+  "平面设计师",
+  "工业设计师",
+  "用户研究员",
+  "设计总监",
+  "文案策划",
+  "内容编辑",
+  "视频剪辑",
+  "摄影师",
+  "编导",
+  "动画设计师",
+  "产品运营",
+  "运营经理",
+  "运营专员",
+  "用户运营",
+  "内容运营",
+  "新媒体运营",
+  "社群运营",
+  "活动运营",
+  "电商运营",
+  "直播运营",
+  "游戏运营",
+  "SEO专员",
+  "SEM专员",
+  "市场专员",
+  "市场经理",
+  "市场总监",
+  "品牌专员",
+  "品牌经理",
+  "公关专员",
+  "媒介专员",
+  "市场调研员",
+  "销售代表",
+  "销售专员",
+  "销售经理",
+  "销售总监",
+  "大客户经理",
+  "客户经理",
+  "渠道经理",
+  "商务拓展经理",
+  "商务专员",
+  "售前工程师",
+  "售后工程师",
+  "客户成功经理",
+  "销售支持",
+  "电话销售",
+  "采购专员",
+  "采购经理",
+  "供应链专员",
+  "供应链经理",
+  "计划专员",
+  "物流专员",
+  "仓储主管",
+  "生产计划员",
+  "生产经理",
+  "质量工程师",
+  "质检员",
+  "工艺工程师",
+  "机械工程师",
+  "电气工程师",
+  "自动化工程师",
+  "制造工程师",
+  "NPI工程师",
+  "EHS工程师",
+  "研发工程师",
+  "实验室工程师",
+  "客服专员",
+  "客服经理",
+  "售前客服",
+  "售后客服",
+  "门店店长",
+  "导购员",
+  "课程顾问",
+  "教师",
+  "培训讲师",
+  "咨询顾问",
+  "猎头顾问",
+  "医药代表",
+  "医疗顾问",
+  "物业经理",
+  "物业专员",
+  "建筑设计师",
+  "土建工程师",
+  "造价工程师",
+  "工程项目经理",
+] as const;
 
 function SalaryView({
   data,
@@ -4423,6 +4949,7 @@ function SalaryView({
   } : null;
   const [filters, setFilters] = useState<SalaryFilters>(() => buildSalaryFilters(data));
   const [loading, setLoading] = useState(false);
+  const [activeSalarySection, setActiveSalarySection] = useState<"overview" | "evidence">("overview");
 
   useEffect(() => {
     setFilters((current) => ({
@@ -4461,14 +4988,11 @@ function SalaryView({
             value={filters.role}
             options={[...salaryRoleOptions]}
             placeholder="输入岗位名称"
-            onChange={(role) => setFilters({ ...filters, role })}
+            onChange={(role) => setFilters((current) => ({ ...current, role }))}
           />
-          <EditableOptionSwitcher
-            label="地区"
+          <SalaryRegionSwitcher
             value={filters.region}
-            options={[...salaryRegionOptions]}
-            placeholder="输入地区搜索或直接填写"
-            onChange={(region) => setFilters({ ...filters, region })}
+            onChange={(region) => setFilters((current) => ({ ...current, region }))}
           />
           <label className="interview-filter-field">
             <span>经验</span>
@@ -4476,11 +5000,8 @@ function SalaryView({
               {salaryExperienceOptions.map((item) => <option key={item} value={item}>{item}</option>)}
             </Select>
           </label>
-          <EditableOptionSwitcher
-            label="行业"
+          <BossIndustrySwitcher
             value={filters.industry}
-            options={[...salaryIndustryOptions]}
-            placeholder="输入行业搜索或直接填写"
             onChange={(industry) => setFilters({ ...filters, industry })}
           />
           <label className="interview-filter-field">
@@ -4541,6 +5062,17 @@ function SalaryView({
         </section>
       ) : (
         <>
+          <SectionTabs
+            ariaLabel="薪酬调研内容分区"
+            value={activeSalarySection}
+            onChange={(value) => setActiveSalarySection(value as "overview" | "evidence")}
+            options={[
+              { value: "overview", label: "薪酬大盘" },
+              { value: "evidence", label: "数据依据" },
+            ]}
+          />
+
+          {activeSalarySection === "overview" ? <div className="section-panel-stack section-panel-enter">
           <div className="grid cols-4">
             <StatCard label="P25" value={`${data.p25}k`} extra="保守预算线" />
             <StatCard label="P50" value={`${data.p50}k`} extra="市场中位值" />
@@ -4607,8 +5139,9 @@ function SalaryView({
               </div>
             </section>
           </div>
+          </div> : null}
 
-          <div className="grid cols-2">
+          {activeSalarySection === "evidence" ? <div className="grid cols-2 section-panel-enter">
             <section className="card pad">
               <div className="row-between">
                 <div>
@@ -4688,7 +5221,7 @@ function SalaryView({
               </div>
               <div className="salary-disclaimer">{research?.disclaimer}</div>
             </section>
-          </div>
+          </div> : null}
         </>
       )}
     </>
@@ -4717,6 +5250,227 @@ const scoreWeightTemplates: Array<{ label: string; weights: JobScoreWeights }> =
   { label: "校招", weights: { experience: 10, professional: 25, stability: 10, education: 35, business: 20 } },
 ];
 
+const salaryRangeOptions = [
+  "3k - 5k",
+  "5k - 8k",
+  "6k - 10k",
+  "8k - 12k",
+  "10k - 15k",
+  "12k - 18k",
+  "15k - 20k",
+  "18k - 25k",
+  "20k - 30k",
+  "25k - 35k",
+  "30k - 40k",
+  "35k - 50k",
+  "40k - 60k",
+  "50k - 80k",
+  "60k - 100k",
+  "80k - 120k",
+] as const;
+const customSalaryRangeOption = "__custom_salary_range__";
+
+function SalaryRangeField({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const normalizedValue = normalizeSalaryRangeValue(value);
+  const isPresetValue = salaryRangeOptions.includes(normalizedValue as (typeof salaryRangeOptions)[number]);
+  const parsedValue = parseSalaryRangeValue(normalizedValue || value);
+  const [customLow, setCustomLow] = useState(parsedValue?.low || "");
+  const [customHigh, setCustomHigh] = useState(parsedValue?.high || "");
+  const [editingCustom, setEditingCustom] = useState(Boolean(normalizedValue && !isPresetValue));
+  const showCustom = editingCustom || Boolean(normalizedValue && !isPresetValue);
+
+  useEffect(() => {
+    const nextNormalizedValue = normalizeSalaryRangeValue(value);
+    const nextParsedValue = parseSalaryRangeValue(nextNormalizedValue || value);
+    if (nextParsedValue) {
+      setCustomLow(nextParsedValue.low);
+      setCustomHigh(nextParsedValue.high);
+    }
+    if (nextNormalizedValue) {
+      setEditingCustom(!salaryRangeOptions.includes(nextNormalizedValue as (typeof salaryRangeOptions)[number]));
+    }
+  }, [value]);
+
+  const updateCustomRange = (low: string, high: string) => {
+    setCustomLow(low);
+    setCustomHigh(high);
+    const normalizedRange = buildSalaryRangeValue(low, high);
+    onChange(normalizedRange);
+  };
+
+  return (
+    <label className="form-field salary-range-field">
+      <span>薪资范围</span>
+      <Select
+        value={showCustom ? customSalaryRangeOption : normalizedValue || undefined}
+        placeholder="请选择薪资范围"
+        onChange={(event) => {
+          const next = event.target.value;
+          if (next === customSalaryRangeOption) {
+            setEditingCustom(true);
+            if (!parseSalaryRangeValue(value)) onChange("");
+            return;
+          }
+          setEditingCustom(false);
+          onChange(next);
+        }}
+      >
+        {salaryRangeOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+        <option value={customSalaryRangeOption}>自定义区间</option>
+      </Select>
+      {showCustom ? (
+        <div className="salary-range-custom-row">
+          <input
+            aria-label="最低薪资"
+            inputMode="numeric"
+            min={1}
+            pattern="[0-9]*"
+            placeholder="最低"
+            type="number"
+            value={customLow}
+            onChange={(event) => updateCustomRange(sanitizeSalaryRangeNumber(event.target.value), customHigh)}
+            onKeyDown={blockNonIntegerKey}
+          />
+          <span>k -</span>
+          <input
+            aria-label="最高薪资"
+            inputMode="numeric"
+            min={1}
+            pattern="[0-9]*"
+            placeholder="最高"
+            type="number"
+            value={customHigh}
+            onChange={(event) => updateCustomRange(customLow, sanitizeSalaryRangeNumber(event.target.value))}
+            onKeyDown={blockNonIntegerKey}
+          />
+          <span>k</span>
+        </div>
+      ) : null}
+    </label>
+  );
+}
+
+function parseSalaryRangeValue(value: string) {
+  const matched = value.trim().match(/^(\d+)\s*k?\s*[-~—]\s*(\d+)\s*k?$/i);
+  if (!matched) return null;
+  return { low: String(Number(matched[1])), high: String(Number(matched[2])) };
+}
+
+function buildSalaryRangeValue(low: string, high: string) {
+  if (!low || !high) return "";
+  const lowValue = Number(low);
+  const highValue = Number(high);
+  if (!Number.isInteger(lowValue) || !Number.isInteger(highValue) || lowValue <= 0 || highValue <= 0 || highValue < lowValue) return "";
+  return `${lowValue}k - ${highValue}k`;
+}
+
+function normalizeSalaryRangeValue(value: string) {
+  const parsed = parseSalaryRangeValue(value);
+  return parsed ? buildSalaryRangeValue(parsed.low, parsed.high) : "";
+}
+
+function isValidSalaryRangeValue(value: string) {
+  return Boolean(normalizeSalaryRangeValue(value));
+}
+
+function sanitizeSalaryRangeNumber(value: string) {
+  return value.replace(/\D/g, "").replace(/^0+(?=\d)/, "");
+}
+
+function blockNonIntegerKey(event: React.KeyboardEvent<HTMLInputElement>) {
+  if (["e", "E", "+", "-", "."].includes(event.key)) event.preventDefault();
+}
+
+const commonJobKeywordOptions = [
+  "业务理解",
+  "项目推动",
+  "跨团队协作",
+  "沟通表达",
+  "数据分析",
+  "流程优化",
+  "结果导向",
+  "风险识别",
+  "复盘改进",
+] as const;
+
+const jobKeywordOptionGroups: Array<{ pattern: RegExp; options: string[] }> = [
+  { pattern: /HRBP|人力|人事|组织|员工关系/i, options: ["组织诊断", "绩效管理", "人才盘点", "干部管理", "员工关系", "业务陪跑", "管理者赋能", "组织发展"] },
+  { pattern: /招聘|猎头|寻访/i, options: ["人才画像", "渠道运营", "简历筛选", "面试评估", "offer谈判", "候选人体验", "招聘数据分析", "人才库运营"] },
+  { pattern: /前端|web|react|vue/i, options: ["React", "Vue", "TypeScript", "工程化", "组件库", "数据可视化", "性能优化", "前端架构"] },
+  { pattern: /后端|java|python|go|服务端|全栈/i, options: ["系统设计", "接口设计", "高并发", "微服务", "数据库设计", "性能调优", "稳定性建设", "代码质量"] },
+  { pattern: /算法|机器学习|深度学习|AI|NLP|自然语言/i, options: ["机器学习", "深度学习", "模型训练", "特征工程", "数据建模", "算法优化", "NLP", "推荐系统"] },
+  { pattern: /测试|QA|质量/i, options: ["测试用例", "自动化测试", "接口测试", "性能测试", "缺陷跟踪", "质量保障", "测试开发", "回归测试"] },
+  { pattern: /产品/i, options: ["需求分析", "用户研究", "产品规划", "PRD", "原型设计", "数据驱动", "商业化", "项目推进"] },
+  { pattern: /运营|增长|用户|内容|社群|活动/i, options: ["用户增长", "内容运营", "活动策划", "社群运营", "转化提升", "留存分析", "运营策略", "数据复盘"] },
+  { pattern: /市场|品牌|公关|媒介/i, options: ["品牌传播", "市场策划", "媒介投放", "线索转化", "内容营销", "活动执行", "市场调研", "ROI分析"] },
+  { pattern: /销售|客户|商务|BD|大客户/i, options: ["客户开发", "需求挖掘", "商务谈判", "销售转化", "客户维护", "渠道拓展", "解决方案", "回款推进"] },
+  { pattern: /财务|会计|出纳|审计|税务/i, options: ["账务处理", "财务分析", "预算管理", "成本控制", "税务申报", "内控合规", "审计支持", "资金管理"] },
+  { pattern: /法务|合规|风控/i, options: ["合同审核", "法律风险", "合规管理", "争议处理", "制度建设", "风控评估", "业务支持", "知识产权"] },
+  { pattern: /设计|UI|UX|视觉|交互/i, options: ["用户体验", "交互设计", "视觉设计", "设计系统", "用户研究", "原型设计", "可用性测试", "品牌一致性"] },
+  { pattern: /项目|PMO|交付/i, options: ["项目计划", "进度管理", "资源协调", "风险管理", "交付质量", "干系人沟通", "问题闭环", "复盘沉淀"] },
+  { pattern: /运维|DevOps|SRE|网络|安全/i, options: ["系统稳定性", "监控告警", "自动化运维", "CI/CD", "故障排查", "云平台", "安全加固", "容量规划"] },
+  { pattern: /硬件|嵌入式|芯片|半导体|电子/i, options: ["硬件调试", "嵌入式开发", "电路设计", "芯片验证", "量产导入", "可靠性测试", "供应商协同", "问题定位"] },
+  { pattern: /生产|制造|工艺|质量|供应链|采购|物流/i, options: ["生产计划", "工艺优化", "质量管理", "供应商管理", "成本控制", "交付保障", "库存管理", "流程改善"] },
+];
+
+function JobKeywordField({ title, value, onChange }: { title: string; value: string; onChange: (value: string) => void }) {
+  const selectedKeywords = useMemo(() => uniqueKeywords(splitKeywords(value)), [value]);
+  const [keywordInputValue, setKeywordInputValue] = useState("");
+  const options = useMemo(() => {
+    const titleText = title.trim();
+    const matchedOptions = jobKeywordOptionGroups
+      .filter((group) => group.pattern.test(titleText))
+      .flatMap((group) => group.options);
+    return uniqueKeywords([...selectedKeywords, ...matchedOptions, ...commonJobKeywordOptions]);
+  }, [selectedKeywords, title]);
+  const commitKeywords = (keywords: readonly string[]) => {
+    setKeywordInputValue("");
+    onChange(uniqueKeywords(keywords).join("、"));
+  };
+
+  return (
+    <label className="form-field full job-keyword-field">
+      <span>岗位关键词</span>
+      <ArcoSelect
+        allowCreate
+        mode="multiple"
+        showSearch
+        tokenSeparators={["、", ",", "，", ";", "；", " "]}
+        value={selectedKeywords}
+        inputValue={keywordInputValue}
+        options={options}
+        placeholder="选择或输入关键词"
+        notFoundContent="输入后回车可新增关键词"
+        dropdownMenuClassName="job-keyword-popup"
+        onChange={(next) => {
+          const nextKeywords = Array.isArray(next)
+            ? next.map((item) => String(item))
+            : typeof next === "string"
+              ? [next]
+              : [];
+          const containsNewKeyword = nextKeywords.some((item) => !selectedKeywords.includes(item));
+          const keywords = containsNewKeyword ? [...selectedKeywords, ...nextKeywords] : nextKeywords;
+          commitKeywords(keywords);
+        }}
+        onInputValueChange={(next, reason) => {
+          setKeywordInputValue(reason === "optionListHide" ? "" : next);
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter") return;
+          const keyword = keywordInputValue.trim();
+          if (!keyword) return;
+          event.preventDefault();
+          commitKeywords([...selectedKeywords, keyword]);
+        }}
+      />
+    </label>
+  );
+}
+
+function uniqueKeywords(items: readonly string[]) {
+  return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
+}
+
 function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; onSaved: (state: AppState) => void }) {
   const [form, setForm] = useState<JobPayload>({
     title: job?.title || "",
@@ -4724,7 +5478,7 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
     location: job?.location || "",
     experience: job?.experience || "",
     level: job?.level || "",
-    salaryRange: job?.salaryRange || "",
+    salaryRange: normalizeSalaryRangeValue(job?.salaryRange || ""),
     keywords: job?.keywords || "",
     scoreWeights: normalizeJobScoreWeights(job?.scoreWeights),
     description: job?.description || "",
@@ -4739,11 +5493,14 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
   const interviewQuestions = generatedQuestions.length ? generatedQuestions : buildJobQuestions(form);
   const scoreWeightTotal = sumJobScoreWeights(form.scoreWeights);
   const scoreWeightValid = scoreWeightTotal === 100;
+  const salaryRangeValid = isValidSalaryRangeValue(form.salaryRange);
+  const keywordsValid = splitKeywords(form.keywords).length > 0;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!scoreWeightValid) return;
-    const next = job ? await api.updateJob(job.id, form) : await api.createJob(form);
+    if (!scoreWeightValid || !salaryRangeValid || !keywordsValid) return;
+    const payload = { ...form, salaryRange: normalizeSalaryRangeValue(form.salaryRange) };
+    const next = job ? await api.updateJob(job.id, payload) : await api.createJob(payload);
     onSaved(next);
   }
 
@@ -4872,22 +5629,27 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
   };
 
   return (
-    <Modal title={job ? "编辑职位" : "新增职位"} className="modal-wide modal-job-editor" onClose={onClose} actions={<Button className="btn primary" type="submit" form="jobForm" disabled={!scoreWeightValid}>保存职位</Button>}>
+    <Modal title={job ? "编辑职位" : "新增职位"} className="modal-wide modal-job-editor" onClose={onClose} actions={<Button className="btn primary" type="submit" form="jobForm" disabled={!scoreWeightValid || !salaryRangeValid || !keywordsValid}>保存职位</Button>}>
       <form id="jobForm" onSubmit={submit}>
         <div className="modal-body form-grid">
           <Input label="职位名称" value={form.title} onChange={(title) => setForm({ ...form, title })} />
           <Input label="所属部门" value={form.dept} onChange={(dept) => setForm({ ...form, dept })} />
-          <Input label="工作城市" value={form.location} onChange={(location) => setForm({ ...form, location })} />
-          <Input label="经验要求" value={form.experience} onChange={(experience) => setForm({ ...form, experience })} />
+          <RegionCascaderField label="工作城市" value={form.location} onChange={(location) => setForm((current) => ({ ...current, location }))} />
+          <label className="form-field">
+            <span>经验要求</span>
+            <Select value={form.experience} onChange={(event) => setForm((current) => ({ ...current, experience: event.target.value }))}>
+              {salaryExperienceOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+            </Select>
+          </label>
           <Input label="职位级别" value={form.level} onChange={(level) => setForm({ ...form, level })} />
-          <Input label="薪资范围" value={form.salaryRange} onChange={(salaryRange) => setForm({ ...form, salaryRange })} />
+          <SalaryRangeField value={form.salaryRange} onChange={(salaryRange) => setForm((current) => ({ ...current, salaryRange }))} />
           <label className="form-field">
             <span>招聘状态</span>
             <Select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as Job["status"] })}>
               {["招聘中", "暂停", "已关闭"].map((status) => <option key={status}>{status}</option>)}
             </Select>
           </label>
-          <Input label="岗位关键词" full value={form.keywords} onChange={(keywords) => setForm({ ...form, keywords })} />
+          <JobKeywordField title={form.title} value={form.keywords} onChange={(keywords) => setForm((current) => ({ ...current, keywords }))} />
           <ScoreWeightPanel
             value={form.scoreWeights}
             total={scoreWeightTotal}
@@ -5612,7 +6374,7 @@ function Select({ className, value, onChange, children, disabled, placeholder }:
     <span className="arco-select-boundary" onClick={(event) => { event.preventDefault(); event.stopPropagation(); }}>
       <ArcoSelect
         className={className}
-        value={value}
+        value={value || undefined}
         disabled={disabled}
         placeholder={placeholder}
         options={options}
@@ -6171,7 +6933,7 @@ function buildSalaryFilters(salaryData: SalaryData | null): SalaryFilters {
     role: salaryData?.filters.role || "前端开发工程师",
     region: salaryData?.filters.region || "北京",
     experience: salaryData?.filters.experience || "3-5年",
-    industry: salaryData?.filters.industry || "互联网",
+    industry: normalizeBossIndustryName(salaryData?.filters.industry || "互联网"),
     education: salaryEducationOptions.includes((salaryData?.filters.education || "本科") as (typeof salaryEducationOptions)[number])
       ? (salaryData?.filters.education || "本科")
       : "本科",
