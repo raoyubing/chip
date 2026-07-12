@@ -3366,9 +3366,52 @@ textarea:focus {
   line-height: 1.4;
 }
 
-.score-weight-row input[type="range"] {
+.score-weight-slider {
   width: 100%;
-  accent-color: var(--green-700);
+  min-width: 0;
+  padding: 0 2px;
+}
+
+.score-weight-slider .arco-slider {
+  display: block;
+  width: 100%;
+}
+
+.score-weight-slider .arco-slider-road {
+  height: 18px;
+}
+
+.score-weight-slider .arco-slider-road::before,
+.score-weight-slider .arco-slider-bar {
+  height: 6px;
+  border-radius: 999px;
+}
+
+.score-weight-slider .arco-slider-road::before {
+  background: #dfe9e4;
+}
+
+.score-weight-slider .arco-slider-bar {
+  background: var(--green-700);
+}
+
+.score-weight-slider .arco-slider-button {
+  width: 20px;
+  height: 20px;
+  top: -1px;
+}
+
+.score-weight-slider .arco-slider-button::after {
+  width: 20px;
+  height: 20px;
+  background: #ffffff;
+  border: 4px solid var(--green-700);
+  box-shadow: 0 2px 6px rgba(15, 76, 58, 0.14);
+}
+
+.score-weight-slider .arco-slider-button:hover::after,
+.score-weight-slider .arco-slider-button.arco-slider-button-active::after {
+  transform: scale(1.08);
 }
 
 .score-weight-step {
@@ -4287,6 +4330,256 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 }
+
+/* Voice workspace refinement */
+.voice-page {
+  gap: 20px;
+}
+
+.voice-section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.voice-section-title .arco-icon {
+  color: var(--green-700);
+  font-size: 19px;
+}
+
+.voice-library-head {
+  align-items: flex-end;
+}
+
+.voice-library-head .card-title {
+  margin: 0;
+}
+
+.voice-workbench {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+}
+
+.voice-workbench-head {
+  align-items: flex-start;
+  padding-bottom: 4px;
+}
+
+.voice-workbench-copy {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.voice-workbench-copy .card-title {
+  margin: 0;
+}
+
+.voice-workbench-copy .helper-text {
+  max-width: 720px;
+  line-height: 1.6;
+}
+
+.voice-session-meta {
+  flex: 0 0 auto;
+  padding-top: 2px;
+}
+
+.voice-form {
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.voice-form > .full {
+  grid-column: 1 / -1;
+}
+
+.voice-form .job-switcher label,
+.voice-form .form-field > span,
+.voice-form .voice-candidate-brief > .meta {
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.voice-form .arco-search-switcher .arco-select-view {
+  min-height: 46px;
+  height: 46px;
+}
+
+.voice-candidate-brief {
+  gap: 11px;
+  min-height: 142px;
+  padding: 16px;
+  background: linear-gradient(135deg, #f4faf7 0%, #eef6f2 100%);
+  border-radius: var(--radius-md);
+}
+
+.voice-candidate-brief > .meta {
+  color: var(--green-700);
+}
+
+.voice-candidate-brief p {
+  line-height: 1.6;
+}
+
+.voice-candidate-head {
+  align-items: center;
+}
+
+.voice-candidate-head strong {
+  color: var(--green-900);
+  font-size: 16px;
+}
+
+.voice-control-panel {
+  gap: 14px;
+  padding: 16px;
+  background: #f6faf8;
+  border-radius: var(--radius-md);
+}
+
+.voice-control-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.voice-control-head > div {
+  display: grid;
+  gap: 4px;
+}
+
+.voice-control-head strong {
+  color: var(--green-900);
+  font-size: 14px;
+}
+
+.voice-control-head span,
+.voice-control-head small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.voice-control-head small {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.voice-control-actions {
+  align-items: center;
+  gap: 8px;
+}
+
+.voice-control-actions .btn {
+  gap: 7px;
+  min-width: 92px;
+}
+
+.voice-control-actions .voice-primary-action {
+  min-width: 148px;
+}
+
+.voice-control-actions .voice-clear-action {
+  margin-left: auto;
+}
+
+.voice-control-actions .arco-icon {
+  flex: 0 0 auto;
+  font-size: 17px;
+}
+
+.voice-form .form-field > .arco-textarea,
+.voice-form .form-field .arco-textarea-wrapper {
+  min-height: 124px;
+  padding: 12px 14px;
+  color: var(--text);
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  line-height: 1.65;
+}
+
+.voice-form .form-field > .arco-textarea:focus,
+.voice-form .form-field .arco-textarea-wrapper:focus-within {
+  border-color: var(--green-700);
+  box-shadow: 0 0 0 3px rgba(26, 107, 74, 0.1);
+}
+
+.voice-form .form-field > .arco-textarea::placeholder {
+  color: #9aa9a3;
+}
+
+@media (max-width: 760px) {
+  .voice-library-head,
+  .voice-workbench-head,
+  .voice-control-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .voice-library-filter {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .voice-form {
+    grid-template-columns: 1fr;
+  }
+
+  .voice-form > .full {
+    grid-column: auto;
+  }
+
+  .voice-control-actions .voice-clear-action {
+    margin-left: 0;
+  }
+}
+
+/* Every padded card is a vertical layout. This prevents adjacent sections
+   from visually collapsing into one another across the different views. */
+.card.pad {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.card.pad.analytics-funnel-card {
+  gap: 12px;
+}
+
+.card.pad.pending-onboard-card {
+  gap: 14px;
+}
+
+.card.pad.voice-workbench,
+.card.pad.voice-analysis-panel {
+  gap: 2px;
+}
+
+.card.pad.voice-workbench .voice-form,
+.card.pad.voice-analysis-panel .voice-analysis-content {
+  margin-top: 14px;
+}
+
+.card.pad > .analytics-comparison-grid,
+.card.pad > .analytics-focus-summary,
+.card.pad > .analytics-review-layout,
+.card.pad > .analytics-channel-grid,
+.card.pad > .analytics-duration-layout,
+.card.pad > .analytics-action-list {
+  margin-top: 0;
+}
+
+.analytics-comparison-grid {
+  row-gap: 12px;
+}
+
+.analytics-focus-summary {
+  margin-top: 0;
+}
 .loading {
   display: grid;
   min-height: 100vh;
@@ -4366,4 +4659,489 @@ textarea:focus {
 button:disabled {
   cursor: not-allowed;
   opacity: 0.62;
+}
+
+/* Shared visual language: keep the existing green palette, but make every view
+   use the same rhythm, control height and corner treatment. */
+:root {
+  --page-bg: #edf4f0;
+  --surface-soft: #f7faf8;
+  --surface-muted: #f1f6f3;
+  --control-height: 42px;
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --shadow-card: 0 8px 24px rgba(15, 76, 58, 0.06);
+  --shadow-float: 0 20px 56px rgba(15, 76, 58, 0.16);
+}
+
+body {
+  background: var(--page-bg);
+  font-family: "PingFang SC", "Microsoft YaHei", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app-shell {
+  background: var(--page-bg);
+}
+
+.sidebar {
+  flex-basis: 232px;
+  width: 232px;
+  padding: 24px 16px 18px;
+  background: linear-gradient(180deg, #103f32 0%, var(--green-900) 100%);
+}
+
+.brand {
+  gap: 11px;
+  padding: 4px 8px 30px;
+}
+
+.brand h1 {
+  font-size: 17px;
+  font-weight: 800;
+}
+
+.nav {
+  gap: 6px;
+}
+
+.nav-item {
+  min-height: 42px;
+  padding: 10px 12px;
+  border-radius: 11px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.nav-item:hover,
+.nav-item.active {
+  background: rgba(92, 158, 125, 0.48);
+}
+
+.main {
+  padding: 28px clamp(20px, 3vw, 44px) 48px;
+}
+
+.topbar {
+  margin-bottom: 28px;
+}
+
+.topbar h2 {
+  font-size: 30px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.content,
+.grid {
+  gap: 20px;
+}
+
+.job-switcher {
+  gap: 6px;
+}
+
+.job-switcher label,
+.meta,
+.helper-text {
+  line-height: 1.4;
+}
+
+.job-switcher label,
+.interview-filter-field span,
+.field span,
+.form-field > span {
+  font-weight: 700;
+}
+
+.card {
+  border-color: rgba(206, 222, 214, 0.92);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+}
+
+.card.pad {
+  padding: 20px;
+}
+
+.card-header {
+  padding: 20px 20px 0;
+}
+
+.card-title,
+.card-header h3 {
+  font-size: 17px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.toolbar,
+.analytics-table-head {
+  gap: 16px;
+}
+
+.toolbar-left,
+.toolbar-right,
+.compact-actions {
+  gap: 8px;
+}
+
+/* Arco controls use a fixed box model so labels and selected values share one
+   baseline across dashboard filters, tables, forms and the topbar. */
+.arco-btn.btn,
+.btn {
+  min-height: var(--control-height);
+  height: var(--control-height);
+  padding: 0 14px;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.arco-btn.btn.compact,
+.btn.compact {
+  min-height: 30px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.arco-select,
+.arco-input-wrapper,
+.arco-input,
+.arco-textarea-wrapper {
+  font-size: 14px;
+}
+
+.arco-select .arco-select-view,
+.field .arco-select-view,
+.interview-filter-field .arco-select-view {
+  display: flex;
+  align-items: center;
+  height: var(--control-height);
+  min-height: var(--control-height);
+  padding: 0 12px;
+  color: var(--text);
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  line-height: 1.4;
+}
+
+.arco-select-single .arco-select-view-selector {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  height: 100%;
+  line-height: 1.4;
+}
+
+.arco-select-single .arco-select-view-value,
+.arco-select-single .arco-select-view-value-mirror {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  min-width: 0;
+  line-height: 1.4;
+}
+
+.arco-select-single .arco-select-view-input {
+  line-height: 1.4;
+}
+
+.arco-select .arco-select-arrow-icon,
+.arco-select .arco-select-suffix-icon {
+  flex: 0 0 auto;
+  font-size: 16px;
+}
+
+.arco-select:hover .arco-select-view,
+.arco-select.arco-select-focused .arco-select-view {
+  border-color: var(--green-700);
+}
+
+.arco-select-popup {
+  z-index: 1100;
+}
+
+.arco-search-switcher {
+  min-width: 300px;
+}
+
+.arco-search-switcher .arco-select-view {
+  height: 46px;
+  min-height: 46px;
+  border-radius: 14px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.field .arco-input-wrapper,
+.form-field .arco-input-wrapper,
+.field .arco-textarea-wrapper,
+.form-field .arco-textarea-wrapper {
+  min-height: var(--control-height);
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #ffffff;
+}
+
+.field .arco-input-wrapper .arco-input,
+.form-field .arco-input-wrapper .arco-input {
+  min-height: 40px;
+  padding: 0 4px;
+  line-height: 1.4;
+}
+
+.field > .arco-input,
+.form-field > .arco-input {
+  width: 100%;
+  min-height: var(--control-height);
+  padding: 0 12px;
+  color: var(--text);
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  line-height: 1.4;
+}
+
+.field > .arco-input:focus,
+.form-field > .arco-input:focus {
+  border-color: var(--green-700);
+  box-shadow: 0 0 0 3px rgba(26, 107, 74, 0.1);
+}
+
+.form-field .arco-textarea-wrapper,
+.field .arco-textarea-wrapper {
+  min-height: 96px;
+}
+
+.form-field .arco-textarea,
+.field .arco-textarea {
+  min-height: 92px;
+  padding: 10px 12px;
+  line-height: 1.6;
+}
+
+.field input,
+.field select,
+.form-field input,
+.form-field select,
+.month-input {
+  min-height: var(--control-height);
+  border-radius: 11px;
+}
+
+.filter-tabs,
+.stage-filter-tabs {
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.filter-tab,
+.stage-filter {
+  min-height: 34px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+.job-list,
+.candidate-list,
+.timeline,
+.salary-list {
+  gap: 14px;
+}
+
+.job-card,
+.candidate-card {
+  padding: 18px;
+  border-radius: var(--radius-md);
+}
+
+.job-card h4,
+.candidate-card h4 {
+  font-size: 16px;
+  line-height: 1.35;
+}
+
+.table th,
+.table td {
+  padding: 12px 14px;
+  line-height: 1.5;
+}
+
+.table th {
+  font-size: 12px;
+}
+
+.empty {
+  border-radius: var(--radius-md);
+}
+
+/* Arco Modal replaces the hand-built page overlays. */
+.arco-modal-wrapper .arco-modal {
+  border-radius: 20px;
+  box-shadow: var(--shadow-float);
+}
+
+.arco-modal-wrapper .arco-modal-header {
+  min-height: 66px;
+  height: auto;
+  padding: 16px 24px;
+  border-bottom-color: var(--line);
+}
+
+.arco-modal-wrapper .arco-modal-header .arco-modal-title {
+  padding-right: 30px;
+  color: var(--green-900);
+  font-size: 18px;
+  font-weight: 800;
+  line-height: 1.35;
+  text-align: left;
+}
+
+.arco-modal-wrapper .arco-modal-header .arco-modal-title p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.arco-modal-wrapper .arco-modal-content {
+  min-height: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+.arco-modal-wrapper .arco-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 14px 24px;
+  border-top-color: var(--line);
+}
+
+.arco-modal-wrapper .arco-modal-footer > .arco-btn {
+  margin-left: 0;
+}
+
+.app-modal-wrap.arco-modal-wrapper-align-center .arco-modal {
+  top: 0;
+  max-height: calc(100vh - 40px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.app-modal-wrap .arco-modal > div[tabindex="-1"] {
+  min-height: 0;
+  max-height: calc(100vh - 40px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.app-modal-wrap .arco-modal .modal-scroll {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(26, 107, 74, 0.42) transparent;
+}
+
+.app-modal-wrap .arco-modal .modal-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+
+.app-modal-wrap .arco-modal .modal-scroll::-webkit-scrollbar-thumb {
+  background: rgba(26, 107, 74, 0.42);
+  border-radius: 999px;
+}
+
+.app-modal-wrap .arco-modal .modal-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.app-modal-wrap .arco-modal.modal-wide {
+  width: min(1120px, calc(100vw - 40px));
+}
+
+.app-modal-wrap .arco-modal.modal-job-editor {
+  width: min(1120px, calc(100vw - 40px));
+}
+
+.app-modal-wrap .modal-body {
+  padding: 20px 24px;
+}
+
+.app-modal-wrap .modal-foot {
+  padding: 0 24px 20px;
+  border: 0;
+}
+
+.voice-detail-modal .arco-modal-title {
+  color: var(--green-900);
+}
+
+.talent-recommend-modal {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.talent-recommend-body {
+  padding: 20px 24px;
+}
+
+.talent-recommend-body .field {
+  gap: 7px;
+}
+
+.toast {
+  right: 28px;
+  bottom: 28px;
+  padding: 11px 16px;
+  border-radius: 10px;
+  box-shadow: var(--shadow-float);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+@media (max-width: 760px) {
+  .main {
+    padding: 20px 16px 32px;
+  }
+
+  .topbar h2 {
+    font-size: 25px;
+  }
+
+  .arco-search-switcher {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .app-modal-wrap .arco-modal,
+  .app-modal-wrap .arco-modal.modal-wide,
+  .app-modal-wrap .arco-modal.modal-job-editor {
+    width: calc(100vw - 20px);
+    max-height: calc(100vh - 20px);
+  }
+
+  .arco-modal-wrapper .arco-modal-header,
+  .arco-modal-wrapper .arco-modal-footer {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+
+  .app-modal-wrap .modal-body,
+  .talent-recommend-body {
+    padding: 16px 18px;
+  }
 }

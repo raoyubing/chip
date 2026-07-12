@@ -6,12 +6,24 @@ import {
   Checkbox as ArcoCheckbox,
   ConfigProvider,
   Input as ArcoInput,
+  Modal as ArcoModal,
   Select as ArcoSelect,
+  Slider as ArcoSlider,
   Tag as ArcoTag,
   Upload as ArcoUpload,
   type ButtonProps as ArcoButtonProps,
 } from "@arco-design/web-react";
-import { IconSearch, IconUpload } from "@arco-design/web-react/icon";
+import {
+  IconDelete,
+  IconFileAudio,
+  IconPause,
+  IconPlayArrow,
+  IconRecord,
+  IconRecordStop,
+  IconRedo,
+  IconSearch,
+  IconUpload,
+} from "@arco-design/web-react/icon";
 import zhCN from "@arco-design/web-react/es/locale/zh-CN";
 import { api, type JobCopilotResult, type JobPayload, type ResumeUploadPayload } from "./api";
 import type { AppState, Candidate, CandidateInterviewPlan, CandidateInterviewPlanQuestion, InterviewMethodKey, Job, JobScoreWeights, ResumeFilePayload, SalaryData, SalaryFilters, UploadedFile, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceRecruiterCoachReport, VoiceSegmentInsight } from "./types";
@@ -53,6 +65,27 @@ type Modal =
   | { type: "job"; job?: Job }
   | { type: "resume" }
   | null;
+
+function confirmAction(title: string, content: React.ReactNode) {
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const settle = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+
+    ArcoModal.confirm({
+      title,
+      content,
+      okText: "确认",
+      cancelText: "取消",
+      maskClosable: false,
+      onOk: () => settle(true),
+      onCancel: () => settle(false),
+    });
+  });
+}
 
 type AnalyticsGranularity = "month" | "quarter" | "year";
 
@@ -147,14 +180,14 @@ function App() {
   }
 
   async function deleteJob(job: Job) {
-    if (!window.confirm(`确认删除职位“${job.title}”？关联候选人也会删除。`)) return;
+    if (!(await confirmAction("删除职位", `确认删除职位“${job.title}”？关联候选人也会删除。`))) return;
     const next = await api.deleteJob(job.id);
     setRemoteState(next);
     showToast("职位已删除");
   }
 
   async function closeJob(job: Job) {
-    if (!window.confirm(`确认关闭职位“${job.title}”？关闭后将从进行中岗位下拉中移除，但历史数据会保留。`)) return false;
+    if (!(await confirmAction("关闭招聘", `确认关闭职位“${job.title}”？关闭后将从进行中岗位下拉中移除，但历史数据会保留。`))) return false;
     const next = await api.closeJob(job.id);
     setRemoteState(next);
     showToast("职位已关闭并归档");
@@ -162,7 +195,7 @@ function App() {
   }
 
   async function clearData() {
-    if (!window.confirm("确认清空当前 SQLite 数据？职位、候选人和面试记录都会被删除。")) return;
+    if (!(await confirmAction("清空本地数据", "确认清空当前 SQLite 数据？职位、候选人和面试记录都会被删除。"))) return;
     const next = await api.clearData();
     setRemoteState(next);
     showToast("本地数据已清空");
@@ -186,7 +219,7 @@ function App() {
     const message = targetCandidate?.isInTalentPool
       ? "该候选人已进入人才库，删除后人才库档案也会彻底删除。确认删除？"
       : "确认删除该候选人？";
-    if (!selectedCandidateId || !window.confirm(message)) return;
+    if (!selectedCandidateId || !(await confirmAction("删除候选人", message))) return;
     const next = await api.deleteCandidate(selectedCandidateId);
     setRemoteState(next);
     showToast("候选人已删除");
@@ -1424,16 +1457,23 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
       ) : null}
 
       {recommendCandidate ? (
-        <div className="modal-root talent-recommend-root">
-          <section className="modal talent-recommend-modal" role="dialog" aria-modal="true" aria-label="推荐至当前岗位">
-            <header className="modal-head">
-              <div>
-                <h3>推荐至当前岗位</h3>
-                <p className="helper-text">将 {recommendCandidate.name} 的简历副本与 AI 摘要回溯推荐到招聘中岗位。</p>
-              </div>
-              <Button className="btn ghost compact" type="button" onClick={() => setRecommendCandidate(null)}>关闭</Button>
-            </header>
-            <div className="modal-body talent-recommend-body">
+        <Modal
+          title={(
+            <div>
+              <strong>推荐至当前岗位</strong>
+              <p className="helper-text">将 {recommendCandidate.name} 的简历副本与 AI 摘要回溯推荐到招聘中岗位。</p>
+            </div>
+          )}
+          className="talent-recommend-modal"
+          onClose={() => setRecommendCandidate(null)}
+          actions={(
+            <>
+              <Button className="btn" type="button" onClick={() => setRecommendCandidate(null)}>取消</Button>
+              <Button className="btn blue" type="button" onClick={submitRecommendToJob} disabled={recommendLoading || !recommendTargetJobId || !ongoingJobs.length}>{recommendLoading ? "推荐中..." : "确认推荐"}</Button>
+            </>
+          )}
+        >
+            <div className="talent-recommend-body">
               <label className="field">
                 <span>选择招聘中岗位</span>
                 <Select value={recommendTargetJobId} onChange={(event) => setRecommendTargetJobId(event.target.value)}>
@@ -1468,12 +1508,7 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
               ) : null}
               {recommendError ? <div className="tool-error">{recommendError}</div> : null}
             </div>
-            <footer className="modal-foot">
-              <Button className="btn" type="button" onClick={() => setRecommendCandidate(null)}>取消</Button>
-              <Button className="btn blue" type="button" onClick={submitRecommendToJob} disabled={recommendLoading || !recommendTargetJobId || !ongoingJobs.length}>{recommendLoading ? "推荐中..." : "确认推荐"}</Button>
-            </footer>
-          </section>
-        </div>
+        </Modal>
       ) : null}
     </div>
   );
@@ -3805,7 +3840,7 @@ function VoiceParseView({
 
   const removeHistory = async () => {
     if (!selectedHistory) return;
-    if (!window.confirm("确认删除这条录音记录？删除后无法恢复。")) return;
+    if (!(await confirmAction("删除录音记录", "确认删除这条录音记录？删除后无法恢复。"))) return;
     setDeletingHistory(true);
     try {
       const { state: nextState } = await api.deleteVoiceAnalysis(selectedHistory.id);
@@ -4036,7 +4071,7 @@ function VoiceParseView({
       <section className="card pad">
         <div className="voice-library-head">
           <div>
-            <h3 className="card-title">录音库</h3>
+            <h3 className="card-title voice-section-title"><IconFileAudio />录音库</h3>
           </div>
           <div className="toolbar-right interview-filters">
             <div className="interview-filter-field voice-library-filter">
@@ -4085,7 +4120,7 @@ function VoiceParseView({
                           type="button"
                           onClick={async () => {
                             setSelectedHistoryId(item.id);
-                            if (!window.confirm("确认删除这条录音记录？删除后无法恢复。")) return;
+                            if (!(await confirmAction("删除录音记录", "确认删除这条录音记录？删除后无法恢复。"))) return;
                             setDeletingHistory(true);
                             try {
                               const { state: nextState } = await api.deleteVoiceAnalysis(item.id);
@@ -4116,12 +4151,12 @@ function VoiceParseView({
 
       <div className="voice-layout">
         <section className="card pad voice-workbench">
-          <div className="toolbar">
-            <div>
-              <h3 className="card-title">访音解析</h3>
+          <div className="toolbar voice-workbench-head">
+            <div className="voice-workbench-copy">
+              <h3 className="card-title voice-section-title"><IconFileAudio />访音解析</h3>
               <p className="helper-text">页面内直接开启录音转写；单次解析可保存到录音库，便于后续按岗位与人选回看复盘。</p>
             </div>
-            <div className="voice-session-meta">
+            <div className="voice-session-meta" aria-label="录音状态">
               <Badge color={status === "listening" ? "green" : status === "paused" ? "gold" : "gray"}>
                 {status === "idle" ? "未开始" : status === "listening" ? "录音中" : status === "paused" ? "已暂停" : "已结束"}
               </Badge>
@@ -4163,14 +4198,22 @@ function VoiceParseView({
               )}
             </section>
             <section className="voice-control-panel full">
+              <div className="voice-control-head">
+                <div>
+                  <strong>录音控制</strong>
+                  <span>开始后会自动分段转写，暂停或结束都不会丢失已采集内容。</span>
+                </div>
+                {sessionStartedAt ? <small>{sessionStartedAt}</small> : null}
+              </div>
               <div className="voice-control-actions">
-                <Button className="btn primary" type="button" onClick={startSession} disabled={!supportsRecording || !selectedCandidate || status === "listening"}>
-                  {status === "idle" ? "开始录音" : "重新开始"}
+                <Button className="btn primary voice-primary-action" type="button" onClick={startSession} disabled={!supportsRecording || !selectedCandidate || status === "listening"}>
+                  {status === "idle" ? <IconRecord /> : <IconRedo />}
+                  <span>{status === "idle" ? "开始录音" : "重新开始"}</span>
                 </Button>
-                <Button className="btn" type="button" onClick={pauseSession} disabled={status !== "listening"}>暂停</Button>
-                <Button className="btn" type="button" onClick={resumeSession} disabled={status !== "paused"}>继续</Button>
-                <Button className="btn" type="button" onClick={stopSession} disabled={status !== "listening" && status !== "paused"}>结束</Button>
-                <Button className="btn ghost" type="button" onClick={clearSession}>清空</Button>
+                <Button className="btn voice-secondary-action" type="button" onClick={pauseSession} disabled={status !== "listening"}><IconPause /><span>暂停</span></Button>
+                <Button className="btn voice-secondary-action" type="button" onClick={resumeSession} disabled={status !== "paused"}><IconPlayArrow /><span>继续</span></Button>
+                <Button className="btn voice-secondary-action" type="button" onClick={stopSession} disabled={status !== "listening" && status !== "paused"}><IconRecordStop /><span>结束</span></Button>
+                <Button className="btn ghost voice-clear-action" type="button" onClick={clearSession}><IconDelete /><span>清空</span></Button>
               </div>
               <small className="helper-text">
                 {supportsRecording
@@ -4829,7 +4872,7 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
   };
 
   return (
-    <Modal className="modal-wide modal-job-editor" onClose={onClose} actions={<Button className="btn primary" type="submit" form="jobForm" disabled={!scoreWeightValid}>保存职位</Button>}>
+    <Modal title={job ? "编辑职位" : "新增职位"} className="modal-wide modal-job-editor" onClose={onClose} actions={<Button className="btn primary" type="submit" form="jobForm" disabled={!scoreWeightValid}>保存职位</Button>}>
       <form id="jobForm" onSubmit={submit}>
         <div className="modal-body form-grid">
           <Input label="职位名称" value={form.title} onChange={(title) => setForm({ ...form, title })} />
@@ -4948,15 +4991,17 @@ function ScoreWeightPanel({ value, total, onChange }: { value: JobScoreWeights; 
               <span>{field.hint}</span>
             </div>
             <Button className="score-weight-step" type="button" onClick={() => onChange(rebalanceJobScoreWeights(value, field.key, value[field.key] - 5))}>−</Button>
-            <input
-              aria-label={`${field.label}权重`}
-              type="range"
-              min={0}
-              max={100}
-              step={5}
-              value={value[field.key]}
-              onChange={(event) => onChange(rebalanceJobScoreWeights(value, field.key, Number(event.target.value)))}
-            />
+            <div className="score-weight-slider" aria-label={`${field.label}权重`}>
+              <ArcoSlider
+                min={0}
+                max={100}
+                step={5}
+                value={value[field.key]}
+                onChange={(next) => {
+                  if (typeof next === "number") onChange(rebalanceJobScoreWeights(value, field.key, next));
+                }}
+              />
+            </div>
             <span className="score-weight-value">{value[field.key]}%</span>
             <Button className="score-weight-step" type="button" onClick={() => onChange(rebalanceJobScoreWeights(value, field.key, value[field.key] + 5))}>＋</Button>
           </div>
@@ -5165,7 +5210,7 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
         files: uploadedFiles,
       });
       const duplicateAction = duplicateCandidates.length
-        ? window.confirm(`当前岗位的简历甄选中已存在 ${duplicateCandidates.map((candidate) => candidate.name).join("、")} 的简历。\n\n是否用本次提交的简历覆盖原有简历？\n\n确定：覆盖原简历\n取消：保留原简历，不重复新增`)
+        ? await confirmAction("发现重复简历", `当前岗位的简历甄选中已存在 ${duplicateCandidates.map((candidate) => candidate.name).join("、")} 的简历。\n\n是否用本次提交的简历覆盖原有简历？\n\n确认：覆盖原简历\n取消：保留原简历，不重复新增`)
           ? "overwrite"
           : "skip"
         : "skip";
@@ -5508,18 +5553,21 @@ function SalaryRegionChart({ data }: { data: NonNullable<Job["salaryData"]> }) {
 function SalaryIndustryChart({ data }: { data: NonNullable<Job["salaryData"]> }) { return <Chart option={{ color: ["#0F4C3A", "#1A6B4A", "#65A47D", "#A8CDB8", "#c8decf", "#7bb58f", "#2c7f5b"], tooltip: { trigger: "item" }, series: [{ type: "pie", radius: ["42%", "70%"], data: data.industryComparison }] }} />; }
 function SalaryEducationChart({ data }: { data: NonNullable<Job["salaryData"]> }) { return <Chart option={{ color: ["#d1e5d8", "#a8cdb8", "#65a47d", "#0f4c3a"], tooltip: { trigger: "axis" }, grid: { left: 42, right: 20, top: 30, bottom: 36 }, xAxis: { type: "category", data: data.educationComparison.map(i => i.label) }, yAxis: { type: "value", axisLabel: { formatter: "{value}k" } }, series: [{ type: "bar", barWidth: 38, data: data.educationComparison.map(i => i.value) }] }} />; }
 
-function Modal({ title, onClose, actions, children, className }: { title?: string; onClose: () => void; actions?: React.ReactNode; children: React.ReactNode; className?: string }) {
+function Modal({ title, onClose, actions, children, className }: { title?: React.ReactNode; onClose: () => void; actions?: React.ReactNode; children: React.ReactNode; className?: string }) {
   return (
-    <div className="modal-root">
-      <div className={className ? `modal ${className}` : "modal"}>
-        <div className={`modal-head ${!title ? "no-title" : ""}`}>
-          <Button className="btn" onClick={onClose}>关闭</Button>
-          {title && <h3>{title}</h3>}
-          <div className="modal-actions">{actions}</div>
-        </div>
-        <div className="modal-scroll">{children}</div>
-      </div>
-    </div>
+    <ArcoModal
+      visible
+      title={title}
+      className={className}
+      wrapClassName="app-modal-wrap"
+      onCancel={onClose}
+      footer={actions || null}
+      maskClosable={false}
+      unmountOnExit
+      alignCenter
+    >
+      <div className="modal-scroll">{children}</div>
+    </ArcoModal>
   );
 }
 function Button({ className = "", type = "button", children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) {
