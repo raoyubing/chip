@@ -1,45 +1,46 @@
 {
-  "name": "xiaosongshu-recruitment-workbench",
-  "version": "1.0.0",
-  "private": true,
-  "packageManager": "pnpm@8.14.0",
-  "pnpm": {
-    "overrides": {
-      "onnxruntime-node": "1.21.0"
-    },
-    "patchedDependencies": {
-      "@arco-design/web-react@2.66.15": "patches/@arco-design__web-react@2.66.15.patch"
-    }
-  },
-  "scripts": {
-    "dev": "pnpm --parallel --filter @xiaosongshu/server --filter @xiaosongshu/web dev",
-    "dev:server": "pnpm --filter @xiaosongshu/server dev",
-    "dev:web": "pnpm --filter @xiaosongshu/web dev",
-    "download:whisper-model": "pnpm --filter @xiaosongshu/server download:whisper-model",
-    "download:boss-scraper": "pnpm --filter @xiaosongshu/server download:boss-scraper",
-    "boss-scraper:check": "pnpm --filter @xiaosongshu/server boss-scraper:check",
-    "boss-scraper:setup-chrome": "pnpm --filter @xiaosongshu/server boss-scraper:setup-chrome",
-    "demo:load": "pnpm --filter @xiaosongshu/server demo:load",
-    "deploy:init": "bash deploy/scripts/init-server.sh",
-    "deploy:up": "docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d",
-    "deploy:down": "docker compose --env-file deploy/.env -f deploy/docker-compose.yml down",
-    "deploy:restart": "docker compose --env-file deploy/.env -f deploy/docker-compose.yml restart xiaosongshu-backend xiaosongshu-nginx",
-    "deploy:logs": "docker compose --env-file deploy/.env -f deploy/docker-compose.yml logs -f --tail=120",
-    "deploy:ps": "docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps",
-    "deploy:run": "bash deploy/scripts/run-node-command.sh",
-    "deploy:backup": "bash deploy/scripts/backup-data.sh",
-    "deploy:reset-data": "bash deploy/scripts/reset-data.sh",
-    "deploy:remote": "bash deploy/scripts/deploy-remote.sh",
-    "deploy:pack-images": "bash deploy/scripts/pack-images.sh",
-    "deploy:load-images": "bash deploy/scripts/load-images.sh",
-    "build": "pnpm -r build",
-    "typecheck": "pnpm -r typecheck",
-    "test:e2e": "playwright test",
-    "test:e2e:ui": "playwright test --ui",
-    "test:e2e:report": "playwright show-report"
-  },
-  "devDependencies": {
-    "@playwright/test": "^1.61.0",
-    "typescript": "^5.5.4"
-  }
+	"name": "xiaosongshu-recruitment-workbench",
+	"version": "1.0.0",
+	"private": true,
+	"packageManager": "pnpm@8.14.0",
+	"pnpm": {
+		"overrides": {
+			"onnxruntime-node": "1.21.0"
+		},
+		"patchedDependencies": {
+			"@arco-design/web-react@2.66.15": "patches/@arco-design__web-react@2.66.15.patch"
+		}
+	},
+	"scripts": {
+		"dev": "pnpm --parallel --filter @xiaosongshu/server --filter @xiaosongshu/web dev",
+		"dev:server": "pnpm --filter @xiaosongshu/server dev",
+		"dev:web": "pnpm --filter @xiaosongshu/web dev",
+		"download:whisper-model": "pnpm --filter @xiaosongshu/server download:whisper-model",
+		"download:boss-scraper": "pnpm --filter @xiaosongshu/server download:boss-scraper",
+		"boss-scraper:check": "pnpm --filter @xiaosongshu/server boss-scraper:check",
+		"boss-scraper:setup-chrome": "pnpm --filter @xiaosongshu/server boss-scraper:setup-chrome",
+		"demo:load": "pnpm --filter @xiaosongshu/server demo:load",
+		"deploy:init": "bash deploy/scripts/init-server.sh",
+		"deploy:up": "docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d",
+		"deploy:down": "docker compose --env-file deploy/.env -f deploy/docker-compose.yml down",
+		"deploy:restart": "docker compose --env-file deploy/.env -f deploy/docker-compose.yml restart xiaosongshu-backend xiaosongshu-nginx",
+		"deploy:logs": "docker compose --env-file deploy/.env -f deploy/docker-compose.yml logs -f --tail=120",
+		"deploy:ps": "docker compose --env-file deploy/.env -f deploy/docker-compose.yml ps",
+		"deploy:run": "bash deploy/scripts/run-node-command.sh",
+		"deploy:backup": "bash deploy/scripts/backup-data.sh",
+		"deploy:reset-data": "bash deploy/scripts/reset-data.sh",
+		"deploy:remote": "bash deploy/scripts/deploy-remote.sh",
+		"deploy:pack-images": "bash deploy/scripts/pack-images.sh",
+		"deploy:load-images": "bash deploy/scripts/load-images.sh",
+		"build": "pnpm -r build",
+		"typecheck": "pnpm -r typecheck",
+		"test:e2e": "playwright test",
+		"test:e2e:ui": "playwright test --ui",
+		"test:e2e:report": "playwright show-report",
+		"cloudflare": "cloudflared tunnel run --token eyJhIjoiMWNjODhhOWM4NDlkMThhZTViODE5M2NmMjAxMTQxZTgiLCJ0IjoiNDYxYjYyZTQtYWJjNS00OTcyLTk5NzMtZDA2NGUyMjA3MDg5IiwicyI6Ik16RTJPVFZtWm1ZdFpUSTVaQzAwTWpVeUxXSXlPVE10T0RObU16STRNR00zTkRVMyJ9"
+	},
+	"devDependencies": {
+		"@playwright/test": "^1.61.0",
+		"typescript": "^5.5.4"
+	}
 }

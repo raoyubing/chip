@@ -6,6 +6,7 @@ const apiTarget = process.env.VITE_API_TARGET || "http://localhost:5175";
 export default defineConfig({
   plugins: [react()],
   server: {
+    allowedHosts: ["chip.wingblog.top"],
     proxy: {
       "/api": apiTarget,
     },
