@@ -410,6 +410,9 @@ export interface AppState {
 
 export interface ResumeFilePayload {
   name: string;
+  candidateName?: string | null;
+  source?: string | null;
+  resumeText?: string;
   type?: string | null;
   content_type?: string | null;
   size?: number | null;
@@ -419,6 +422,15 @@ export interface ResumeFilePayload {
   object_key?: string | null;
   url?: string | null;
   view_url?: string | null;
+}
+
+export interface ParsedResumePayload {
+  file: ResumeFilePayload;
+  candidateName: string;
+  source: string;
+  resumeText: string;
+  extractionMethod: string;
+  warnings?: string[];
 }
 
 export type FileUploadScene = "default" | "resume" | "form_design" | "approval_item_icon" | "system_logo";

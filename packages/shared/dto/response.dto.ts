@@ -8,6 +8,10 @@ export declare namespace ResponseDTO {
     state: SchemaDTO.AppState;
   }
 
+  export interface ParseResumes {
+    resumes: SchemaDTO.ParsedResumePayload[];
+  }
+
   export type UploadFile = SchemaDTO.UploadedFile;
   export type GetFileViewUrl = SchemaDTO.FileViewUrl;
 

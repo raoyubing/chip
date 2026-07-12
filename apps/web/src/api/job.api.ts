@@ -7,6 +7,7 @@ export type JobPayload = RequestDTO.CreateJob;
 export type JobCopilotPayload = RequestDTO.JobCopilot;
 export type JobCopilotResult = ResponseDTO.JobCopilot;
 export type ResumeUploadPayload = RequestDTO.UploadResumes;
+export type ResumeParsePayload = RequestDTO.ParseResumes;
 
 export const jobApi = {
   state: () => request<ResponseDTO.GetState>("/api/state"),
@@ -18,6 +19,8 @@ export const jobApi = {
     request<ResponseDTO.JobCopilot>("/api/job-copilot", { method: "POST", body: JSON.stringify(payload) }),
   closeJob: (id: string) => request<ResponseDTO.MutateState>(`/api/jobs/${id}/close`, { method: "POST" }),
   deleteJob: (id: string) => request<ResponseDTO.MutateState>(`/api/jobs/${id}`, { method: "DELETE" }),
+  parseResumes: (payload: ResumeParsePayload) =>
+    request<ResponseDTO.ParseResumes>("/api/resumes/parse", { method: "POST", body: JSON.stringify(payload) }),
   uploadResumes: (jobId: string, payload: ResumeUploadPayload) =>
     request<ResponseDTO.UploadResumes>(`/api/jobs/${jobId}/resumes`, { method: "POST", body: JSON.stringify(payload) }),
   refreshSalary: (jobId: string, filters: SchemaDTO.SalaryFilters) =>

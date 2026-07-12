@@ -1,3 +1,8 @@
+import { spawn } from "node:child_process";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 export interface ResumeUploadFile {
   name: string;
   type?: string | null;
@@ -29,7 +34,9 @@ export async function extractResumeTextFromFile(file: ResumeUploadFile) {
 
   if (extension === "pdf" || mimeType === "application/pdf") {
     const pdfText = await extractPdfText(buffer);
-    return { text: pdfText || providedText, method: "pdf" as const };
+    if (pdfText) return { text: pdfText, method: "pdf" as const };
+    const ocrText = await extractPdfImageText(buffer);
+    return { text: ocrText || providedText, method: ocrText ? "image" as const : "pdf" as const };
   }
 
   if (extension === "docx") {
@@ -99,6 +106,42 @@ async function extractPdfText(buffer: Buffer) {
   }
 }
 
+async function extractPdfImageText(buffer: Buffer) {
+  const tempDir = await mkdtemp(join(tmpdir(), "resume-pdf-ocr-"));
+  try {
+    const pdfPath = join(tempDir, "resume.pdf");
+    const outputPrefix = join(tempDir, "page");
+    await writeFile(pdfPath, buffer);
+    await runCommand("pdftoppm", [
+      "-png",
+      "-r",
+      "180",
+      "-f",
+      "1",
+      "-l",
+      String(getPdfOcrMaxPages()),
+      pdfPath,
+      outputPrefix,
+    ], getPdfOcrTimeoutMs());
+
+    const imageFiles = (await readdir(tempDir))
+      .filter((fileName) => /^page-\d+\.png$/i.test(fileName) || /^page\.png$/i.test(fileName))
+      .sort((left, right) => left.localeCompare(right, "zh-Hans-CN", { numeric: true }));
+    const texts: string[] = [];
+    for (const imageFile of imageFiles) {
+      const imageBuffer = await readFile(join(tempDir, imageFile));
+      const text = await extractImageText(imageBuffer);
+      if (text) texts.push(text);
+      if (texts.join("\n").length >= 6000) break;
+    }
+    return normalizeExtractedText(texts.join("\n\n"));
+  } catch {
+    return "";
+  } finally {
+    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
 async function extractDocxText(buffer: Buffer) {
   try {
     const mammoth = await import("mammoth");
@@ -150,6 +193,45 @@ async function getOcrWorker() {
     })();
   }
   return ocrWorkerPromise;
+}
+
+function getPdfOcrMaxPages() {
+  const value = Number(process.env.RESUME_PDF_OCR_MAX_PAGES || 2);
+  if (!Number.isFinite(value)) return 2;
+  return Math.max(1, Math.min(5, Math.round(value)));
+}
+
+function getPdfOcrTimeoutMs() {
+  const value = Number(process.env.RESUME_PDF_OCR_TIMEOUT_MS || 20000);
+  if (!Number.isFinite(value)) return 20000;
+  return Math.max(5000, Math.min(60000, Math.round(value)));
+}
+
+function runCommand(command: string, args: string[], timeoutMs: number) {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
+    const stderrChunks: Buffer[] = [];
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error(`${command} 执行超时`));
+    }, timeoutMs);
+
+    child.stderr?.on("data", (chunk) => {
+      stderrChunks.push(Buffer.from(chunk));
+    });
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`${command} 执行失败：${Buffer.concat(stderrChunks).toString("utf8").trim() || code}`));
+    });
+  });
 }
 
 function normalizeExtractedText(text: string) {

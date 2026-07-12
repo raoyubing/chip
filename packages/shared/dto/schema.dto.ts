@@ -21,6 +21,7 @@ export declare namespace SchemaDTO {
   export type VoiceTranscriptSegment = Shared.VoiceTranscriptSegment;
   export type AppState = Shared.AppState;
   export type ResumeFilePayload = Shared.ResumeFilePayload;
+  export type ParsedResumePayload = Shared.ParsedResumePayload;
   export type FileUploadScene = Shared.FileUploadScene;
   export type UploadedFile = Shared.UploadedFile;
   export type FileViewUrl = Shared.FileViewUrl;

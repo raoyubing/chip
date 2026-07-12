@@ -121,6 +121,31 @@ function normalizeJobSalaryRangeInput(value: string) {
   return `${low}k - ${high}k`;
 }
 
+const resumeDocumentUploadErrorMessage = "简历文件仅支持 PDF、DOC、DOCX";
+const resumeDocumentAllowedExtensions = new Set(["pdf", "doc", "docx"]);
+const resumeDocumentAllowedMimeTypes = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
+
+function getUploadFileExtension(fileName: string) {
+  const match = fileName.toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match?.[1] || "";
+}
+
+function isAllowedResumeDocumentFile(file: { name?: string | null; type?: string | null; contentType?: string | null }) {
+  const extension = getUploadFileExtension(file.name || "");
+  if (resumeDocumentAllowedExtensions.has(extension)) return true;
+  return !extension && resumeDocumentAllowedMimeTypes.has((file.type || file.contentType || "").toLowerCase());
+}
+
+function buildUnsupportedResumeDocumentMessage(files: Array<{ name?: string | null }>) {
+  const names = files.map((file) => file.name).filter(Boolean).slice(0, 3).join("、");
+  const suffix = files.length > 3 ? " 等" : "";
+  return names ? `${resumeDocumentUploadErrorMessage}：${names}${suffix}` : resumeDocumentUploadErrorMessage;
+}
+
 const scoreWeightLabels: Array<[keyof Job["scoreWeights"], string]> = [
   ["experience", "经验匹配"],
   ["professional", "专业契合度"],
@@ -129,29 +154,35 @@ const scoreWeightLabels: Array<[keyof Job["scoreWeights"], string]> = [
   ["business", "业务导向"],
 ];
 
-const resumeSchema = z.object({
-  name: z.string().optional().default(""),
-  source: z.string().optional().default("本地上传"),
+const resumeFilePayloadSchema = z.object({
+  name: z.string(),
+  candidateName: z.string().optional().nullable(),
+  source: z.string().optional().nullable(),
   resumeText: z.string().optional().default(""),
-  duplicateAction: z.enum(["skip", "overwrite"]).optional().default("skip"),
-  files: z
-    .array(
-      z.object({
-        name: z.string(),
-        type: z.string().optional().nullable(),
-        content_type: z.string().optional().nullable(),
-        size: z.number().optional().nullable(),
-        text: z.string().optional().default(""),
-        dataBase64: z.string().optional().nullable(),
-        bucket: z.string().optional().nullable(),
-        object_key: z.string().optional().nullable(),
-        url: z.string().optional().nullable(),
-        view_url: z.string().optional().nullable(),
-      }),
-    )
-    .optional()
-    .default([]),
+  type: z.string().optional().nullable(),
+  content_type: z.string().optional().nullable(),
+  size: z.number().optional().nullable(),
+  text: z.string().optional().default(""),
+  dataBase64: z.string().optional().nullable(),
+  bucket: z.string().optional().nullable(),
+  object_key: z.string().optional().nullable(),
+  url: z.string().optional().nullable(),
+  view_url: z.string().optional().nullable(),
 });
+
+const resumeSchema = z.object({
+  duplicateAction: z.enum(["skip", "overwrite"]).optional().default("skip"),
+  files: z.array(resumeFilePayloadSchema.extend({
+    candidateName: z.string().min(1, "候选人姓名不能为空"),
+    source: z.string().min(1, "来源渠道不能为空"),
+    resumeText: z.string().min(1, "简历原文不能为空"),
+  })).min(1, "请至少上传一份简历"),
+});
+
+const resumeParseSchema = z.object({
+  files: z.array(resumeFilePayloadSchema).min(1).max(10),
+});
+type ResumeFileInput = z.infer<typeof resumeFilePayloadSchema>;
 
 const fileUploadSceneSchema = z.enum(["default", "resume", "form_design", "approval_item_icon", "system_logo"]).default("default");
 const uploadFileSchema = z.object({
@@ -240,6 +271,9 @@ server.post("/api/files/upload", async (request) => {
   const payload = uploadFileSchema.parse({
     scene: getMultipartFieldValue(file.fields, "scene") || "default",
   });
+  if (payload.scene === "resume" && !isAllowedResumeDocumentFile({ name: file.filename, type: file.mimetype })) {
+    throw server.httpErrors.badRequest(resumeDocumentUploadErrorMessage);
+  }
   const buffer = await file.toBuffer();
   return fileService.uploadFile({
     scene: payload.scene,
@@ -285,6 +319,15 @@ server.get("/api/files/stream", async (request, reply) => {
   }
 
   return reply.send(result.body);
+});
+
+server.post("/api/resumes/parse", async (request) => {
+  const body = resumeParseSchema.parse(request.body);
+  const unsupportedFiles = body.files.filter((file) => !isAllowedResumeDocumentFile({ name: file.name, type: file.type, contentType: file.content_type }));
+  if (unsupportedFiles.length) throw server.httpErrors.badRequest(buildUnsupportedResumeDocumentMessage(unsupportedFiles));
+
+  const resumes = await Promise.all(body.files.map((file) => parseResumePreview(file)));
+  return { resumes };
 });
 
 server.get("/api/state", async () => getState());
@@ -345,8 +388,8 @@ server.post("/api/jobs/:id/resumes", async (request) => {
   const job = getJob(params.id);
   if (!job) throw server.httpErrors.notFound("职位不存在");
   const body = resumeSchema.parse(request.body);
-  if (!body.resumeText && body.files.length === 0) throw server.httpErrors.badRequest("请提供简历文本或文件");
-  if (!body.files.length && !body.name) throw server.httpErrors.badRequest("文本录入请填写候选人姓名");
+  const unsupportedFiles = body.files.filter((file) => !isAllowedResumeDocumentFile({ name: file.name, type: file.type, contentType: file.content_type }));
+  if (unsupportedFiles.length) throw server.httpErrors.badRequest(buildUnsupportedResumeDocumentMessage(unsupportedFiles));
 
   const candidates = await buildCandidatesFromResumeInput(job, body);
   saveCandidatesWithDuplicateHandling(candidates, job.id, body.duplicateAction);
@@ -647,62 +690,77 @@ server.post("/api/candidates/:id/interview-plan", async (request) => {
   return { interviewPlan, state: getState() };
 });
 
+async function parseResumePreview(file: z.infer<typeof resumeParseSchema>["files"][number]) {
+  const extracted = await extractResumeTextSafely(file);
+  const fallbackText = `文件名：${file.name}\n文件类型：${file.type || file.content_type || "未知"}\n文件大小：${Math.max(1, Math.round((file.size || 0) / 1024))}KB\n系统未成功提取正文，请核验原始附件。`;
+  const rawResumeText = buildResumeDraftText(extracted.text, "") || fallbackText;
+  const resumeText = shouldUseDeepSeekResumeCleanup(extracted.method, rawResumeText)
+    ? await enrichResumeTextWithDeepSeek({
+      fileName: file.name,
+      fileType: file.type || file.content_type || "未知格式",
+      resumeText: rawResumeText,
+    })
+    : rawResumeText;
+
+  const ruleName = inferCandidateNameFromResumeText(resumeText)
+    || inferCandidateNameFromFileNameStrict(file.name.replace(/\.[^.]+$/, ""));
+  const ruleSource = inferResumeSource(`${file.name}\n${resumeText}`);
+  const needsDeepSeekMeta = !ruleName || !ruleSource || resumeText === fallbackText;
+  const deepSeekMeta = needsDeepSeekMeta
+    ? await inferResumeMetaWithDeepSeek({
+      fileName: file.name,
+      fileType: file.type || file.content_type || "未知格式",
+      resumeText,
+    })
+    : {};
+  const reliableName = deepSeekMeta.candidateName || ruleName;
+  const candidateName = normalizeCandidateName(reliableName || inferCandidateName(file.name.replace(/\.[^.]+$/, "")));
+  const source = normalizeResumeSource(deepSeekMeta.source || ruleSource) || "本地上传";
+  const warnings = [
+    reliableName ? "" : "未能可靠识别候选人姓名，请手动核验。",
+    source === "本地上传" ? "未能从文件识别来源渠道，已默认本地上传。" : "",
+    resumeText === fallbackText ? "未能提取简历正文，请手动核验或补充。" : "",
+  ].filter(Boolean);
+
+  return {
+    file: {
+      ...file,
+      candidateName,
+      source,
+      resumeText,
+    },
+    candidateName,
+    source,
+    resumeText,
+    extractionMethod: extracted.method,
+    warnings,
+  };
+}
+
 async function buildCandidatesFromResumeInput(
   job: Job,
   input: z.infer<typeof resumeSchema>,
 ): Promise<Candidate[]> {
-  const source = input.source || "本地上传";
-  if (input.files.length) {
-    const built: Candidate[] = [];
-    for (const file of input.files) {
-      const fileNameWithoutExt = file.name.replace(/\.[^.]+$/, "");
-      const extracted = await extractResumeTextSafely(file);
-      const mergedText = buildResumeDraftText(extracted.text, input.resumeText);
-      const normalizedResumeText = mergedText
-        || `文件名：${file.name}\n文件类型：${file.type || "未知"}\n文件大小：${Math.max(1, Math.round((file.size || 0) / 1024))}KB\n系统未成功提取正文，请核验原始附件。`;
-      const resumeText = shouldUseDeepSeekResumeCleanup(extracted.method, normalizedResumeText)
-        ? await enrichResumeTextWithDeepSeek({
-          fileName: file.name,
-          fileType: file.type || "未知格式",
-          resumeText: normalizedResumeText,
-        })
-        : normalizedResumeText;
-      const candidate = createCandidate({
-        id: `c_${Date.now()}_${nanoid(6)}`,
-        job,
-        name: input.name || inferCandidateName(fileNameWithoutExt),
-        source: `${source} · ${file.name}`,
-        resumeText,
-        fileName: file.name,
-        fileType: file.type || file.content_type || "未知格式",
-        fileSize: file.size || 0,
-        fileDataBase64: file.object_key ? null : file.dataBase64 || null,
-        fileObjectKey: file.object_key || null,
-        fileUrl: file.url || null,
-      });
-      built.push(await enrichCandidateAssessmentWithDeepSeek(candidate, job));
-    }
-    return built;
+  const built: Candidate[] = [];
+  for (const file of input.files) {
+    const resumeText = buildResumeDraftText(file.resumeText, "");
+    const sourceLabel = normalizeResumeSource(file.source) || "本地上传";
+    const candidate = createCandidate({
+      id: `c_${Date.now()}_${nanoid(6)}`,
+      job,
+      name: normalizeCandidateName(file.candidateName) || inferCandidateName(file.name.replace(/\.[^.]+$/, "")),
+      source: `${sourceLabel} · ${file.name}`,
+      resumeText,
+      fileName: file.name,
+      fileType: file.type || file.content_type || "未知格式",
+      fileSize: file.size || 0,
+      fileDataBase64: file.object_key ? null : file.dataBase64 || null,
+      fileObjectKey: file.object_key || null,
+      fileUrl: file.url || null,
+    });
+    built.push(await enrichCandidateAssessmentWithDeepSeek(candidate, job));
   }
-
-  const baseResumeText = buildResumeDraftText("", input.resumeText);
-  const resumeText = shouldUseDeepSeekResumeCleanup("text", baseResumeText)
-    ? await enrichResumeTextWithDeepSeek({
-      fileName: input.name || "文本录入",
-      fileType: "text/plain",
-      resumeText: baseResumeText,
-    })
-    : baseResumeText;
-  const candidate = createCandidate({
-    id: `c_${Date.now()}_${nanoid(6)}`,
-    job,
-    name: input.name,
-    source,
-    resumeText,
-  });
-  return [
-    await enrichCandidateAssessmentWithDeepSeek(candidate, job),
-  ];
+  return built;
 }
 
 function buildResumeDraftText(primaryText: string, supplementalText: string) {
@@ -730,7 +788,7 @@ function shouldUseDeepSeekResumeCleanup(
   return false;
 }
 
-async function extractResumeTextSafely(file: z.infer<typeof resumeSchema>["files"][number]) {
+async function extractResumeTextSafely(file: ResumeFileInput) {
   const fallbackText = buildResumeDraftText(file.text || "", "");
   try {
     const resolvedFile = await resolveResumeFileForExtraction(file);
@@ -752,7 +810,7 @@ async function extractResumeTextSafely(file: z.infer<typeof resumeSchema>["files
   }
 }
 
-async function resolveResumeFileForExtraction(file: z.infer<typeof resumeSchema>["files"][number]) {
+async function resolveResumeFileForExtraction(file: ResumeFileInput) {
   const contentType = file.type || file.content_type || null;
   if (file.dataBase64 || !file.object_key) {
     return {
@@ -785,6 +843,44 @@ function inferCandidateName(fileName: string) {
     .filter(Boolean);
   const nameLikeParts = parts.filter(isLikelyChineseName);
   return nameLikeParts.at(-1) || parts.at(-1) || cleaned || fileName || "未命名候选人";
+}
+
+function inferCandidateNameFromFileNameStrict(fileName: string) {
+  const cleaned = fileName
+    .replace(/简历|个人简历|个人|求职|resume|cv|附件/gi, "")
+    .replace(/[（(].*?[）)]/g, " ")
+    .trim();
+  const parts = cleaned
+    .split(/[\s_\-—–+·、，,（）()\[\]【】]+/)
+    .map(normalizeCandidateName)
+    .filter(Boolean);
+  return parts.filter(isLikelyChineseName).at(-1) || "";
+}
+
+function inferCandidateNameFromResumeText(text: string) {
+  const explicitMatch = text.match(/(?:^|\n)\s*(?:姓名|候选人|应聘者|名字|Name)\s*[:：]\s*([\u4e00-\u9fa5·]{2,6}|[A-Za-z][A-Za-z\s.]{1,40})/i);
+  if (explicitMatch?.[1]) return normalizeCandidateName(explicitMatch[1]);
+  const header = text.split(/\n/).map((line) => line.trim()).filter(Boolean).slice(0, 8);
+  const nameLine = header
+    .map((line) => normalizeCandidateName(line.replace(/[|｜].*$/, "")))
+    .find(isLikelyChineseName);
+  return nameLine || "";
+}
+
+function normalizeResumeSource(value?: string | null) {
+  const source = String(value || "").trim();
+  if (!source) return "";
+  if (/boss|BOSS|直聘/i.test(source)) return "BOSS";
+  if (/智联|zhaopin/i.test(source)) return "智联";
+  if (/猎聘|liepin/i.test(source)) return "猎聘";
+  if (/前程无忧|51job/i.test(source)) return "前程无忧";
+  if (/内推|推荐/.test(source)) return "内推";
+  if (/本地|上传|其他/.test(source)) return "本地上传";
+  return source.slice(0, 20);
+}
+
+function inferResumeSource(text: string) {
+  return normalizeResumeSource(text.match(/BOSS直聘|BOSS|智联招聘|智联|猎聘|前程无忧|51job|内推|推荐|本地上传/i)?.[0] || "");
 }
 
 function normalizeCandidateName(value: string) {
@@ -916,6 +1012,58 @@ async function enrichResumeTextWithDeepSeek(input: {
   } catch (error) {
     requestLog("deepseek_resume_enrich_exception", { message: error instanceof Error ? error.message : String(error) });
     return normalized;
+  }
+}
+
+async function inferResumeMetaWithDeepSeek(input: {
+  fileName: string;
+  fileType: string;
+  resumeText: string;
+}): Promise<{ candidateName?: string; source?: string }> {
+  if (!deepseekApiKey) return {};
+  const normalized = input.resumeText.trim();
+  const prompt = [
+    "请你从简历文件名和简历原文中识别候选人姓名与来源渠道。",
+    "严格输出 JSON，对象字段仅包含 candidateName(string) 和 source(string)。",
+    "规则：",
+    "1. candidateName 只能来自文件名或正文明确出现的信息，不确定则空字符串。",
+    "2. source 优先识别为 BOSS、智联、猎聘、前程无忧、内推、本地上传、其他；不确定则空字符串。",
+    "3. 不要编造姓名，不要把岗位名称、城市、公司名当作姓名。",
+    "",
+    `文件名: ${input.fileName}`,
+    `文件类型: ${input.fileType}`,
+    "简历原文节选：",
+    normalized.slice(0, 3000),
+  ].join("\n");
+
+  try {
+    const response = await deepseekJsonRequest({
+      systemPrompt: "你是严谨的招聘资料结构化助手，只做字段抽取，不做推测。",
+      userPrompt: prompt,
+      temperature: 0,
+      timeoutMs: deepseekResumeTimeoutMs,
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      requestLog("deepseek_resume_meta_error", { status: response.status, text });
+      return {};
+    }
+    const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+    const content = data.choices?.[0]?.message?.content;
+    if (!content) return {};
+    const parsed = safeJsonParse(content);
+    const schema = z.object({
+      candidateName: z.string().default(""),
+      source: z.string().default(""),
+    });
+    const result = schema.parse(parsed);
+    return {
+      candidateName: normalizeCandidateName(result.candidateName),
+      source: normalizeResumeSource(result.source),
+    };
+  } catch (error) {
+    requestLog("deepseek_resume_meta_exception", { message: error instanceof Error ? error.message : String(error) });
+    return {};
   }
 }
 

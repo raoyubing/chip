@@ -17,11 +17,12 @@ export declare namespace RequestDTO {
   }
 
   export interface UploadResumes {
-    name?: string;
-    source?: string;
-    resumeText?: string;
-    files?: SchemaDTO.ResumeFilePayload[];
+    files: SchemaDTO.ResumeFilePayload[];
     duplicateAction?: "skip" | "overwrite";
+  }
+
+  export interface ParseResumes {
+    files: SchemaDTO.ResumeFilePayload[];
   }
 
   export interface UploadFile {

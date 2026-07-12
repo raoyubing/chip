@@ -1,1 +1,2 @@
-- 多简历上传
+- OCR改成 paddle ocr 6 ,模型下载到app/server/models
+- 音频模型后边找找有没有合适的实时tts模型

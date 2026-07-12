@@ -87,22 +87,47 @@ type Modal =
 
 function confirmAction(title: string, content: React.ReactNode) {
   return new Promise<boolean>((resolve) => {
+    if (typeof document === "undefined") {
+      resolve(false);
+      return;
+    }
+
     let settled = false;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
     const settle = (value: boolean) => {
       if (settled) return;
       settled = true;
+      root.unmount();
+      host.remove();
       resolve(value);
     };
 
-    ArcoModal.confirm({
-      title,
-      content,
-      okText: "确认",
-      cancelText: "取消",
-      maskClosable: false,
-      onOk: () => settle(true),
-      onCancel: () => settle(false),
-    });
+    function ConfirmDialog() {
+      useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+          if (event.key === "Escape") settle(false);
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+      }, []);
+
+      return (
+        <div className="app-confirm-mask" role="presentation">
+          <section className="app-confirm-dialog" role="dialog" aria-modal="true" aria-label={title}>
+            <div className="app-confirm-title">{title}</div>
+            <div className="app-confirm-content">{content}</div>
+            <div className="app-confirm-actions">
+              <Button className="btn" type="button" onClick={() => settle(false)}>取消</Button>
+              <Button className="btn primary" type="button" onClick={() => settle(true)}>确认</Button>
+            </div>
+          </section>
+        </div>
+      );
+    }
+
+    root.render(<ConfirmDialog />);
   });
 }
 
@@ -128,6 +153,8 @@ function App() {
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
   const [modal, setModal] = useState<Modal>(null);
   const [toast, setToast] = useState("");
+  const [dashboardGranularity, setDashboardGranularity] = useState<AnalyticsGranularity>("month");
+  const [dashboardSelectedPeriod, setDashboardSelectedPeriod] = useState("");
 
   useEffect(() => {
     void loadState();
@@ -276,6 +303,17 @@ function App() {
   }
 
   const ongoingJobs = state?.jobs.filter((job) => job.status === "招聘中") || [];
+  const dashboardCandidates = useMemo(() => state ? Object.values(state.candidates).flat() : [] as Candidate[], [state]);
+  const dashboardPeriodOptions = useMemo(
+    () => getAnalyticsPeriodOptions(dashboardCandidates, dashboardGranularity),
+    [dashboardCandidates, dashboardGranularity],
+  );
+
+  useEffect(() => {
+    if (!dashboardSelectedPeriod || !dashboardPeriodOptions.some((option) => option.value === dashboardSelectedPeriod)) {
+      setDashboardSelectedPeriod(dashboardPeriodOptions[0]?.value || "");
+    }
+  }, [dashboardPeriodOptions, dashboardSelectedPeriod]);
 
   useEffect(() => {
     if (!ongoingJobs.length) {
@@ -354,6 +392,7 @@ function App() {
 
   const title = views.find(([view]) => view === activeView)?.[1] || "工作台概览";
   const showJobSwitcher = activeView === "jobs" || activeView === "candidates";
+  const showDashboardFilters = activeView === "dashboard";
 
   return (
     <div className="app-shell min-w-0">
@@ -371,7 +410,7 @@ function App() {
         </nav>
       </aside>
 
-      <main className="main">
+      <main className={`main main-${activeView}`}>
         <header className="topbar">
           <div className="page-heading">
             <h2>{title}</h2>
@@ -386,10 +425,31 @@ function App() {
               />
             </div>
           )}
+          {showDashboardFilters && (
+            <div className="topbar-actions dashboard-topbar-actions">
+              <AnalyticsPeriodFilters
+                granularity={dashboardGranularity}
+                onGranularityChange={setDashboardGranularity}
+                selectedPeriod={dashboardSelectedPeriod}
+                onPeriodChange={setDashboardSelectedPeriod}
+                periodOptions={dashboardPeriodOptions}
+                onClearData={clearData}
+              />
+            </div>
+          )}
         </header>
 
-        <section className="content">
-          {activeView === "dashboard" && <Dashboard state={state} currentJob={currentJob} onJump={setActiveView} onClearData={clearData} onSelectJob={changeJob} />}
+        <section className={`content content-${activeView}`}>
+          {activeView === "dashboard" && (
+            <Dashboard
+              state={state}
+              currentJob={currentJob}
+              onJump={setActiveView}
+              onSelectJob={changeJob}
+              granularity={dashboardGranularity}
+              selectedPeriod={dashboardSelectedPeriod}
+            />
+          )}
           {activeView === "jobs" && <JobsView state={state} currentJob={currentJob} onSelect={changeJob} onEdit={(job) => setModal({ type: "job", job })} onCreate={() => setModal({ type: "job" })} onCloseJob={closeJob} onDelete={deleteJob} />}
           {activeView === "candidates" && <CandidatesView candidates={currentCandidates} selectedId={selectedCandidateId} onSelect={setSelectedCandidateId} onUpload={() => setModal({ type: "resume" })} onMark={markInterview} onAddToTalentPool={addToTalentPool} onDelete={deleteCandidate} currentJob={currentJob} onStateChange={setRemoteState} />}
           {activeView === "talent" && <TalentPoolView jobs={state.jobs} currentJob={currentJob} candidatesByJob={state.candidates} onStateChange={setRemoteState} onToast={showToast} />}
@@ -848,21 +908,70 @@ function SectionTabs({ value, options, onChange, ariaLabel }: {
   );
 }
 
-function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { state: AppState; currentJob: Job; onJump: (view: View) => void; onClearData: () => void; onSelectJob: (jobId: string) => Promise<void> }) {
+function AnalyticsPeriodFilters({
+  granularity,
+  onGranularityChange,
+  selectedPeriod,
+  onPeriodChange,
+  periodOptions,
+  onClearData,
+}: {
+  granularity: AnalyticsGranularity;
+  onGranularityChange: (value: AnalyticsGranularity) => void;
+  selectedPeriod: string;
+  onPeriodChange: (value: string) => void;
+  periodOptions: Array<{ value: string; label: string }>;
+  onClearData: () => void;
+}) {
+  return (
+    <div className="analytics-filters dashboard-global-filters">
+      <div className="segmented-control">
+        {([
+          ["month", "月数据"],
+          ["quarter", "季度数据"],
+          ["year", "年数据"],
+        ] as Array<[AnalyticsGranularity, string]>).map(([value, label]) => (
+          <Button
+            key={value}
+            type="button"
+            className={`segment ${granularity === value ? "active" : ""}`}
+            onClick={() => onGranularityChange(value)}
+          >
+            {label}
+          </Button>
+        ))}
+      </div>
+      <label className="interview-filter-field">
+        <span>{granularity === "month" ? "统计月份" : granularity === "quarter" ? "统计季度" : "统计年份"}</span>
+        <Select value={selectedPeriod} onChange={(event) => onPeriodChange(event.target.value)}>
+          {periodOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+        </Select>
+      </label>
+      <Button className="btn ghost" onClick={onClearData}>清空本地数据</Button>
+    </div>
+  );
+}
+
+function Dashboard({
+  state,
+  currentJob,
+  onJump,
+  onSelectJob,
+  granularity,
+  selectedPeriod,
+}: {
+  state: AppState;
+  currentJob: Job;
+  onJump: (view: View) => void;
+  onSelectJob: (jobId: string) => Promise<void>;
+  granularity: AnalyticsGranularity;
+  selectedPeriod: string;
+}) {
   const candidates = Object.values(state.candidates).flat();
-  const [granularity, setGranularity] = useState<AnalyticsGranularity>("month");
-  const periodOptions = useMemo(() => getAnalyticsPeriodOptions(candidates, granularity), [candidates, granularity]);
-  const [selectedPeriod, setSelectedPeriod] = useState<string>(() => getLatestPeriodValue(candidates, "month") || "");
   const [focusJobId, setFocusJobId] = useState(currentJob.id);
   const [insightJobId, setInsightJobId] = useState<string>("all");
   const [selectedChannel, setSelectedChannel] = useState<string>("");
   const [activeSection, setActiveSection] = useState<"overview" | "jobs" | "flow" | "actions">("overview");
-
-  useEffect(() => {
-    if (!selectedPeriod || !periodOptions.some((option) => option.value === selectedPeriod)) {
-      setSelectedPeriod(periodOptions[0]?.value || "");
-    }
-  }, [periodOptions, selectedPeriod]);
 
   useEffect(() => {
     setFocusJobId(currentJob.id);
@@ -874,6 +983,10 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
 
   const overview = buildRecruitmentAnalytics(filteredCandidates);
   const activeJobs = state.jobs.filter((job) => job.status === "招聘中");
+  const periodActiveJobs = activeJobs.map((job) => ({
+    ...job,
+    resumeCount: filteredCandidates.filter((candidate) => candidate.jobId === job.id).length,
+  }));
   const previousPeriod = getPreviousPeriodValue(selectedPeriod, granularity);
   const previousCandidates = useMemo(() => {
     if (!previousPeriod) return [] as Candidate[];
@@ -899,7 +1012,7 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
     .slice(0, 3);
   const durationEmptyRows = durationAnalytics.rows.filter((item) => item.level === "empty").slice(0, 1);
   const durationPyramidRows = durationAnalytics.rows.slice(0, 4);
-  const actionPlan = buildRecruitmentActionPlan({ activeJobs: insightJobId === "all" ? activeJobs : activeJobs.filter((job) => job.id === insightJobId), channelAnalytics, durationAnalytics, issueReview });
+  const actionPlan = buildRecruitmentActionPlan({ activeJobs: insightJobId === "all" ? periodActiveJobs : periodActiveJobs.filter((job) => job.id === insightJobId), channelAnalytics, durationAnalytics, issueReview });
   const currentComparisonCandidates = filterCandidatesByJobScope(filteredCandidates, insightJobId);
   const previousComparisonCandidates = filterCandidatesByJobScope(previousCandidates, insightJobId);
   const periodComparison = buildPeriodComparison(currentComparisonCandidates, previousComparisonCandidates);
@@ -946,40 +1059,6 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
           <section className="card dashboard-summary-card"><span className="dashboard-summary-label">实际入职人数</span><strong className="dashboard-summary-value">{completedOffers}</strong><span className="dashboard-summary-extra">{overview.recommendedTotal ? `录用转化 ${formatPercent(overview.hiredCount, overview.recommendedTotal)}` : "暂无数据"}</span></section>
         </div>
       ) : null}
-
-      <section className="card pad analytics-toolbar-card">
-        <div className="toolbar analytics-toolbar">
-          <div>
-            <h3 className="card-title">招聘周期复盘</h3>
-            <p className="helper-text">关联面试管理中的统计月份，用于月度、季度、年度招聘复盘与阶段漏斗分析。</p>
-          </div>
-          <div className="toolbar-right analytics-filters">
-            <div className="segmented-control">
-              {([
-                ["month", "月数据"],
-                ["quarter", "季度数据"],
-                ["year", "年数据"],
-              ] as Array<[AnalyticsGranularity, string]>).map(([value, label]) => (
-                <Button
-                  key={value}
-                  type="button"
-                  className={`segment ${granularity === value ? "active" : ""}`}
-                  onClick={() => setGranularity(value)}
-                >
-                  {label}
-                </Button>
-              ))}
-            </div>
-            <label className="interview-filter-field">
-              <span>{granularity === "month" ? "统计月份" : granularity === "quarter" ? "统计季度" : "统计年份"}</span>
-              <Select value={selectedPeriod} onChange={(event) => setSelectedPeriod(event.target.value)}>
-                {periodOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-              </Select>
-            </label>
-            <Button className="btn ghost" onClick={onClearData}>清空本地数据</Button>
-          </div>
-        </div>
-      </section>
 
       {activeSection === "overview" ? <section className="card pad analytics-toolbar-card section-panel-enter">
         <div className="analytics-table-head">
@@ -1054,7 +1133,7 @@ function Dashboard({ state, currentJob, onJump, onClearData, onSelectJob }: { st
 
       {activeSection === "jobs" ? <div className="grid dashboard-job-analysis-stack section-panel-enter">
         <div className="grid cols-2 dashboard-job-overview-grid">
-          <section className="card"><CardHeader title="职位简历量" desc="所有在招岗位的简历量情况" /><JobBarChart jobs={activeJobs} /></section>
+          <section className="card"><CardHeader title="职位简历量" desc={`按当前${formatAnalyticsGranularity(granularity)}筛选统计在招岗位简历量`} /><JobBarChart jobs={periodActiveJobs} /></section>
           <section className="card pad pending-onboard-card">
             <CardHeader title="复试通过后未入职原因占比" desc="按部门与面试管理 offer 标签统计全部岗位未入职原因；上表看部门问题分布，下图看整体原因占比。" />
             {pendingOnboardAnalytics.total ? (
@@ -1420,7 +1499,7 @@ function JobsView({
             <p className="helper-text">默认聚焦招聘中岗位，已关闭岗位会归档保留。</p>
           </div>
           <div className="toolbar-right">
-            <Button className="btn" onClick={() => downloadJson(state)}>导出数据</Button>
+            <Button className="btn" onClick={() => downloadJobsExcel(visibleJobs, statusFilter)}>导出Excel</Button>
             <Button className="btn primary" onClick={onCreate}>新增职位</Button>
           </div>
         </div>
@@ -1505,10 +1584,10 @@ function CandidatesView({ candidates, selectedId, onSelect, onUpload, onMark, on
     setDetailTab(tab);
   };
 
-  return <>
-    <section className="card pad"><div className="toolbar"><div><h3 className="card-title">{currentJob.title} · 简历甄选</h3><p className="helper-text">按当前职位查看候选人，并基于岗位关键考核点生成分析。</p></div><div className="toolbar-right"><Button className="btn primary" onClick={onUpload}>上传/录入简历</Button></div></div></section>
-    <div className="candidate-layout"><section className="card pad">{sortedCandidates.length ? <div className="candidate-list">{sortedCandidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} selected={candidate.id === selected?.id} onSelect={() => selectCandidate(candidate.id)} onOpenResume={() => selectCandidate(candidate.id, "resume")} />)}</div> : <div className="empty"><div><strong>暂无简历</strong><br />点击“上传/录入简历”添加候选人。</div></div>}</section><section key={selected?.id || "empty"} className="card pad candidate-detail-card">{selected ? <CandidateDetail candidate={selected} activeTab={detailTab} onTabChange={setDetailTab} onMark={onMark} onAddToTalentPool={onAddToTalentPool} onDelete={onDelete} onStateChange={onStateChange} currentJob={currentJob} /> : <div className="empty"><div><strong>暂无候选人详情</strong><br />上传或录入简历后可查看甄选结论。</div></div>}</section></div>
-  </>;
+  return <div className="candidates-view">
+    <section className="card pad"><div className="toolbar"><div><h3 className="card-title">{currentJob.title} · 简历甄选</h3><p className="helper-text">按当前职位查看候选人，并基于岗位关键考核点生成分析。</p></div><div className="toolbar-right"><Button className="btn primary" onClick={onUpload}>批量上传简历</Button></div></div></section>
+    <div className="candidate-layout"><section className="card pad">{sortedCandidates.length ? <div className="candidate-list">{sortedCandidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} selected={candidate.id === selected?.id} onSelect={() => selectCandidate(candidate.id)} onOpenResume={() => selectCandidate(candidate.id, "resume")} />)}</div> : <div className="empty"><div><strong>暂无简历</strong><br />点击“批量上传简历”添加候选人。</div></div>}</section><section key={selected?.id || "empty"} className="card pad candidate-detail-card">{selected ? <CandidateDetail candidate={selected} activeTab={detailTab} onTabChange={setDetailTab} onMark={onMark} onAddToTalentPool={onAddToTalentPool} onDelete={onDelete} onStateChange={onStateChange} currentJob={currentJob} /> : <div className="empty"><div><strong>暂无候选人详情</strong><br />批量上传简历后可查看甄选结论。</div></div>}</section></div>
+  </div>;
 }
 
 function CandidateCard({ candidate, selected, onSelect, onOpenResume }: { candidate: Candidate; selected: boolean; onSelect: () => void; onOpenResume: () => void }) {
@@ -4406,7 +4485,7 @@ function VoiceParseView({
   );
 
   return (
-    <div className="voice-page">
+    <div className={`voice-page voice-page-${activeVoiceSection}`}>
       <SectionTabs
         ariaLabel="访音解析内容分区"
         value={activeVoiceSection}
@@ -5834,25 +5913,91 @@ type ResumeUploadItem = {
   name: string;
   type: string;
   size: number;
-  status: "uploading" | "done" | "error";
+  status: "uploading" | "parsing" | "ready" | "error";
   uploaded?: UploadedFile;
+  candidateName: string;
+  source: string;
+  resumeText: string;
+  extractionMethod?: string;
+  warnings?: string[];
   error?: string;
 };
 
-function findUploadDuplicateCandidates(candidates: Candidate[], input: { name: string; resumeText: string; files: UploadedFile[] }) {
-  const incomingItems: CandidateIdentityLike[] = input.files.length
-    ? input.files.map((file) => ({
-      name: input.files.length === 1 && input.name ? input.name : inferCandidateNameFromFileName(file.name),
-      resumeText: input.resumeText,
-      fileName: file.name,
-      fileSize: file.size,
-      fileObjectKey: file.object_key,
-      fileUrl: file.url,
-    })).filter((item) => item.name)
-    : [{
-      name: input.name || inferCandidateNameFromResumeText(input.resumeText),
-      resumeText: input.resumeText,
-    }].filter((item) => item.name);
+const resumeUploadAccept = ".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+const resumeUploadAllowedExtensions = new Set(["pdf", "doc", "docx"]);
+const resumeUploadAllowedMimeTypes = new Set([
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+]);
+const resumeSourceOptions = [
+  "BOSS",
+  "智联",
+  "猎聘",
+  "前程无忧",
+  "拉勾",
+  "脉脉",
+  "LinkedIn",
+  "内推",
+  "校园招聘",
+  "官网投递",
+  "人才库",
+  "本地上传",
+  "其他",
+];
+const resumeSourceAliases: Readonly<Record<string, string>> = {
+  boss: "BOSS",
+  BOSS直聘: "BOSS",
+  直聘: "BOSS",
+  智联招聘: "智联",
+  zhaopin: "智联",
+  猎聘网: "猎聘",
+  liepin: "猎聘",
+  "51job": "前程无忧",
+  前程: "前程无忧",
+  前程无忧51job: "前程无忧",
+  拉勾网: "拉勾",
+  lagou: "拉勾",
+  linkedin: "LinkedIn",
+  领英: "LinkedIn",
+};
+
+function getUploadFileExtension(fileName: string) {
+  const match = fileName.toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match?.[1] || "";
+}
+
+function isAllowedResumeUploadFile(file: Pick<File, "name" | "type">) {
+  const extension = getUploadFileExtension(file.name);
+  if (resumeUploadAllowedExtensions.has(extension)) return true;
+  return !extension && resumeUploadAllowedMimeTypes.has((file.type || "").toLowerCase());
+}
+
+function buildUnsupportedResumeFileMessage(files: Pick<File, "name">[]) {
+  const names = files.map((file) => file.name).filter(Boolean).slice(0, 3).join("、");
+  const suffix = files.length > 3 ? " 等" : "";
+  return names
+    ? `仅支持上传 PDF、DOC、DOCX 文件，已忽略：${names}${suffix}`
+    : "仅支持上传 PDF、DOC、DOCX 文件";
+}
+
+function normalizeResumeSourceOption(value: string) {
+  const normalized = value.trim();
+  if (!normalized) return "";
+  return resumeSourceAliases[normalized] || resumeSourceAliases[normalized.toLowerCase()] || normalized;
+}
+
+function findUploadDuplicateCandidates(candidates: Candidate[], items: Array<ResumeUploadItem & { uploaded: UploadedFile }>) {
+  const incomingItems: CandidateIdentityLike[] = items
+    .map((item) => ({
+      name: item.candidateName,
+      resumeText: item.resumeText,
+      fileName: item.uploaded.name,
+      fileSize: item.uploaded.size,
+      fileObjectKey: item.uploaded.object_key,
+      fileUrl: item.uploaded.url,
+    }))
+    .filter((item) => item.name);
 
   const duplicates = incomingItems
     .map((item) => findDuplicateCandidateInList(candidates, item))
@@ -5860,35 +6005,66 @@ function findUploadDuplicateCandidates(candidates: Candidate[], input: { name: s
   return Array.from(new Map(duplicates.map((candidate) => [candidate.id, candidate])).values());
 }
 
+function ResumeSourceSelect({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [inputValue, setInputValue] = useState("");
+  const selectedValue = normalizeResumeSourceOption(value);
+  const options = useMemo(() => {
+    const normalizedValue = normalizeResumeSourceOption(value);
+    const sourceValues = normalizedValue && !resumeSourceOptions.includes(normalizedValue)
+      ? [normalizedValue, ...resumeSourceOptions]
+      : resumeSourceOptions;
+    return sourceValues.map((source) => ({ value: source, label: source }));
+  }, [value]);
+
+  function commitInputValue() {
+    const nextValue = inputValue.trim();
+    if (!nextValue) return;
+    onChange(normalizeResumeSourceOption(nextValue));
+    setInputValue("");
+  }
+
+  return (
+    <ArcoSelect
+      allowCreate
+      showSearch
+      className="resume-source-select"
+      value={selectedValue || undefined}
+      inputValue={inputValue}
+      options={options}
+      placeholder="搜索或输入来源渠道"
+      notFoundContent="输入后回车可新增来源渠道"
+      onChange={(next) => {
+        onChange(normalizeResumeSourceOption(String(next || "")));
+        setInputValue("");
+      }}
+      onInputValueChange={(next, reason) => {
+        setInputValue(reason === "optionListHide" ? "" : next);
+      }}
+      onBlur={commitInputValue}
+    />
+  );
+}
+
 function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidates: Candidate[]; onClose: () => void; onSaved: (state: AppState) => void }) {
-  const [name, setName] = useState("");
-  const [nameTouched, setNameTouched] = useState(false);
-  const [nameAutoFilled, setNameAutoFilled] = useState(false);
-  const [source, setSource] = useState("BOSS");
-  const [resumeText, setResumeText] = useState("");
   const [uploadItems, setUploadItems] = useState<ResumeUploadItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const hasUploading = uploadItems.some((item) => item.status === "uploading");
+  const hasProcessing = uploadItems.some((item) => item.status === "uploading" || item.status === "parsing");
   const hasUploadError = uploadItems.some((item) => item.status === "error");
-  const uploadedFiles = uploadItems
-    .filter((item): item is ResumeUploadItem & { uploaded: UploadedFile } => item.status === "done" && Boolean(item.uploaded))
-    .map((item) => item.uploaded);
+  const readyItems = uploadItems
+    .filter((item): item is ResumeUploadItem & { uploaded: UploadedFile } => item.status === "ready" && Boolean(item.uploaded));
+
+  function updateUploadItem(id: string, patch: Partial<ResumeUploadItem>) {
+    setUploadItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
+  }
 
   function handleFilesChange(fileList: File[]) {
-    setError("");
-    const nextFileCount = uploadItems.length + fileList.length;
-    const inferredName = nextFileCount === 1 ? inferCandidateNameFromFileName(fileList[0]?.name || "") : "";
-    if (!nameTouched) {
-      if (inferredName) {
-        setName(inferredName);
-        setNameAutoFilled(true);
-      } else if (nameAutoFilled && nextFileCount !== 1) {
-        setName("");
-        setNameAutoFilled(false);
-      }
-    }
-    fileList.forEach((file) => {
+    const acceptedFiles = fileList.filter(isAllowedResumeUploadFile);
+    const rejectedFiles = fileList.filter((file) => !isAllowedResumeUploadFile(file));
+    setError(rejectedFiles.length ? buildUnsupportedResumeFileMessage(rejectedFiles) : "");
+    if (!acceptedFiles.length) return;
+
+    acceptedFiles.forEach((file) => {
       const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
       const item: ResumeUploadItem = {
         id,
@@ -5896,49 +6072,40 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
         type: file.type || "未知格式",
         size: file.size,
         status: "uploading",
+        candidateName: "",
+        source: "",
+        resumeText: "",
       };
       setUploadItems((current) => [...current, item]);
-      void api.uploadFile(file, "resume").then((uploaded) => {
-        setUploadItems((current) => current.map((currentItem) => (
-          currentItem.id === id
-            ? { ...currentItem, status: "done", uploaded, name: uploaded.name, type: uploaded.content_type || currentItem.type, size: uploaded.size }
-            : currentItem
-        )));
-      }).catch((uploadError) => {
-        setUploadItems((current) => current.map((currentItem) => (
-          currentItem.id === id
-            ? { ...currentItem, status: "error", error: uploadError instanceof Error ? uploadError.message : "上传失败" }
-            : currentItem
-        )));
-      });
+      void api.uploadFile(file, "resume")
+        .then(async (uploaded) => {
+          updateUploadItem(id, { status: "parsing", uploaded, name: uploaded.name, type: uploaded.content_type || item.type, size: uploaded.size });
+          const parsedResult = await api.parseResumes({ files: [uploadedFileToResumePayload(uploaded)] });
+          const parsed = parsedResult.resumes[0];
+          if (!parsed) throw new Error("简历解析失败，请重试");
+          updateUploadItem(id, {
+            status: "ready",
+            uploaded,
+            name: parsed.file.name,
+            type: parsed.file.content_type || parsed.file.type || uploaded.content_type || item.type,
+            size: parsed.file.size || uploaded.size,
+            candidateName: parsed.candidateName,
+            source: normalizeResumeSourceOption(parsed.source),
+            resumeText: parsed.resumeText,
+            extractionMethod: parsed.extractionMethod,
+            warnings: parsed.warnings || [],
+          });
+        })
+        .catch((uploadError) => {
+          updateUploadItem(id, { status: "error", error: uploadError instanceof Error ? uploadError.message : "上传或解析失败" });
+        });
     });
   }
 
   function removeUploadItem(item: ResumeUploadItem) {
-    setUploadItems((current) => {
-      const next = current.filter((currentItem) => currentItem.id !== item.id);
-      if (!nameTouched && nameAutoFilled) {
-        const nextName = next.length === 1 ? inferCandidateNameFromFileName(next[0].name) : "";
-        setName(nextName);
-        setNameAutoFilled(Boolean(nextName));
-      }
-      return next;
-    });
+    setUploadItems((current) => current.filter((currentItem) => currentItem.id !== item.id));
     if (item.uploaded?.object_key) {
       void api.deleteFile(item.uploaded.object_key).catch(() => undefined);
-    }
-  }
-
-  function handleResumeTextChange(value: string) {
-    setResumeText(value);
-    if (uploadItems.length > 0 || nameTouched) return;
-    const inferredName = inferCandidateNameFromResumeText(value);
-    if (inferredName) {
-      setName(inferredName);
-      setNameAutoFilled(true);
-    } else if (nameAutoFilled) {
-      setName("");
-      setNameAutoFilled(false);
     }
   }
 
@@ -5954,33 +6121,34 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (hasUploading) {
-      setError("文件仍在上传中，请稍后提交");
+    if (hasProcessing) {
+      setError("文件仍在上传或解析中，请稍后提交");
       return;
     }
     if (hasUploadError) {
       setError("请先移除上传失败的文件后再提交");
       return;
     }
+    if (!readyItems.length) {
+      setError("请先上传并解析至少一份简历");
+      return;
+    }
+    const invalidItem = readyItems.find((item) => !item.candidateName.trim() || !item.source.trim() || !item.resumeText.trim());
+    if (invalidItem) {
+      setError(`请补全 ${invalidItem.name} 的候选人姓名、来源渠道和简历原文`);
+      return;
+    }
     setLoading(true);
     setError("");
     try {
-      const shouldSubmitSharedName = nameTouched || uploadedFiles.length <= 1;
-      const duplicateCandidates = findUploadDuplicateCandidates(candidates, {
-        name: shouldSubmitSharedName ? name : "",
-        resumeText,
-        files: uploadedFiles,
-      });
+      const duplicateCandidates = findUploadDuplicateCandidates(candidates, readyItems);
       const duplicateAction = duplicateCandidates.length
         ? await confirmAction("发现重复简历", `当前岗位的简历甄选中已存在 ${duplicateCandidates.map((candidate) => candidate.name).join("、")} 的简历。\n\n是否用本次提交的简历覆盖原有简历？\n\n确认：覆盖原简历\n取消：保留原简历，不重复新增`)
           ? "overwrite"
           : "skip"
         : "skip";
       const payload: ResumeUploadPayload = {
-        name: shouldSubmitSharedName ? name : "",
-        source,
-        resumeText,
-        files: uploadedFiles.map(uploadedFileToResumePayload),
+        files: readyItems.map(resumeItemToPayload),
         duplicateAction,
       };
       const result = await api.uploadResumes(job.id, payload);
@@ -5993,32 +6161,10 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
   }
 
   return (
-    <Modal title="上传/录入简历" onClose={onClose}>
+    <Modal title="批量上传简历" className="modal-wide resume-upload-modal" onClose={onClose}>
       <form onSubmit={submit}>
-        <div className="modal-body form-grid">
-          <label className="form-field">
-            <span>候选人姓名（文本录入时必填）</span>
-            <TextInput
-              required={!uploadItems.length}
-              value={name}
-              onChange={(event) => {
-                setName(event.target.value);
-                setNameTouched(true);
-                setNameAutoFilled(false);
-              }}
-            />
-          </label>
-          <label className="form-field">
-            <span>来源渠道</span>
-            <Select value={source} onChange={(event) => setSource(event.target.value)}>
-              <option value="BOSS">BOSS</option>
-              <option value="智联">智联</option>
-              <option value="猎聘">猎聘</option>
-              <option value="内推">内推</option>
-              <option value="其他">其他</option>
-            </Select>
-          </label>
-          <label className="form-field full">
+        <div className="modal-body form-grid resume-parse-modal-body">
+          <div className="form-field full">
             <span>上传简历文件（支持单个或多个）</span>
             <ArcoUpload
               className="resume-upload"
@@ -6026,45 +6172,61 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
               multiple
               autoUpload={false}
               showUploadList={false}
-              accept=".txt,.md,.pdf,.doc,.docx,.rtf,.jpg,.jpeg,.png,.webp,.gif,.bmp,.heic,.heif,.csv,.json,.xml,.html,.htm,image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              accept={resumeUploadAccept}
               beforeUpload={(file, files) => {
-                if (file === files[0]) handleFilesChange(files);
+                const selectedFiles = files.length ? files : [file];
+                if (file === selectedFiles[0]) handleFilesChange(selectedFiles);
                 return false;
               }}
             >
               <div className="resume-upload-trigger">
                 <IconUpload />
                 <strong>点击或拖拽简历到这里</strong>
-                <span>支持批量选择 PDF、Word、图片与文本文件</span>
+                <span>支持批量选择 PDF、DOC、DOCX 文件</span>
               </div>
             </ArcoUpload>
-            <small className="helper-text">文件会先上传到 RustFS，后端再读取原件提取 PDF / Word / 图片 / TXT 等正文并生成候选人分析。</small>
-          </label>
+            <small className="helper-text">系统随后解析每份简历的姓名、来源渠道和原文；确认无误后再批量生成候选人。</small>
+          </div>
           {uploadItems.length ? (
-            <div className="upload-file-list full">
+            <div className="resume-parse-list full">
               {uploadItems.map((item) => (
-                <div className={`upload-file-row ${item.status}`} key={item.id}>
-                  <div>
-                    <strong>{item.name}</strong>
-                    <span>{formatFileSize(item.size)} · {item.status === "uploading" ? "上传中" : item.status === "done" ? "已上传" : item.error || "上传失败"}</span>
+                <section className={`resume-parse-card ${item.status}`} key={item.id}>
+                  <div className="row-between resume-parse-head">
+                    <div>
+                      <strong>{item.name}</strong>
+                      <span>{formatFileSize(item.size)} · {item.status === "uploading" ? "上传中" : item.status === "parsing" ? "解析中" : item.status === "ready" ? "已解析" : item.error || "上传失败"}</span>
+                    </div>
+                    <div className="toolbar-right compact-actions">
+                      {item.uploaded ? <Button className="btn ghost compact" type="button" onClick={() => void previewUploadItem(item)}>预览</Button> : null}
+                      <Button className="btn ghost compact" type="button" onClick={() => removeUploadItem(item)}>移除</Button>
+                    </div>
                   </div>
-                  <div className="toolbar-right compact-actions">
-                    {item.status === "done" ? <Button className="btn ghost compact" type="button" onClick={() => void previewUploadItem(item)}>预览</Button> : null}
-                    <Button className="btn ghost compact" type="button" onClick={() => removeUploadItem(item)}>移除</Button>
-                  </div>
-                </div>
+                  {item.status === "ready" ? (
+                    <div className="resume-parse-grid">
+                      <label className="form-field">
+                        <span>候选人姓名</span>
+                        <TextInput value={item.candidateName} onChange={(event) => updateUploadItem(item.id, { candidateName: event.target.value })} />
+                      </label>
+                      <label className="form-field">
+                        <span>来源渠道</span>
+                        <ResumeSourceSelect value={item.source} onChange={(source) => updateUploadItem(item.id, { source })} />
+                      </label>
+                      <label className="form-field full">
+                        <span>简历原文</span>
+                        <TextArea value={item.resumeText} onChange={(event) => updateUploadItem(item.id, { resumeText: event.target.value })} />
+                      </label>
+                      {item.warnings?.length ? <div className="helper-text full">{item.warnings.join("；")}</div> : null}
+                    </div>
+                  ) : null}
+                </section>
               ))}
             </div>
           ) : null}
-          <label className="form-field full">
-            <span>简历文本</span>
-            <TextArea value={resumeText} onChange={(event) => handleResumeTextChange(event.target.value)} placeholder="可直接粘贴简历文本；若同时上传文件，会作为补充文本参与识别、整理与分析" />
-          </label>
           {error ? <div className="tool-error full">{error}</div> : null}
         </div>
         <div className="modal-foot">
           <Button className="btn" type="button" onClick={onClose}>取消</Button>
-          <Button className="btn primary" disabled={loading || hasUploading}>{hasUploading ? "上传中..." : loading ? "分析中..." : "分析并生成候选人"}</Button>
+          <Button className="btn primary" type="submit" disabled={loading || hasProcessing}>{hasProcessing ? "解析中..." : loading ? "分析中..." : "分析并生成候选人"}</Button>
         </div>
       </form>
     </Modal>
@@ -6084,34 +6246,13 @@ function uploadedFileToResumePayload(file: UploadedFile): ResumeFilePayload {
   };
 }
 
-function inferCandidateNameFromFileName(fileName: string) {
-  const baseName = fileName
-    .replace(/\.[^.]+$/, "")
-    .replace(/简历|个人简历|求职|resume|cv|附件/gi, "")
-    .replace(/[（(].*?[）)]/g, " ")
-    .trim();
-  const parts = baseName.split(/[\s_\-—–+·、，,]+/).map((part) => normalizeCandidateName(part)).filter(Boolean);
-  const nameLikeParts = parts.filter(isLikelyChineseName);
-  return nameLikeParts.at(-1) || "";
-}
-
-function inferCandidateNameFromResumeText(text: string) {
-  const explicitMatch = text.match(/(?:^|\n)\s*(?:姓名|候选人|应聘者)\s*[:：]\s*([\u4e00-\u9fa5·]{2,6}|[A-Za-z][A-Za-z\s.]{1,40})/);
-  if (explicitMatch?.[1]) return normalizeCandidateName(explicitMatch[1]);
-  return "";
-}
-
-function normalizeCandidateName(value: string) {
-  return value
-    .replace(/[^\u4e00-\u9fa5A-Za-z·.\s]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function isLikelyChineseName(value: string) {
-  if (!/^[\u4e00-\u9fa5·]{2,6}$/.test(value)) return false;
-  if (/前端|后端|开发|工程师|产品|运营|设计|测试|算法|数据|长沙|北京|上海|广州|深圳|杭州|成都|武汉|南京|简历|求职|候选人/.test(value)) return false;
-  return true;
+function resumeItemToPayload(item: ResumeUploadItem & { uploaded: UploadedFile }): ResumeFilePayload {
+  return {
+    ...uploadedFileToResumePayload(item.uploaded),
+    candidateName: item.candidateName.trim(),
+    source: normalizeResumeSourceOption(item.source),
+    resumeText: item.resumeText.trim(),
+  };
 }
 
 async function openFilePreview(objectKey: string, contentType?: string | null) {
@@ -6940,7 +7081,105 @@ function buildSalaryFilters(salaryData: SalaryData | null): SalaryFilters {
   };
 }
 
-function downloadJson(state: AppState) { const url = URL.createObjectURL(new Blob([JSON.stringify(state, null, 2)], { type: "application/json" })); const link = document.createElement("a"); link.href = url; link.download = `xiaosongshu-${Date.now()}.json`; link.click(); URL.revokeObjectURL(url); }
+function downloadJobsExcel(jobs: Job[], statusFilter: Job["status"] | "全部") {
+  const headers = [
+    "职位ID",
+    "职位名称",
+    "所属部门",
+    "工作城市",
+    "经验要求",
+    "职位级别",
+    "薪资范围",
+    "岗位关键词",
+    "招聘状态",
+    "简历数量",
+    "经验匹配权重",
+    "专业契合权重",
+    "稳定性权重",
+    "学历背景权重",
+    "业务导向权重",
+    "职位描述",
+  ];
+  const rows = jobs.map((job) => [
+    job.id,
+    job.title,
+    job.dept,
+    job.location,
+    job.experience,
+    job.level,
+    job.salaryRange,
+    splitKeywords(job.keywords).join("、"),
+    job.status,
+    String(job.resumeCount),
+    `${job.scoreWeights.experience}%`,
+    `${job.scoreWeights.professional}%`,
+    `${job.scoreWeights.stability}%`,
+    `${job.scoreWeights.education}%`,
+    `${job.scoreWeights.business}%`,
+    job.description,
+  ]);
+  const html = buildExcelHtmlTable(headers, rows, `职位池-${statusFilter}`);
+  downloadBlob(
+    `职位池-${statusFilter}-${formatLocalDateStamp()}.xls`,
+    new Blob([`\uFEFF${html}`], { type: "application/vnd.ms-excel;charset=utf-8" }),
+  );
+}
+
+function buildExcelHtmlTable(headers: string[], rows: string[][], title: string) {
+  const columnWidthStyles = headers.map((_, index) => `<col style="width:${index === headers.length - 1 ? 420 : 130}px">`).join("");
+  const headerHtml = headers.map((header) => `<th>${escapeHtml(header)}</th>`).join("");
+  const bodyHtml = rows.length
+    ? rows.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join("")}</tr>`).join("")
+    : `<tr><td colspan="${headers.length}">暂无职位数据</td></tr>`;
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="ProgId" content="Excel.Sheet" />
+  <style>
+    table { border-collapse: collapse; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    th, td { border: 1px solid #d9e6df; padding: 8px 10px; mso-number-format:"\\@"; vertical-align: top; }
+    th { color: #0f4c3a; background: #e9f3ed; font-weight: 700; }
+    td { color: #243b31; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <table>
+    <colgroup>${columnWidthStyles}</colgroup>
+    <caption>${escapeHtml(title)}</caption>
+    <thead><tr>${headerHtml}</tr></thead>
+    <tbody>${bodyHtml}</tbody>
+  </table>
+</body>
+</html>`;
+}
+
+function downloadBlob(fileName: string, blob: Blob) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function escapeHtml(value: string | number | null | undefined) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatLocalDateStamp(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}${month}${day}`;
+}
 
 function SquirrelLogo() { return <svg className="squirrel-logo" viewBox="0 0 96 96" focusable="false" aria-hidden="true"><path className="logo-fill" d="M62.5 72.5c11.7-.8 19.4-8.7 19.4-20.1 0-10.9-7.7-19.3-18.1-20.3 6.9 6.3 6.1 15.3-1.8 21.5 4.2 4.6 4.2 12.3.5 18.9Z" /><path className="logo-inner" d="M67.8 42.1c4.5 3 6.8 7 6.6 11.5-.2 5.9-4.5 10.5-11.3 12.2" /><path className="logo-fill" d="M26.5 57.9c0-12.1 9.5-21.7 22.1-21.7 13 0 22.8 9.7 22.8 22.2 0 12.9-10.1 22.8-22.7 22.8S26.5 71.3 26.5 57.9Z" /><path className="logo-fill" d="M29 33.3c-3.5-6.1.2-13.4 7-13.8 4.8-.3 8.7 3.2 9.1 8.2 2.5-.6 5.2-.6 7.8 0 .8-4.8 4.9-8 9.6-7.2 6.2 1.1 8.7 8.2 5.1 13.7 3.4 3.8 5.2 8.9 5.1 14.4-.2 12.3-9.7 21.2-23.4 21.2-14.3 0-24-8.9-24.2-21.3-.1-6.1 1.4-11.1 3.9-15.2Z" /><path className="logo-line" d="M40.8 59.2c4.5 3.4 12.1 3.4 16.6 0" /><ellipse className="logo-eye" cx="39.7" cy="45.9" rx="3.8" ry="5.1" /><ellipse className="logo-eye" cx="59.4" cy="45.9" rx="3.8" ry="5.1" /><path className="logo-eye" d="M46.8 52.7c1.7-1.4 4.4-1.4 6.1 0 .5.4.4 1.2-.2 1.6l-2 1.3c-.6.4-1.4.4-2 0l-1.9-1.3c-.6-.4-.7-1.2 0-1.6Z" /><path className="logo-line" d="M32.2 62.5c2 9.1 8.4 14.1 16.4 14.1" /></svg>; }
 
