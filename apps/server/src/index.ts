@@ -3028,7 +3028,7 @@ function buildSalaryDataFromBossZhilianEvidence(
       ],
       keywordPremiums: keywordPremium.reasons.length
         ? keywordPremium.reasons
-        : ["当前岗位暂无明显额外关键词溢价，建议按 BOSS直聘与智联招聘综合样本区间沟通。"],
+        : ["当前岗位暂无明显额外关键词溢价，建议按 BOSS直聘样本区间沟通。"],
     },
     research: {
       dataWindow,
@@ -3081,7 +3081,8 @@ function buildSalaryDataFromBossZhilianEvidence(
         experience: filters.experience,
         salaryRange: item.salaryRange.label,
         publishWindow: item.publishWindow || "公开搜索结果",
-        note: `${item.snippet}（${item.link}）`,
+        note: item.snippet,
+        link: item.link,
       })),
       disclaimer: hasAllPlatforms
         ? hasBossScraperSamples
@@ -4035,7 +4036,8 @@ function buildInsufficientSalaryData(
         experience: filters.experience,
         salaryRange: item.salaryRange?.label || "未能稳定提取",
         publishWindow: item.publishWindow,
-        note: `${item.snippet}（${item.link}）`,
+        note: item.snippet,
+        link: item.link,
       })),
       disclaimer: message,
     },

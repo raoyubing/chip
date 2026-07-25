@@ -2926,20 +2926,6 @@ textarea:focus {
   animation: detailReveal 0.34s ease both;
 }
 
-.candidate-detail-card::before {
-  content: "详情已切换";
-  display: block;
-  width: max-content;
-  margin: -4px 0 10px auto;
-  padding: 4px 9px;
-  color: var(--green-700);
-  background: var(--green-50);
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 800;
-  animation: detailHint 1.8s ease both;
-}
-
 @keyframes detailReveal {
   from {
     border-color: var(--green-700);
@@ -2950,15 +2936,6 @@ textarea:focus {
   to {
     opacity: 1;
     transform: translateX(0);
-  }
-}
-
-@keyframes detailHint {
-  0%, 72% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
   }
 }
 
@@ -3042,6 +3019,16 @@ textarea:focus {
 
 .salary-summary.compact {
   gap: 10px;
+}
+
+.candidate-detail-panel .salary-summary.compact .salary-metric {
+  padding: 11px 14px;
+}
+
+.candidate-detail-panel .salary-summary.compact .salary-metric strong {
+  margin-top: 4px;
+  font-size: 18px;
+  line-height: 1.3;
 }
 
 .detail-tabs {
@@ -4603,6 +4590,34 @@ textarea:focus {
   margin: 0;
   color: #33413c;
   line-height: 1.7;
+}
+
+.salary-evidence-link {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 6px;
+  min-height: 30px;
+  padding: 5px 10px;
+  color: var(--green-700);
+  background: #ffffff;
+  border: 1px solid rgba(26, 107, 74, 0.2);
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.2;
+  text-decoration: none;
+  transition: 0.18s ease;
+}
+
+.salary-evidence-link:hover {
+  color: #ffffff;
+  background: var(--green-700);
+  border-color: var(--green-700);
+}
+
+.salary-evidence-link svg {
+  font-size: 14px;
 }
 
 .salary-disclaimer {

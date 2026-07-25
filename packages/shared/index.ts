@@ -159,6 +159,7 @@ export interface SalaryData {
       salaryRange: string;
       publishWindow: string;
       note: string;
+      link?: string;
     }>;
     disclaimer: string;
   };

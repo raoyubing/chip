@@ -21,6 +21,7 @@ import {
   IconExperiment,
   IconDelete,
   IconFileAudio,
+  IconLaunch,
   IconPause,
   IconPlayArrow,
   IconRecord,
@@ -5323,7 +5324,8 @@ function SalaryView({
                       <span>{item.region}</span>
                       <span>{item.experience}</span>
                     </div>
-                    <p>{item.note}</p>
+                    <p>{getSalaryEvidenceNote(item)}</p>
+                    {getSalaryEvidenceLink(item) ? <a className="salary-evidence-link" href={getSalaryEvidenceLink(item)} target="_blank" rel="noopener noreferrer"><IconLaunch />查看来源</a> : null}
                   </article>
                 )) : <div className="empty"><div>未检索到满足条件的公开招聘平台样本。</div></div>}
               </div>
@@ -5485,7 +5487,8 @@ function SalaryView({
                       <span>{item.experience}</span>
                       <span>{item.salaryRange}</span>
                     </div>
-                    <p>{item.note}</p>
+                    <p>{getSalaryEvidenceNote(item)}</p>
+                    {getSalaryEvidenceLink(item) ? <a className="salary-evidence-link" href={getSalaryEvidenceLink(item)} target="_blank" rel="noopener noreferrer"><IconLaunch />查看来源</a> : null}
                   </article>
                 ))}
               </div>
@@ -5496,6 +5499,26 @@ function SalaryView({
       )}
     </>
   );
+}
+
+type SalaryEvidenceItem = SalaryData["research"]["evidence"][number];
+
+function getSalaryEvidenceLink(item: SalaryEvidenceItem) {
+  const explicitLink = item.link?.trim() || "";
+  const legacyLink = item.note.match(/[（(](https?:\/\/[^）)\s]+)[）)]\s*$/i)?.[1] || "";
+  const link = explicitLink || legacyLink;
+  return /^https?:\/\//i.test(link) ? link : "";
+}
+
+function getSalaryEvidenceNote(item: SalaryEvidenceItem) {
+  const note = item.note.trim();
+  const link = getSalaryEvidenceLink(item);
+  if (!link) return note;
+
+  for (const suffix of [`（${link}）`, `(${link})`]) {
+    if (note.endsWith(suffix)) return note.slice(0, -suffix.length).trim();
+  }
+  return note;
 }
 
 const defaultJobScoreWeights: JobScoreWeights = {
