@@ -4,7 +4,6 @@ import * as echarts from "echarts";
 import {
   Button as ArcoButton,
   Cascader as ArcoCascader,
-  Checkbox as ArcoCheckbox,
   ConfigProvider,
   Input as ArcoInput,
   Modal as ArcoModal,
@@ -151,6 +150,7 @@ function App() {
   const [activeInterviewMonth, setActiveInterviewMonth] = useState<string>("all");
   const [salaryData, setSalaryData] = useState<SalaryData | null>(null);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
+  const [recentCandidateIdsByJob, setRecentCandidateIdsByJob] = useState<Record<string, string[]>>({});
   const [modal, setModal] = useState<Modal>(null);
   const [toast, setToast] = useState("");
   const [dashboardGranularity, setDashboardGranularity] = useState<AnalyticsGranularity>("month");
@@ -201,7 +201,7 @@ function App() {
     return state.jobs.find((job) => job.id === state.currentJobId) || state.jobs[0] || null;
   }, [state]);
 
-  const currentCandidates = currentJob && state ? state.candidates[currentJob.id] || [] : [];
+  const currentCandidates = currentJob && state ? (state.candidates[currentJob.id] || []).filter(isScreeningCandidate) : [];
   const interviewCandidates = useMemo(() => {
     if (!state) return [] as Candidate[];
     const sourceJobs = activeInterviewJobId === "all"
@@ -215,7 +215,7 @@ function App() {
 
   const setRemoteState = (next: AppState) => {
     setState(next);
-    const candidates = next.candidates[next.currentJobId] || [];
+    const candidates = (next.candidates[next.currentJobId] || []).filter(isScreeningCandidate);
     setSelectedCandidateId((id) => (id && candidates.some((candidate) => candidate.id === id) ? id : candidates[0]?.id || null));
   };
 
@@ -262,13 +262,15 @@ function App() {
 
   async function deleteCandidate() {
     const targetCandidate = currentCandidates.find((candidate) => candidate.id === selectedCandidateId);
-    const message = targetCandidate?.isInTalentPool
-      ? "该候选人已进入人才库，删除后人才库档案也会彻底删除。确认删除？"
+    const shouldKeepArchive = Boolean(targetCandidate?.isInTalentPool || targetCandidate?.onboarded === "是");
+    const message = shouldKeepArchive
+      ? "该候选人已进入人才库，本次仅从当前职位的简历甄选列表移除，人才库档案会保留。确认移除？"
       : "确认删除该候选人？";
-    if (!selectedCandidateId || !(await confirmAction("删除候选人", message))) return;
+    const title = shouldKeepArchive ? "移出简历甄选" : "删除候选人";
+    if (!selectedCandidateId || !(await confirmAction(title, message))) return;
     const next = await api.deleteCandidate(selectedCandidateId);
     setRemoteState(next);
-    showToast("候选人已删除");
+    showToast(shouldKeepArchive ? "已从简历甄选移除，人才库档案已保留" : "候选人已删除");
   }
 
   async function addToTalentPool(candidateId?: string) {
@@ -451,7 +453,7 @@ function App() {
             />
           )}
           {activeView === "jobs" && <JobsView state={state} currentJob={currentJob} onSelect={changeJob} onEdit={(job) => setModal({ type: "job", job })} onCreate={() => setModal({ type: "job" })} onCloseJob={closeJob} onDelete={deleteJob} />}
-          {activeView === "candidates" && <CandidatesView candidates={currentCandidates} selectedId={selectedCandidateId} onSelect={setSelectedCandidateId} onUpload={() => setModal({ type: "resume" })} onMark={markInterview} onAddToTalentPool={addToTalentPool} onDelete={deleteCandidate} currentJob={currentJob} onStateChange={setRemoteState} />}
+          {activeView === "candidates" && <CandidatesView candidates={currentCandidates} recentUploadedIds={recentCandidateIdsByJob[currentJob.id] || []} selectedId={selectedCandidateId} onSelect={setSelectedCandidateId} onUpload={() => setModal({ type: "resume" })} onMark={markInterview} onAddToTalentPool={addToTalentPool} onDelete={deleteCandidate} currentJob={currentJob} onStateChange={setRemoteState} />}
           {activeView === "talent" && <TalentPoolView jobs={state.jobs} currentJob={currentJob} candidatesByJob={state.candidates} onStateChange={setRemoteState} onToast={showToast} />}
           {activeView === "interviews" && <InterviewsView jobs={ongoingJobs} selectedJobId={activeInterviewJobId} onJobChange={setActiveInterviewJobId} selectedMonth={activeInterviewMonth} onMonthChange={setActiveInterviewMonth} activeStage={activeInterviewStage} candidates={interviewCandidates} onStageChange={setActiveInterviewStage} onSaveStage={updateInterviewStage} />}
           {activeView === "voice" && (
@@ -469,7 +471,7 @@ function App() {
       </main>
 
       {modal?.type === "job" && <JobModal job={modal.job} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); showToast(modal.job ? "职位已更新" : "职位已新增"); }} />}
-      {modal?.type === "resume" && <ResumeModal job={currentJob} candidates={currentCandidates} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); showToast("简历分析完成"); }} />}
+      {modal?.type === "resume" && <ResumeModal job={currentJob} candidates={currentCandidates} onClose={() => setModal(null)} onStateChange={setRemoteState} onSaved={(next, uploadedCandidateIds) => { setModal(null); setRemoteState(next); setRecentCandidateIdsByJob((current) => ({ ...current, [currentJob.id]: uploadedCandidateIds })); showToast("简历分析完成"); }} />}
       {toast && <div className="toast">{toast}</div>}
     </div>
   );
@@ -1563,11 +1565,30 @@ function JobsView({
   );
 }
 
-function CandidatesView({ candidates, selectedId, onSelect, onUpload, onMark, onAddToTalentPool, onDelete, currentJob, onStateChange }: { candidates: Candidate[]; selectedId: string | null; onSelect: (id: string) => void; onUpload: () => void; onMark: (id: string) => void; onAddToTalentPool: (id: string) => void; onDelete: () => void; currentJob: Job; onStateChange: (state: AppState) => void }) {
+function CandidatesView({ candidates, recentUploadedIds, selectedId, onSelect, onUpload, onMark, onAddToTalentPool, onDelete, currentJob, onStateChange }: { candidates: Candidate[]; recentUploadedIds: string[]; selectedId: string | null; onSelect: (id: string) => void; onUpload: () => void; onMark: (id: string) => void; onAddToTalentPool: (id: string) => void; onDelete: () => void; currentJob: Job; onStateChange: (state: AppState) => void }) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [recentOnly, setRecentOnly] = useState(false);
   const visibleCandidates = useMemo(() => dedupeCandidateList(candidates), [candidates]);
-  const sortedCandidates = useMemo(() => [...visibleCandidates].sort((left, right) => right.score - left.score), [visibleCandidates]);
+  const recentUploadedIdSet = useMemo(() => new Set(recentUploadedIds), [recentUploadedIds]);
+  const recentUploadedCount = useMemo(() => visibleCandidates.filter((candidate) => recentUploadedIdSet.has(candidate.id)).length, [recentUploadedIdSet, visibleCandidates]);
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const sortedCandidates = useMemo(() => visibleCandidates
+    .filter((candidate) => !recentOnly || recentUploadedIdSet.has(candidate.id))
+    .filter((candidate) => !normalizedQuery || buildCandidateSearchText(candidate).includes(normalizedQuery))
+    .sort((left, right) => {
+      if (normalizedQuery) {
+        const rankDifference = getCandidateNameSearchRank(right.name, normalizedQuery) - getCandidateNameSearchRank(left.name, normalizedQuery);
+        if (rankDifference) return rankDifference;
+      }
+      return right.score - left.score;
+    }), [normalizedQuery, recentOnly, recentUploadedIdSet, visibleCandidates]);
   const selected = sortedCandidates.find((candidate) => candidate.id === selectedId) || sortedCandidates[0] || null;
   const [detailTab, setDetailTab] = useState<CandidateDetailTab>("overview");
+
+  useEffect(() => {
+    setSearchQuery("");
+    setRecentOnly(false);
+  }, [currentJob.id]);
 
   useEffect(() => {
     setDetailTab("overview");
@@ -1586,12 +1607,25 @@ function CandidatesView({ candidates, selectedId, onSelect, onUpload, onMark, on
 
   return <div className="candidates-view">
     <section className="card pad"><div className="toolbar"><div><h3 className="card-title">{currentJob.title} · 简历甄选</h3><p className="helper-text">按当前职位查看候选人，并基于岗位关键考核点生成分析。</p></div><div className="toolbar-right"><Button className="btn primary" onClick={onUpload}>批量上传简历</Button></div></div></section>
-    <div className="candidate-layout"><section className="card pad">{sortedCandidates.length ? <div className="candidate-list">{sortedCandidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} selected={candidate.id === selected?.id} onSelect={() => selectCandidate(candidate.id)} onOpenResume={() => selectCandidate(candidate.id, "resume")} />)}</div> : <div className="empty"><div><strong>暂无简历</strong><br />点击“批量上传简历”添加候选人。</div></div>}</section><section key={selected?.id || "empty"} className="card pad candidate-detail-card">{selected ? <CandidateDetail candidate={selected} activeTab={detailTab} onTabChange={setDetailTab} onMark={onMark} onAddToTalentPool={onAddToTalentPool} onDelete={onDelete} onStateChange={onStateChange} currentJob={currentJob} /> : <div className="empty"><div><strong>暂无候选人详情</strong><br />批量上传简历后可查看甄选结论。</div></div>}</section></div>
+    <div className="candidate-layout">
+      <section className="card pad candidate-list-pane">
+        <div className="candidate-list-tools">
+          <div className="candidate-search-row">
+            <ArcoInput className="candidate-search-input" prefix={<IconSearch />} value={searchQuery} onChange={setSearchQuery} placeholder="搜索姓名、来源、文件名或简历内容" allowClear />
+            <button className={`candidate-recent-toggle ${recentOnly ? "active" : ""}`} type="button" aria-pressed={recentOnly} disabled={!recentUploadedCount} onClick={() => setRecentOnly((current) => !current)}><IconUpload />本次上传<span>{recentUploadedCount}</span></button>
+          </div>
+          <div className="candidate-search-summary"><span>{normalizedQuery || recentOnly ? `找到 ${sortedCandidates.length} 位人选` : `共 ${sortedCandidates.length} 位人选`}</span><span>按综合评分排序</span></div>
+        </div>
+        {sortedCandidates.length ? <div className="candidate-list">{sortedCandidates.map((candidate) => <CandidateCard key={candidate.id} candidate={candidate} searchQuery={searchQuery} selected={candidate.id === selected?.id} onSelect={() => selectCandidate(candidate.id)} onOpenResume={() => selectCandidate(candidate.id, "resume")} />)}</div> : <div className="empty"><div><strong>{visibleCandidates.length ? "未找到匹配简历" : "暂无简历"}</strong><br />{visibleCandidates.length ? "请调整搜索内容或筛选条件。" : "点击“批量上传简历”添加候选人。"}</div></div>}
+      </section>
+      <section key={selected?.id || "empty"} className="card pad candidate-detail-card">{selected ? <CandidateDetail candidate={selected} activeTab={detailTab} onTabChange={setDetailTab} onMark={onMark} onAddToTalentPool={onAddToTalentPool} onDelete={onDelete} onStateChange={onStateChange} currentJob={currentJob} /> : <div className="empty"><div><strong>暂无候选人详情</strong><br />{visibleCandidates.length ? "请调整左侧搜索内容或筛选条件。" : "批量上传简历后可查看甄选结论。"}</div></div>}</section>
+    </div>
   </div>;
 }
 
-function CandidateCard({ candidate, selected, onSelect, onOpenResume }: { candidate: Candidate; selected: boolean; onSelect: () => void; onOpenResume: () => void }) {
+function CandidateCard({ candidate, searchQuery, selected, onSelect, onOpenResume }: { candidate: Candidate; searchQuery: string; selected: boolean; onSelect: () => void; onOpenResume: () => void }) {
   const profileTags = extractCandidateProfileTags(candidate);
+  const searchSnippet = getCandidateSearchSnippet(candidate, searchQuery);
   return (
     <article
       className={`candidate-card ${selected ? "selected" : ""}`}
@@ -1608,12 +1642,69 @@ function CandidateCard({ candidate, selected, onSelect, onOpenResume }: { candid
     >
       <div className="score-ring" style={{ "--score": candidate.score } as React.CSSProperties}><span>{candidate.score}</span></div>
       <div className="candidate-body">
-        <div className="candidate-topline"><div><h4>{candidate.name}</h4>{profileTags.length > 0 && <div className="candidate-profile-tags">{profileTags.map((tag) => <span key={`${tag.label}-${tag.value}`}>{tag.label}：{tag.value}</span>)}</div>}</div><div className="candidate-badge-stack"><Badge color={scoreColor(candidate.score)}>{candidate.conclusion}</Badge>{candidate.isInTalentPool ? <Badge color="green">已入库</Badge> : null}</div></div>
-        <p className="reason">{candidate.reason}</p>
+        <div className="candidate-topline"><div><h4><CandidateSearchText text={candidate.name} query={searchQuery} /></h4>{profileTags.length > 0 && <div className="candidate-profile-tags">{profileTags.map((tag) => <span key={`${tag.label}-${tag.value}`}>{tag.label}：{tag.value}</span>)}</div>}</div><div className="candidate-badge-stack"><Badge color={scoreColor(candidate.score)}>{candidate.conclusion}</Badge>{candidate.isInTalentPool ? <Badge color="green">已入库</Badge> : null}</div></div>
+        <p className="reason"><CandidateSearchText text={candidate.reason} query={searchQuery} /></p>
+        {searchSnippet ? <p className="candidate-search-snippet"><CandidateSearchText text={searchSnippet} query={searchQuery} /></p> : null}
         <Button className="btn ghost" type="button" onClick={(event) => { event.stopPropagation(); onOpenResume(); }}>查看简历</Button>
       </div>
     </article>
   );
+}
+
+function buildCandidateSearchText(candidate: Candidate) {
+  const evaluation = candidate.evaluation;
+  const keyPointAnalysis = Array.isArray(candidate.keyPointAnalysis) ? candidate.keyPointAnalysis : [];
+  return [
+    toCandidateSearchText(candidate.name),
+    toCandidateSearchText(candidate.source),
+    toCandidateSearchText(candidate.fileName),
+    toCandidateSearchText(candidate.resumeText),
+    toCandidateSearchText(candidate.reason),
+    toCandidateSearchText(candidate.remark),
+    toCandidateSearchText(evaluation?.summary),
+    ...toCandidateSearchList(evaluation?.strengths),
+    ...toCandidateSearchList(evaluation?.weaknesses),
+    ...toCandidateSearchList(evaluation?.risks),
+    ...keyPointAnalysis.map((item) => `${toCandidateSearchText(item?.keyword)} ${toCandidateSearchText(item?.evidence)}`),
+  ].join(" ").toLocaleLowerCase();
+}
+
+function getCandidateNameSearchRank(name: string, normalizedQuery: string) {
+  const normalizedName = toCandidateSearchText(name).trim().toLocaleLowerCase();
+  if (normalizedName === normalizedQuery) return 3;
+  if (normalizedName.startsWith(normalizedQuery)) return 2;
+  if (normalizedName.includes(normalizedQuery)) return 1;
+  return 0;
+}
+
+function getCandidateSearchSnippet(candidate: Candidate, query: string) {
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  if (!normalizedQuery) return "";
+  const fields = [candidate.source, candidate.fileName, candidate.evaluation?.summary, candidate.resumeText].map(toCandidateSearchText);
+  for (const field of fields) {
+    const matchIndex = field.toLocaleLowerCase().indexOf(normalizedQuery);
+    if (matchIndex < 0) continue;
+    const start = Math.max(0, matchIndex - 28);
+    const end = Math.min(field.length, matchIndex + normalizedQuery.length + 52);
+    return `${start ? "..." : ""}${field.slice(start, end).replace(/\s+/g, " ")}${end < field.length ? "..." : ""}`;
+  }
+  return "";
+}
+
+function CandidateSearchText({ text, query }: { text: string; query: string }) {
+  const safeText = toCandidateSearchText(text);
+  const normalizedQuery = query.trim();
+  if (!normalizedQuery) return <>{safeText}</>;
+  const parts = safeText.split(new RegExp(`(${escapeRegExp(normalizedQuery)})`, "gi"));
+  return <>{parts.map((part, index) => part.toLowerCase() === normalizedQuery.toLowerCase() ? <mark className="candidate-search-mark" key={`${part}-${index}`}>{part}</mark> : <React.Fragment key={`${part}-${index}`}>{part}</React.Fragment>)}</>;
+}
+
+function toCandidateSearchText(value: unknown) {
+  return typeof value === "string" || typeof value === "number" ? String(value) : "";
+}
+
+function toCandidateSearchList(value: unknown) {
+  return Array.isArray(value) ? value.map(toCandidateSearchText).filter(Boolean) : [];
 }
 
 function extractCandidateProfileTags(candidate: Candidate) {
@@ -1638,16 +1729,20 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
   const [recommendTargetJobId, setRecommendTargetJobId] = useState("");
   const [recommendLoading, setRecommendLoading] = useState(false);
   const [recommendError, setRecommendError] = useState("");
-  const [overwriteExistingRecommend, setOverwriteExistingRecommend] = useState(false);
   const [revivalScriptLoading, setRevivalScriptLoading] = useState(false);
   const [revivalScriptCopied, setRevivalScriptCopied] = useState(false);
+  const [deleteTalentCandidate, setDeleteTalentCandidate] = useState<Candidate | null>(null);
+  const [deleteTalentLoading, setDeleteTalentLoading] = useState<"remove" | "hard" | null>(null);
+  const [deleteTalentError, setDeleteTalentError] = useState("");
   const ongoingJobs = useMemo(() => jobs.filter((job) => job.status === "招聘中"), [jobs]);
+  const allCandidates = useMemo(() => Object.values(candidatesByJob).flat(), [candidatesByJob]);
   const talentCandidates = useMemo(() => {
-    return Object.values(candidatesByJob)
-      .flat()
+    return allCandidates
       .filter((candidate) => candidate.isInTalentPool || isHiredTalent(candidate))
+      .filter((candidate) => !candidate.removedFromTalentPool)
+      .filter((candidate) => !isReactivatedTalentCandidate(candidate, allCandidates))
       .sort((left, right) => right.score - left.score);
-  }, [candidatesByJob]);
+  }, [allCandidates]);
   const frequentKeywords = useMemo(() => buildFrequentTalentKeywords(talentCandidates), [talentCandidates]);
   const outcomeSummary = useMemo(() => buildTalentOutcomeSummary(talentCandidates), [talentCandidates]);
   const filteredCandidates = useMemo(() => talentCandidates.filter((candidate) => {
@@ -1665,7 +1760,7 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
   const selectedTalent = filteredCandidates.find((candidate) => candidate.id === selectedTalentId) || filteredCandidates[0] || null;
   const selectedJob = selectedTalent ? jobs.find((job) => job.id === selectedTalent.jobId) || null : null;
   const recommendDuplicateCandidate = recommendCandidate && recommendTargetJobId
-    ? findDuplicateCandidateInList(candidatesByJob[recommendTargetJobId] || [], recommendCandidate)
+    ? findDuplicateCandidateInList((candidatesByJob[recommendTargetJobId] || []).filter(isScreeningCandidate), recommendCandidate)
     : null;
   const recommendCandidateAgeDays = recommendCandidate ? getTalentArchiveAgeDays(recommendCandidate) : null;
   const shouldWarnRevival = typeof recommendCandidateAgeDays === "number" && recommendCandidateAgeDays > 90;
@@ -1676,7 +1771,6 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
     if (!recommendCandidate) return;
     const defaultJobId = currentJob.status === "招聘中" ? currentJob.id : ongoingJobs[0]?.id || "";
     setRecommendTargetJobId((jobId) => jobId && ongoingJobs.some((job) => job.id === jobId) ? jobId : defaultJobId);
-    setOverwriteExistingRecommend(false);
     setRevivalScriptCopied(false);
     setRecommendError("");
   }, [currentJob.id, currentJob.status, ongoingJobs, recommendCandidate]);
@@ -1710,19 +1804,17 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
     setRecommendLoading(true);
     setRecommendError("");
     try {
-      const beforeCount = candidatesByJob[recommendTargetJobId]?.length || 0;
+      const beforeCount = (candidatesByJob[recommendTargetJobId] || []).filter(isScreeningCandidate).length;
       const next = await api.recommendTalentToJob(recommendCandidate.id, {
         jobId: recommendTargetJobId,
-        duplicateAction: overwriteExistingRecommend ? "overwrite" : "skip",
+        duplicateAction: "skip",
       });
       const targetJob = jobs.find((job) => job.id === recommendTargetJobId);
-      const afterCount = next.candidates[recommendTargetJobId]?.length || 0;
+      const afterCount = (next.candidates[recommendTargetJobId] || []).filter(isScreeningCandidate).length;
       onStateChange(next);
       onToast(afterCount > beforeCount
         ? `已推荐至${targetJob?.title || "目标岗位"}，可在简历甄选查看`
-        : recommendDuplicateCandidate && overwriteExistingRecommend
-          ? `已用人才库简历覆盖${targetJob?.title || "目标岗位"}中的原简历`
-        : `${targetJob?.title || "目标岗位"}的简历甄选已存在该人选，不重复显示`);
+        : `${targetJob?.title || "目标岗位"}的简历甄选已存在该人选，未重复新增`);
       setRecommendCandidate(null);
     } catch (error) {
       setRecommendError(error instanceof Error ? error.message : "推荐失败，请稍后重试");
@@ -1748,6 +1840,43 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
     }
   };
 
+  const removeTalentFromPool = async () => {
+    if (!deleteTalentCandidate) return;
+    setDeleteTalentLoading("remove");
+    setDeleteTalentError("");
+    try {
+      const next = await api.removeFromTalentPool(deleteTalentCandidate.id);
+      onStateChange(next);
+      onToast("已移出人才库，流程数据仍保留");
+      setDeleteTalentCandidate(null);
+    } catch (error) {
+      setDeleteTalentError(error instanceof Error ? error.message : "移出人才库失败，请稍后重试");
+    } finally {
+      setDeleteTalentLoading(null);
+    }
+  };
+
+  const hardDeleteTalentArchive = async () => {
+    if (!deleteTalentCandidate) return;
+    const shouldContinue = await confirmAction(
+      "彻底删除档案",
+      `确认彻底删除 ${deleteTalentCandidate.name} 的人才档案？\n\n该操作会删除候选人记录、简历原文、附件和关联解析记录，无法恢复。`
+    );
+    if (!shouldContinue) return;
+    setDeleteTalentLoading("hard");
+    setDeleteTalentError("");
+    try {
+      const next = await api.hardDeleteCandidate(deleteTalentCandidate.id);
+      onStateChange(next);
+      onToast("人才档案已彻底删除");
+      setDeleteTalentCandidate(null);
+    } catch (error) {
+      setDeleteTalentError(error instanceof Error ? error.message : "彻底删除失败，请稍后重试");
+    } finally {
+      setDeleteTalentLoading(null);
+    }
+  };
+
   return (
     <div className="talent-page">
       <section className="card pad talent-hero-card">
@@ -1766,14 +1895,14 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
         <div className="talent-filter-grid">
           <label className="field"><span>搜索人才</span><ArcoInput prefix={<IconSearch />} value={keyword} onChange={setKeyword} placeholder="输入姓名、岗位、关键词、经历内容" allowClear /></label>
           <label className="field"><span>原岗位</span><Select value={jobId} onChange={(event) => setJobId(event.target.value)}><option value="all">全部岗位</option>{jobs.map((job) => <option key={job.id} value={job.id}>{job.title} · {job.dept}</option>)}</Select></label>
-          <label className="field"><span>画像筛选</span><Select value={profileFilter} onChange={(event) => setProfileFilter(event.target.value)}><option value="all">全部画像</option><option value="high">高画像（85分+）</option><option value="reusable">可复用（已流失可复活）</option><option value="interviewed">已进入面试流程</option></Select></label>
+          <label className="field"><span>画像筛选</span><Select value={profileFilter} onChange={(event) => setProfileFilter(event.target.value)}><option value="all">全部画像</option><option value="high">高画像（85分+）</option><option value="reusable">可复用（75分+且命中关键点）</option><option value="interviewed">已进入面试流程</option></Select></label>
         </div>
       </section>
 
       <section className="card pad">
         <CardHeader title="人才档案" desc="按综合评分排序；点击查看可回到原岗位的简历详情。" />
-        <div className="talent-outcome-bar" aria-label="结局">
-          <strong>结局</strong>
+        <div className="talent-outcome-bar" aria-label="人才状态">
+          <strong>人才状态</strong>
           {talentOutcomePresets.map((outcome) => (
             <TalentOutcomeTag key={outcome.key} outcome={outcome} count={outcomeSummary[outcome.key]} />
           ))}
@@ -1785,8 +1914,8 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
                 <tr>
                   <th>候选人</th>
                   <th>原岗位 / 部门</th>
-                  <th>结局</th>
-                  <th>画像标签</th>
+                  <th>人才状态</th>
+                  <th>最近流程节点</th>
                   <th>新鲜度</th>
                   <th>操作</th>
                 </tr>
@@ -1794,8 +1923,6 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
               <tbody>
                 {filteredCandidates.map((candidate) => {
                   const job = jobs.find((item) => item.id === candidate.jobId);
-                  const matchedKeywords = candidate.keyPointAnalysis.filter((item) => item.matched).map((item) => item.keyword);
-                  const profileTags = buildTalentProfileTags(candidate, matchedKeywords, frequentKeywords);
                   const outcome = getTalentOutcome(candidate);
                   const freshness = getTalentFreshness(candidate);
                   return (
@@ -1813,12 +1940,13 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
                       </td>
                       <td><strong>{job?.title || "未知岗位"}</strong><span className="meta">{job?.dept || "未记录部门"} · {job?.location || "未记录地点"}</span></td>
                       <td><TalentOutcomeTag outcome={outcome} /></td>
-                      <td><div className="talent-tag-row">{profileTags.map((tag) => <span key={tag}>{tag}</span>)}</div></td>
+                      <td><span className={`talent-stage-tag ${candidate.interviewStage ? "" : "empty"}`}>{getTalentProcessStageLabel(candidate)}</span></td>
                       <td><TalentFreshnessHat candidate={candidate} /></td>
                       <td>
                         <div className="talent-action-buttons">
                           <Button className="btn ghost compact" type="button" onClick={() => { setSelectedTalentId(candidate.id); setPreviewError(""); }}>查看档案</Button>
                           <Button className="btn blue compact" type="button" onClick={() => setRecommendCandidate(candidate)}>🔄 推荐至当前岗位</Button>
+                          <Button className="btn danger compact" type="button" onClick={() => { setDeleteTalentCandidate(candidate); setDeleteTalentError(""); }}>删除管理</Button>
                         </div>
                       </td>
                     </tr>
@@ -1844,10 +1972,9 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
           </div>
           <div className="salary-summary compact">
             <Metric label="原岗位状态" value={selectedJob?.status || "未记录"} />
-            <Metric label="结局" value={getTalentOutcome(selectedTalent).label} />
+            <Metric label="人才状态" value={getTalentOutcome(selectedTalent).label} />
             <Metric label="新鲜度" value={<TalentFreshnessHat candidate={selectedTalent} compact />} />
             <Metric label="筛选结论" value={selectedTalent.conclusion} />
-            <Metric label="推荐强度" value={selectedTalent.score >= 85 ? "高画像" : isReusableTalent(selectedTalent) ? "可复用" : "可观察"} />
           </div>
           <div className="talent-detail-grid">
             <section className="insight-card">
@@ -1915,16 +2042,49 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
                 </div>
               ) : null}
               {recommendDuplicateCandidate ? (
-                <label className="talent-overwrite-option">
-                  <ArcoCheckbox checked={overwriteExistingRecommend} onChange={setOverwriteExistingRecommend} />
+                <div className="talent-overwrite-option">
                   <span>
                     <strong>简历甄选中已有 {recommendDuplicateCandidate.name} 的简历</strong>
-                    <small>勾选后，将用人才库这份简历覆盖原简历；不勾选则保留原简历，且不重复显示。</small>
+                    <small>系统会保留当前岗位已有简历，不覆盖、不重复新增。</small>
                   </span>
-                </label>
+                </div>
               ) : null}
               {recommendError ? <div className="tool-error">{recommendError}</div> : null}
             </div>
+        </Modal>
+      ) : null}
+
+      {deleteTalentCandidate ? (
+        <Modal
+          title={(
+            <div>
+              <strong>删除管理</strong>
+              <p className="helper-text">管理 {deleteTalentCandidate.name} 的人才库档案。</p>
+            </div>
+          )}
+          className="talent-delete-modal"
+          onClose={() => setDeleteTalentCandidate(null)}
+          actions={(
+            <>
+              <Button className="btn" type="button" onClick={() => setDeleteTalentCandidate(null)} disabled={Boolean(deleteTalentLoading)}>取消</Button>
+              <Button className="btn" type="button" onClick={removeTalentFromPool} disabled={Boolean(deleteTalentLoading)}>{deleteTalentLoading === "remove" ? "移出中..." : "移出人才库"}</Button>
+              <Button className="btn danger" type="button" onClick={hardDeleteTalentArchive} disabled={Boolean(deleteTalentLoading)}>{deleteTalentLoading === "hard" ? "删除中..." : "彻底删除档案"}</Button>
+            </>
+          )}
+        >
+          <div className="talent-recommend-body">
+            <div className="talent-recommend-preview">
+              <strong>移出人才库</strong>
+              <p>仅从人才库列表移除，不影响简历甄选、面试管理中的已有记录。</p>
+              <small>适合误入库、暂不运营或画像不准确的人选。</small>
+            </div>
+            <div className="talent-delete-danger">
+              <strong>彻底删除档案</strong>
+              <p>删除候选人记录、简历原文、附件和关联解析记录，无法恢复。</p>
+              <small>{isScreeningCandidate(deleteTalentCandidate) || isInterviewCandidate(deleteTalentCandidate) ? "该候选人仍有关联流程数据，请确认确实不再需要追溯。" : "适合重复数据、无价值简历或合规删除。"}</small>
+            </div>
+            {deleteTalentError ? <div className="tool-error">{deleteTalentError}</div> : null}
+          </div>
         </Modal>
       ) : null}
     </div>
@@ -1985,11 +2145,11 @@ type CandidateIdentityLike = {
 };
 
 function findDuplicateCandidateInList(candidates: Candidate[], incomingCandidate: CandidateIdentityLike) {
-  return candidates.find((candidate) => isLikelySameCandidate(candidate, incomingCandidate)) || null;
+  return candidates.find((candidate) => isScreeningCandidate(candidate) && isLikelySameCandidate(candidate, incomingCandidate)) || null;
 }
 
 function dedupeCandidateList(candidates: Candidate[]) {
-  return candidates.reduce<Candidate[]>((visibleCandidates, candidate) => {
+  return candidates.filter(isScreeningCandidate).reduce<Candidate[]>((visibleCandidates, candidate) => {
     const existingIndex = visibleCandidates.findIndex((visibleCandidate) => isLikelySameCandidate(visibleCandidate, candidate));
     if (existingIndex === -1) return [...visibleCandidates, candidate];
     const existingCandidate = visibleCandidates[existingIndex];
@@ -1997,6 +2157,19 @@ function dedupeCandidateList(candidates: Candidate[]) {
     if (preferredCandidate.id === existingCandidate.id) return visibleCandidates;
     return visibleCandidates.map((item, index) => (index === existingIndex ? preferredCandidate : item));
   }, []);
+}
+
+function isScreeningCandidate(candidate: Candidate) {
+  return !candidate.removedFromScreening;
+}
+
+function isReactivatedTalentCandidate(candidate: Candidate, candidates: Candidate[]) {
+  if (!candidate.isInTalentPool) return false;
+  return candidates.some((activeCandidate) =>
+    isScreeningCandidate(activeCandidate)
+    && activeCandidate.source.startsWith("人才库回溯")
+    && isLikelySameCandidate(activeCandidate, candidate)
+  );
 }
 
 function findVisibleCandidateByStoredId(visibleCandidates: Candidate[], rawCandidates: Candidate[], storedCandidateId: string) {
@@ -2091,13 +2264,13 @@ function buildResumeHighlightTerms(candidate: Candidate, job?: Job | null) {
     .slice(0, 18);
 }
 
-type TalentOutcomeKey = "hired" | "revivable" | "inProcess";
+type TalentOutcomeKey = "reusable" | "inProcess" | "hired";
 type TalentFreshnessKey = "fresh" | "warm" | "sleeping" | "unknown";
 
 const talentOutcomePresets: Array<{ key: TalentOutcomeKey; icon: string; label: string; description: string }> = [
-  { key: "hired", icon: "🟢", label: "已入职", description: "自动归档，不进入可复用" },
-  { key: "revivable", icon: "🟡", label: "已流失·可复活", description: "拒了Offer但素质好" },
-  { key: "inProcess", icon: "⚪", label: "流程中", description: "暂不可复用" },
+  { key: "reusable", icon: "🟡", label: "可重新推荐", description: "当前未在招聘流程中。岗位重启或画像调整后，系统会按最新标准重新评估，可再次推荐。" },
+  { key: "inProcess", icon: "⚪", label: "流程中", description: "当前正在推荐、面试或待入职，暂不重复推荐。" },
+  { key: "hired", icon: "🟢", label: "已入职", description: "招聘流程已完成，自动归档且不进入可复用筛选。" },
 ];
 
 const talentFreshnessPresets: Record<TalentFreshnessKey, { icon: string; label: string; action: string }> = {
@@ -2138,12 +2311,30 @@ function isHiredTalent(candidate: Candidate) {
 
 function getTalentOutcome(candidate: Candidate) {
   if (isHiredTalent(candidate)) {
-    return talentOutcomePresets[0];
+    return talentOutcomePresets.find((outcome) => outcome.key === "hired")!;
   }
-  if (candidate.interviewStage === "offer" && candidate.onboarded === "否" && candidate.score >= 75) {
-    return talentOutcomePresets[1];
+  if (isTalentInActiveProcess(candidate)) {
+    return talentOutcomePresets.find((outcome) => outcome.key === "inProcess")!;
   }
-  return talentOutcomePresets[2];
+  return talentOutcomePresets.find((outcome) => outcome.key === "reusable")!;
+}
+
+function isTalentInActiveProcess(candidate: Candidate) {
+  if (candidate.interviewStage === "推荐") {
+    return candidate.stageRecommendation !== "否";
+  }
+  if (candidate.interviewStage === "初试" || candidate.interviewStage === "复试") {
+    return candidate.interviewResult !== "淘汰" && candidate.interviewResult !== "未到面";
+  }
+  if (candidate.interviewStage === "offer") {
+    return candidate.onboarded !== "是" && candidate.onboarded !== "否";
+  }
+  return false;
+}
+
+function getTalentProcessStageLabel(candidate: Candidate) {
+  if (!candidate.interviewStage) return "未进入流程";
+  return candidate.interviewStage === "offer" ? "Offer" : candidate.interviewStage;
 }
 
 function formatTalentArchiveTime(candidate: Candidate) {
@@ -2235,7 +2426,7 @@ function TalentFreshnessHat({ candidate, compact = false }: { candidate: Candida
 
 function isReusableTalent(candidate: Candidate) {
   const matchedCount = candidate.keyPointAnalysis.filter((item) => item.matched).length;
-  return getTalentOutcome(candidate).key === "revivable" && candidate.score >= 75 && matchedCount >= 2;
+  return getTalentOutcome(candidate).key === "reusable" && candidate.score >= 75 && matchedCount >= 2;
 }
 
 function buildTalentOutcomeSummary(candidates: Candidate[]): Record<TalentOutcomeKey, number> {
@@ -2243,7 +2434,7 @@ function buildTalentOutcomeSummary(candidates: Candidate[]): Record<TalentOutcom
     const outcome = getTalentOutcome(candidate);
     summary[outcome.key] += 1;
     return summary;
-  }, { hired: 0, revivable: 0, inProcess: 0 });
+  }, { reusable: 0, inProcess: 0, hired: 0 });
 }
 
 function buildTalentProfileTags(candidate: Candidate, matchedKeywords: string[], frequentKeywords: Set<string>) {
@@ -2554,7 +2745,7 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onAddToTal
       <div className="toolbar-left detail-actions">
         <Button className="btn primary" type="button" onClick={() => onMark(candidate.id)}>标记面试</Button>
         <Button className="btn" type="button" onClick={() => onAddToTalentPool(candidate.id)} disabled={Boolean(candidate.isInTalentPool)}>{candidate.isInTalentPool ? "已入人才库" : "进入人才库"}</Button>
-        <Button className="btn danger" type="button" onClick={onDelete}>删除候选人</Button>
+        <Button className="btn danger" type="button" onClick={onDelete}>{candidate.isInTalentPool || candidate.onboarded === "是" ? "从甄选移除" : "删除候选人"}</Button>
       </div>
     </div>
   );
@@ -5921,6 +6112,8 @@ type ResumeUploadItem = {
   extractionMethod?: string;
   warnings?: string[];
   error?: string;
+  aiStatus?: "pending" | "analyzing" | "complete" | "error";
+  aiError?: string;
 };
 
 const resumeUploadAccept = ".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
@@ -5930,6 +6123,7 @@ const resumeUploadAllowedMimeTypes = new Set([
   "application/msword",
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ]);
+const resumeUploadConcurrency = 2;
 const resumeSourceOptions = [
   "BOSS",
   "智联",
@@ -6033,6 +6227,9 @@ function ResumeSourceSelect({ value, onChange }: { value: string; onChange: (val
       options={options}
       placeholder="搜索或输入来源渠道"
       notFoundContent="输入后回车可新增来源渠道"
+      dropdownMenuClassName="resume-source-select-menu"
+      virtualListProps={{ height: 280, itemHeight: 42 }}
+      triggerProps={{ style: { zIndex: 1300 } }}
       onChange={(next) => {
         onChange(normalizeResumeSourceOption(String(next || "")));
         setInputValue("");
@@ -6045,14 +6242,19 @@ function ResumeSourceSelect({ value, onChange }: { value: string; onChange: (val
   );
 }
 
-function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidates: Candidate[]; onClose: () => void; onSaved: (state: AppState) => void }) {
+function ResumeModal({ job, candidates, onClose, onStateChange, onSaved }: { job: Job; candidates: Candidate[]; onClose: () => void; onStateChange: (state: AppState) => void; onSaved: (state: AppState, uploadedCandidateIds: string[]) => void }) {
   const [uploadItems, setUploadItems] = useState<ResumeUploadItem[]>([]);
   const [loading, setLoading] = useState(false);
+  const [analysisPhase, setAnalysisPhase] = useState<"analyzing" | "checking" | null>(null);
+  const [analysisProgress, setAnalysisProgress] = useState<{ completed: number; total: number; currentName: string; failed: number } | null>(null);
   const [error, setError] = useState("");
+  const uploadQueueRef = useRef<Array<{ file: File; item: ResumeUploadItem }>>([]);
+  const activeUploadCountRef = useRef(0);
   const hasProcessing = uploadItems.some((item) => item.status === "uploading" || item.status === "parsing");
   const hasUploadError = uploadItems.some((item) => item.status === "error");
   const readyItems = uploadItems
     .filter((item): item is ResumeUploadItem & { uploaded: UploadedFile } => item.status === "ready" && Boolean(item.uploaded));
+  const pendingAnalysisItems = readyItems.filter((item) => item.aiStatus !== "complete");
 
   function updateUploadItem(id: string, patch: Partial<ResumeUploadItem>) {
     setUploadItems((current) => current.map((item) => (item.id === id ? { ...item, ...patch } : item)));
@@ -6063,8 +6265,7 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
     const rejectedFiles = fileList.filter((file) => !isAllowedResumeUploadFile(file));
     setError(rejectedFiles.length ? buildUnsupportedResumeFileMessage(rejectedFiles) : "");
     if (!acceptedFiles.length) return;
-
-    acceptedFiles.forEach((file) => {
+    const queuedItems = acceptedFiles.map((file) => {
       const id = `${Date.now()}_${Math.random().toString(36).slice(2)}`;
       const item: ResumeUploadItem = {
         id,
@@ -6076,30 +6277,69 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
         source: "",
         resumeText: "",
       };
-      setUploadItems((current) => [...current, item]);
-      void api.uploadFile(file, "resume")
-        .then(async (uploaded) => {
-          updateUploadItem(id, { status: "parsing", uploaded, name: uploaded.name, type: uploaded.content_type || item.type, size: uploaded.size });
-          const parsedResult = await api.parseResumes({ files: [uploadedFileToResumePayload(uploaded)] });
-          const parsed = parsedResult.resumes[0];
-          if (!parsed) throw new Error("简历解析失败，请重试");
-          updateUploadItem(id, {
-            status: "ready",
-            uploaded,
-            name: parsed.file.name,
-            type: parsed.file.content_type || parsed.file.type || uploaded.content_type || item.type,
-            size: parsed.file.size || uploaded.size,
-            candidateName: parsed.candidateName,
-            source: normalizeResumeSourceOption(parsed.source),
-            resumeText: parsed.resumeText,
-            extractionMethod: parsed.extractionMethod,
-            warnings: parsed.warnings || [],
-          });
-        })
-        .catch((uploadError) => {
-          updateUploadItem(id, { status: "error", error: uploadError instanceof Error ? uploadError.message : "上传或解析失败" });
-        });
+      return { file, item };
     });
+    setUploadItems((current) => [...current, ...queuedItems.map(({ item }) => item)]);
+    uploadQueueRef.current.push(...queuedItems);
+    runUploadQueue();
+  }
+
+  function runUploadQueue() {
+    while (activeUploadCountRef.current < resumeUploadConcurrency && uploadQueueRef.current.length) {
+      const task = uploadQueueRef.current.shift();
+      if (!task) return;
+      activeUploadCountRef.current += 1;
+      void processResumeUpload(task.file, task.item).finally(() => {
+        activeUploadCountRef.current -= 1;
+        runUploadQueue();
+      });
+    }
+  }
+
+  async function processResumeUpload(file: File, item: ResumeUploadItem) {
+    try {
+      const uploaded = await api.uploadFile(file, "resume");
+      updateUploadItem(item.id, { status: "parsing", uploaded, name: uploaded.name, type: uploaded.content_type || item.type, size: uploaded.size });
+      const parsedResult = await api.parseResumes({ files: [uploadedFileToResumePayload(uploaded)] });
+      const parsed = parsedResult.resumes[0];
+      if (!parsed) throw new Error("简历解析失败，请重试");
+      updateUploadItem(item.id, {
+        status: "ready",
+        uploaded,
+        name: parsed.file.name,
+        type: parsed.file.content_type || parsed.file.type || uploaded.content_type || item.type,
+        size: parsed.file.size || uploaded.size,
+        candidateName: parsed.candidateName,
+        source: normalizeResumeSourceOption(parsed.source),
+        resumeText: parsed.resumeText,
+        extractionMethod: parsed.extractionMethod,
+        warnings: parsed.warnings || [],
+        aiStatus: "pending",
+        aiError: "",
+      });
+    } catch (uploadError) {
+      updateUploadItem(item.id, { status: "error", error: uploadError instanceof Error ? uploadError.message : "上传或解析失败" });
+    }
+  }
+
+  async function waitForCommittedResumeState(items: Array<ResumeUploadItem & { uploaded: UploadedFile }>) {
+    for (let attempt = 0; attempt < 15; attempt += 1) {
+      try {
+        const next = await api.state();
+        const jobCandidates = (next.candidates[job.id] || []).filter(isScreeningCandidate);
+        const allCommitted = items.every((item) => {
+          const objectKey = item.uploaded.object_key;
+          return objectKey
+            ? jobCandidates.some((candidate) => candidate.fileObjectKey === objectKey)
+            : Boolean(findDuplicateCandidateInList(jobCandidates, item));
+        });
+        if (allCommitted) return next;
+      } catch {
+        // The original request may still be completing; keep checking until the retry window ends.
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+    return null;
   }
 
   function removeUploadItem(item: ResumeUploadItem) {
@@ -6133,35 +6373,77 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
       setError("请先上传并解析至少一份简历");
       return;
     }
-    const invalidItem = readyItems.find((item) => !item.candidateName.trim() || !item.source.trim() || !item.resumeText.trim());
+    if (!pendingAnalysisItems.length) {
+      setError("当前简历均已完成 AI 分析");
+      return;
+    }
+    const invalidItem = pendingAnalysisItems.find((item) => !item.candidateName.trim() || !item.source.trim() || !item.resumeText.trim());
     if (invalidItem) {
       setError(`请补全 ${invalidItem.name} 的候选人姓名、来源渠道和简历原文`);
       return;
     }
     setLoading(true);
+    setAnalysisPhase("analyzing");
     setError("");
+    setAnalysisProgress({ completed: 0, total: pendingAnalysisItems.length, currentName: pendingAnalysisItems[0].name, failed: 0 });
+    let latestState: AppState | null = null;
+    const failedItems: ResumeUploadItem[] = [];
     try {
-      const duplicateCandidates = findUploadDuplicateCandidates(candidates, readyItems);
+      const duplicateCandidates = findUploadDuplicateCandidates(candidates, pendingAnalysisItems);
       const duplicateAction = duplicateCandidates.length
         ? await confirmAction("发现重复简历", `当前岗位的简历甄选中已存在 ${duplicateCandidates.map((candidate) => candidate.name).join("、")} 的简历。\n\n是否用本次提交的简历覆盖原有简历？\n\n确认：覆盖原简历\n取消：保留原简历，不重复新增`)
           ? "overwrite"
           : "skip"
         : "skip";
-      const payload: ResumeUploadPayload = {
-        files: readyItems.map(resumeItemToPayload),
-        duplicateAction,
-      };
-      const result = await api.uploadResumes(job.id, payload);
-      onSaved(result.state);
-    } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : "简历分析失败，请稍后重试");
+      for (const [index, item] of pendingAnalysisItems.entries()) {
+        setAnalysisPhase("analyzing");
+        setAnalysisProgress({ completed: index, total: pendingAnalysisItems.length, currentName: item.name, failed: failedItems.length });
+        updateUploadItem(item.id, { aiStatus: "analyzing", aiError: "" });
+        const isExistingDuplicate = Boolean(findUploadDuplicateCandidates(candidates, [item]).length);
+        const expectedCommittedItems = duplicateAction === "skip" && isExistingDuplicate ? [] : [item];
+        try {
+          const payload: ResumeUploadPayload = {
+            files: [resumeItemToPayload(item)],
+            duplicateAction,
+          };
+          const result = await api.uploadResumes(job.id, payload);
+          latestState = result.state;
+          updateUploadItem(item.id, { aiStatus: "complete", aiError: "" });
+        } catch (uploadError) {
+          const message = uploadError instanceof Error ? uploadError.message : "简历分析失败，请稍后重试";
+          let reconciledState: AppState | null = null;
+          if (message.includes("服务器挤爆")) {
+            setAnalysisPhase("checking");
+            reconciledState = expectedCommittedItems.length
+              ? await waitForCommittedResumeState(expectedCommittedItems)
+              : await api.state().catch(() => null);
+          }
+          if (reconciledState) {
+            latestState = reconciledState;
+            updateUploadItem(item.id, { aiStatus: "complete", aiError: "" });
+          } else {
+            failedItems.push(item);
+            updateUploadItem(item.id, { aiStatus: "error", aiError: message });
+          }
+        }
+        setAnalysisProgress({ completed: index + 1, total: pendingAnalysisItems.length, currentName: item.name, failed: failedItems.length });
+      }
+      if (failedItems.length) {
+        if (latestState) onStateChange(latestState);
+        setError(`AI 分析结束：成功 ${pendingAnalysisItems.length - failedItems.length} 份，失败 ${failedItems.length} 份。可点击按钮重试失败简历。`);
+        return;
+      }
+      const completedState = latestState || await api.state();
+      onSaved(completedState, findUploadedCandidateIds(completedState, job.id, readyItems));
     } finally {
       setLoading(false);
+      setAnalysisPhase(null);
+      setAnalysisProgress(null);
     }
   }
 
   return (
-    <Modal title="批量上传简历" className="modal-wide resume-upload-modal" onClose={onClose}>
+    <Modal title="批量上传简历" className="modal-wide resume-upload-modal" onClose={() => { if (!loading) onClose(); }}>
       <form onSubmit={submit}>
         <div className="modal-body form-grid resume-parse-modal-body">
           <div className="form-field full">
@@ -6170,6 +6452,7 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
               className="resume-upload"
               drag
               multiple
+              disabled={loading}
               autoUpload={false}
               showUploadList={false}
               accept={resumeUploadAccept}
@@ -6190,15 +6473,15 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
           {uploadItems.length ? (
             <div className="resume-parse-list full">
               {uploadItems.map((item) => (
-                <section className={`resume-parse-card ${item.status}`} key={item.id}>
+                <section className={`resume-parse-card ${item.status} ${item.aiStatus ? `ai-${item.aiStatus}` : ""}`} key={item.id}>
                   <div className="row-between resume-parse-head">
                     <div>
                       <strong>{item.name}</strong>
-                      <span>{formatFileSize(item.size)} · {item.status === "uploading" ? "上传中" : item.status === "parsing" ? "解析中" : item.status === "ready" ? "已解析" : item.error || "上传失败"}</span>
+                      <span>{formatFileSize(item.size)} · {item.status === "uploading" ? "上传中" : item.status === "parsing" ? "解析中" : item.status === "ready" ? item.aiStatus === "analyzing" ? analysisPhase === "checking" ? "正在确认 AI 结果" : "AI 分析中" : item.aiStatus === "complete" ? "AI 分析完成" : item.aiStatus === "error" ? `AI 分析失败 · ${item.aiError || "请重试"}` : "已解析，等待 AI 分析" : item.error || "上传失败"}</span>
                     </div>
                     <div className="toolbar-right compact-actions">
                       {item.uploaded ? <Button className="btn ghost compact" type="button" onClick={() => void previewUploadItem(item)}>预览</Button> : null}
-                      <Button className="btn ghost compact" type="button" onClick={() => removeUploadItem(item)}>移除</Button>
+                      <Button className="btn ghost compact" type="button" onClick={() => removeUploadItem(item)} disabled={loading}>移除</Button>
                     </div>
                   </div>
                   {item.status === "ready" ? (
@@ -6222,15 +6505,35 @@ function ResumeModal({ job, candidates, onClose, onSaved }: { job: Job; candidat
               ))}
             </div>
           ) : null}
+          {analysisPhase ? (
+            <div className="resume-ai-status full" role="status" aria-live="polite">
+              <span className="resume-ai-status-dot" />
+              <div>
+                <strong>{analysisPhase === "checking" ? "正在确认 AI 生成结果" : `AI 正在分析第 ${Math.min((analysisProgress?.completed || 0) + 1, analysisProgress?.total || 1)} / ${analysisProgress?.total || pendingAnalysisItems.length} 份`}</strong>
+                <p>{analysisPhase === "checking" ? "服务器可能已经完成入库，正在自动同步 SQLite 中的最新结果。" : `${analysisProgress?.currentName || "当前简历"} · 已完成 ${analysisProgress?.completed || 0} 份${analysisProgress?.failed ? ` · 失败 ${analysisProgress.failed} 份` : ""}`}</p>
+              </div>
+            </div>
+          ) : null}
           {error ? <div className="tool-error full">{error}</div> : null}
         </div>
         <div className="modal-foot">
-          <Button className="btn" type="button" onClick={onClose}>取消</Button>
-          <Button className="btn primary" type="submit" disabled={loading || hasProcessing}>{hasProcessing ? "解析中..." : loading ? "分析中..." : "分析并生成候选人"}</Button>
+          <Button className="btn" type="button" onClick={onClose} disabled={loading}>取消</Button>
+          <Button className="btn primary" type="submit" disabled={loading || hasProcessing}>{hasProcessing ? "解析中..." : analysisPhase === "checking" ? "确认结果中..." : loading ? `AI 分析中 ${analysisProgress?.completed || 0}/${analysisProgress?.total || pendingAnalysisItems.length}` : pendingAnalysisItems.some((item) => item.aiStatus === "error") ? `重试未完成的 ${pendingAnalysisItems.length} 份` : "分析并生成候选人"}</Button>
         </div>
       </form>
     </Modal>
   );
+}
+
+function findUploadedCandidateIds(state: AppState, jobId: string, items: Array<ResumeUploadItem & { uploaded: UploadedFile }>) {
+  const jobCandidates = (state.candidates[jobId] || []).filter(isScreeningCandidate);
+  return Array.from(new Set(items.map((item) => {
+    const objectKey = item.uploaded.object_key;
+    const candidate = objectKey
+      ? jobCandidates.find((current) => current.fileObjectKey === objectKey)
+      : findUploadDuplicateCandidates(jobCandidates, [item])[0];
+    return candidate?.id || "";
+  }).filter(Boolean)));
 }
 
 function uploadedFileToResumePayload(file: UploadedFile): ResumeFilePayload {

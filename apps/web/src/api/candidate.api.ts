@@ -19,4 +19,6 @@ export const candidateApi = {
   updateInterviewStage: (id: string, payload: InterviewStagePayload) =>
     request<ResponseDTO.MutateState>(`/api/candidates/${id}/interview-stage`, { method: "PATCH", body: JSON.stringify(payload) }),
   deleteCandidate: (id: string) => request<ResponseDTO.MutateState>(`/api/candidates/${id}`, { method: "DELETE" }),
+  removeFromTalentPool: (id: string) => request<ResponseDTO.MutateState>(`/api/candidates/${id}/talent-pool/remove`, { method: "POST" }),
+  hardDeleteCandidate: (id: string) => request<ResponseDTO.MutateState>(`/api/candidates/${id}/hard`, { method: "DELETE" }),
 };

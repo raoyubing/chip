@@ -592,6 +592,48 @@ textarea:focus {
   background: #fff6f4;
 }
 
+.resume-parse-card.ai-error {
+  border-color: rgba(176, 57, 57, 0.35);
+  background: #fff9f7;
+}
+
+.resume-ai-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 14px;
+  color: var(--green-900);
+  background: var(--green-50);
+  border: 1px solid rgba(26, 107, 74, 0.2);
+  border-radius: 12px;
+}
+
+.resume-ai-status-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  background: var(--green-700);
+  border-radius: 50%;
+  box-shadow: 0 0 0 0 rgba(26, 107, 74, 0.3);
+  animation: resume-ai-pulse 1.4s ease-out infinite;
+}
+
+.resume-ai-status div {
+  display: grid;
+  gap: 3px;
+}
+
+.resume-ai-status p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+@keyframes resume-ai-pulse {
+  70% { box-shadow: 0 0 0 8px rgba(26, 107, 74, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(26, 107, 74, 0); }
+}
+
 .resume-parse-head > div:first-child {
   display: grid;
   gap: 3px;
@@ -626,6 +668,11 @@ textarea:focus {
 
 .resume-source-select {
   width: 100%;
+}
+
+.arco-select-popup .resume-source-select-menu {
+  max-height: 280px;
+  overscroll-behavior: contain;
 }
 
 .resume-upload-modal .modal-scroll form,
@@ -2753,6 +2800,117 @@ textarea:focus {
   transition: 0.18s ease;
 }
 
+.candidate-list-pane {
+  position: relative;
+}
+
+.candidate-list-tools {
+  position: sticky;
+  z-index: 10;
+  top: -18px;
+  display: grid;
+  gap: 8px;
+  margin: -18px -18px 14px;
+  padding: 18px 18px 12px;
+  background: #ffffff;
+  border-bottom: 1px solid var(--line);
+}
+
+.candidate-search-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.candidate-search-input .arco-input-wrapper {
+  min-height: 42px;
+  border-color: var(--line);
+  border-radius: 11px;
+}
+
+.candidate-recent-toggle {
+  min-height: 42px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 0 12px;
+  color: var(--green-700);
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.candidate-recent-toggle svg {
+  font-size: 16px;
+}
+
+.candidate-recent-toggle span {
+  min-width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 5px;
+  color: var(--green-900);
+  background: var(--green-50);
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+.candidate-recent-toggle:hover:not(:disabled),
+.candidate-recent-toggle.active {
+  color: #ffffff;
+  background: var(--green-700);
+  border-color: var(--green-700);
+}
+
+.candidate-recent-toggle.active span {
+  color: var(--green-900);
+  background: #ffffff;
+}
+
+.candidate-recent-toggle:disabled {
+  color: #9aa6a0;
+  background: #f6f8f7;
+  cursor: not-allowed;
+}
+
+.candidate-search-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.candidate-body {
+  min-width: 0;
+}
+
+.candidate-search-snippet {
+  margin: -2px 0 0;
+  padding: 8px 10px;
+  color: #52635b;
+  background: #f5f8f6;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.candidate-search-mark {
+  padding: 0 2px;
+  color: var(--green-900);
+  background: #dff2e7;
+  border-radius: 3px;
+  font-weight: 800;
+}
+
 .candidate-card:hover,
 .candidate-card:focus-visible,
 .candidate-card.selected {
@@ -3094,6 +3252,18 @@ textarea:focus {
   gap: 14px;
 }
 
+.talent-detail-card .salary-summary.compact .salary-metric strong {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.talent-detail-card .salary-summary.compact {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .talent-table-wrap {
   margin-top: 14px;
   overflow: auto;
@@ -3156,7 +3326,7 @@ textarea:focus {
   color: var(--success);
 }
 
-.talent-outcome-tag.revivable .talent-outcome-trigger {
+.talent-outcome-tag.reusable .talent-outcome-trigger {
   color: #b28a08;
   border-color: rgba(178, 138, 8, 0.22);
   background: #fffaf0;
@@ -3220,7 +3390,8 @@ textarea:focus {
 }
 
 .talent-table tr.sleeping:not(.selected) .score-ring,
-.talent-table tr.sleeping:not(.selected) .talent-tag-row {
+.talent-table tr.sleeping:not(.selected) .talent-tag-row,
+.talent-table tr.sleeping:not(.selected) .talent-stage-tag {
   opacity: 0.58;
 }
 
@@ -3283,6 +3454,28 @@ textarea:focus {
   border-radius: 999px;
   font-size: 12px;
   font-weight: 800;
+}
+
+.talent-stage-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  min-height: 28px;
+  padding: 4px 10px;
+  color: var(--green-900);
+  background: var(--green-50);
+  border: 1px solid rgba(26, 107, 74, 0.16);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.talent-stage-tag.empty {
+  color: #7f8d88;
+  background: #f4f6f5;
+  border-color: #dfe6e3;
 }
 
 .talent-freshness {
@@ -3461,24 +3654,12 @@ textarea:focus {
 }
 
 .talent-overwrite-option {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 10px;
-  align-items: flex-start;
+  display: block;
   padding: 12px;
   color: #29463b;
   background: #fff8df;
   border: 1px solid #f1d784;
   border-radius: 14px;
-}
-
-.talent-overwrite-option input {
-  margin-top: 4px;
-  accent-color: var(--green);
-}
-
-.talent-overwrite-option .arco-checkbox {
-  margin-top: 4px;
 }
 
 .talent-overwrite-option span {
@@ -3494,6 +3675,31 @@ textarea:focus {
 .talent-overwrite-option small {
   color: #75652b;
   line-height: 1.6;
+}
+
+.talent-delete-danger {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  color: #4f1f1b;
+  background: #fff1ef;
+  border: 1px solid #ffc8c1;
+  border-radius: 14px;
+}
+
+.talent-delete-danger strong {
+  color: var(--danger);
+  font-size: 13px;
+}
+
+.talent-delete-danger p,
+.talent-delete-danger small {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.talent-delete-danger small {
+  color: #8a3b33;
 }
 
 .talent-resume-box {
@@ -4469,6 +4675,11 @@ textarea:focus {
     overflow: visible;
   }
 
+  .candidate-list-tools {
+    position: static;
+    margin-top: -18px;
+  }
+
   .main-voice:has(.voice-page-workbench) {
     height: auto;
     min-height: 100vh;
@@ -4503,6 +4714,10 @@ textarea:focus {
   .talent-filter-grid,
   .talent-detail-grid {
     grid-template-columns: 1fr;
+  }
+
+  .talent-detail-card .salary-summary.compact {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .talent-metrics {
@@ -4558,6 +4773,10 @@ textarea:focus {
   .salary-summary,
   .talent-metrics,
   .salary-filter-row {
+    grid-template-columns: 1fr;
+  }
+
+  .talent-detail-card .salary-summary.compact {
     grid-template-columns: 1fr;
   }
 

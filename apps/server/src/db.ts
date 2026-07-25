@@ -202,6 +202,8 @@ export function updateCandidate(candidate: Candidate) {
       isInTalentPool: data.isInTalentPool,
       talentPoolAt: data.talentPoolAt,
       talentPoolNote: data.talentPoolNote,
+      removedFromScreening: data.removedFromScreening,
+      removedFromTalentPool: data.removedFromTalentPool,
     })
     .where(eq(dbSchema.candidates.id, data.id))
     .run();
@@ -210,6 +212,25 @@ export function updateCandidate(candidate: Candidate) {
 
 export function deleteCandidate(id: string) {
   getDb().delete(dbSchema.candidates).where(eq(dbSchema.candidates.id, id)).run();
+  persist();
+}
+
+export function removeCandidateFromScreening(id: string) {
+  getDb().update(dbSchema.candidates).set({ removedFromScreening: 1 }).where(eq(dbSchema.candidates.id, id)).run();
+  persist();
+}
+
+export function removeCandidateFromTalentPool(id: string) {
+  getDb()
+    .update(dbSchema.candidates)
+    .set({
+      isInTalentPool: 0,
+      talentPoolAt: "",
+      talentPoolNote: "",
+      removedFromTalentPool: 1,
+    })
+    .where(eq(dbSchema.candidates.id, id))
+    .run();
   persist();
 }
 
@@ -401,12 +422,20 @@ function insertCandidateNoPersist(candidate: Candidate) {
       isInTalentPool: data.isInTalentPool,
       talentPoolAt: data.talentPoolAt,
       talentPoolNote: data.talentPoolNote,
+      removedFromScreening: data.removedFromScreening,
+      removedFromTalentPool: data.removedFromTalentPool,
     })
     .run();
 }
 
 function getCandidateCount(jobId: string) {
-  return getDb().select({ id: dbSchema.candidates.id }).from(dbSchema.candidates).where(eq(dbSchema.candidates.jobId, jobId)).all().length;
+  return getDb()
+    .select({ removedFromScreening: dbSchema.candidates.removedFromScreening })
+    .from(dbSchema.candidates)
+    .where(eq(dbSchema.candidates.jobId, jobId))
+    .all()
+    .filter((candidate) => !Boolean(candidate.removedFromScreening))
+    .length;
 }
 
 function rowToJob(row: JobRow, resumeCount: number): Job {
@@ -449,6 +478,35 @@ function safeJsonParse(value: string) {
   } catch {
     return null;
   }
+}
+
+function parseJsonArray(value: unknown): unknown[] {
+  const parsed = typeof value === "string" ? safeJsonParse(value) : value;
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+function parseStringArray(value: unknown): string[] {
+  return parseJsonArray(value).map((item) => String(item).trim()).filter(Boolean);
+}
+
+function parseCandidateKeyPointAnalysis(value: unknown): Candidate["keyPointAnalysis"] {
+  return parseJsonArray(value)
+    .map((item) => {
+      const source = item && typeof item === "object" ? item as Record<string, unknown> : {};
+      return {
+        keyword: String(source.keyword || "").trim(),
+        matched: Boolean(source.matched),
+        evidence: String(source.evidence || "").trim(),
+      };
+    })
+    .filter((item) => item.keyword || item.evidence);
+}
+
+function parseCandidateTimeline(value: unknown): Candidate["interviewTimeline"] {
+  const parsed = typeof value === "string" ? safeJsonParse(value) : value;
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? parsed as Candidate["interviewTimeline"]
+    : {};
 }
 
 function normalizeWeightValue(value: unknown, fallback: number) {
@@ -577,19 +635,21 @@ function rowToCandidate(row: CandidateRow): Candidate {
     fileUrl: row.fileUrl,
     evaluation: parseCandidateEvaluation(row.evaluationJson),
     interviewPlan: parseCandidateInterviewPlan(row.interviewPlanJson),
-    keyPointAnalysis: JSON.parse(row.keyPointAnalysis || "[]"),
-    interviewQuestions: JSON.parse(row.interviewQuestions || "[]"),
+    keyPointAnalysis: parseCandidateKeyPointAnalysis(row.keyPointAnalysis),
+    interviewQuestions: parseJsonArray(row.interviewQuestions) as Candidate["interviewQuestions"],
     interviewStage: normalizeInterviewStage(row.interviewStage),
     stageRecommendation: normalizeStageRecommendation(row.stageRecommendation),
     interviewResult: String(row.interviewResult || "待定") as Candidate["interviewResult"],
     onboarded: normalizeOnboarded(row.onboarded),
     reportMonth: row.reportMonth || formatReportMonth(),
     interviewReason: row.interviewReason || "",
-    reasonTags: JSON.parse(row.reasonTags || "[]"),
-    interviewTimeline: JSON.parse(row.interviewTimeline || "{}"),
+    reasonTags: parseStringArray(row.reasonTags),
+    interviewTimeline: parseCandidateTimeline(row.interviewTimeline),
     isInTalentPool: Boolean(row.isInTalentPool),
     talentPoolAt: row.talentPoolAt || "",
     talentPoolNote: row.talentPoolNote || "",
+    removedFromScreening: Boolean(row.removedFromScreening),
+    removedFromTalentPool: Boolean(row.removedFromTalentPool),
   };
 }
 
@@ -683,6 +743,8 @@ function serializeCandidate(candidate: Candidate) {
     isInTalentPool: candidate.isInTalentPool ? 1 : 0,
     talentPoolAt: candidate.talentPoolAt || "",
     talentPoolNote: candidate.talentPoolNote || "",
+    removedFromScreening: candidate.removedFromScreening ? 1 : 0,
+    removedFromTalentPool: candidate.removedFromTalentPool ? 1 : 0,
   };
 }
 
@@ -835,6 +897,8 @@ function ensureSchema() {
     is_in_talent_pool INTEGER NOT NULL DEFAULT 0,
     talent_pool_at TEXT NOT NULL DEFAULT '',
     talent_pool_note TEXT NOT NULL DEFAULT '',
+    removed_from_screening INTEGER NOT NULL DEFAULT 0,
+    removed_from_talent_pool INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );`);
   ensureColumn("candidates", "interview_recommendation", "TEXT NOT NULL DEFAULT '待定'");
@@ -854,6 +918,8 @@ function ensureSchema() {
   ensureColumn("candidates", "is_in_talent_pool", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("candidates", "talent_pool_at", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("candidates", "talent_pool_note", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("candidates", "removed_from_screening", "INTEGER NOT NULL DEFAULT 0");
+  ensureColumn("candidates", "removed_from_talent_pool", "INTEGER NOT NULL DEFAULT 0");
   sqliteDb.run(`CREATE TABLE IF NOT EXISTS voice_analyses (
     id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,

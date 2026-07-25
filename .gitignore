@@ -1,4 +1,5 @@
 node_modules/
+.local-tools/
 dist/
 apps/*/dist/
 apps/*/tsconfig.tsbuildinfo

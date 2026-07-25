@@ -57,6 +57,8 @@ export const candidates = sqliteTable("candidates", {
   isInTalentPool: integer("is_in_talent_pool").notNull().default(0),
   talentPoolAt: text("talent_pool_at").notNull().default(""),
   talentPoolNote: text("talent_pool_note").notNull().default(""),
+  removedFromScreening: integer("removed_from_screening").notNull().default(0),
+  removedFromTalentPool: integer("removed_from_talent_pool").notNull().default(0),
   createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
 });
 

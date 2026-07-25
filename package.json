@@ -12,9 +12,9 @@
 		}
 	},
 	"scripts": {
-		"dev": "pnpm --parallel --filter @xiaosongshu/server --filter @xiaosongshu/web dev",
-		"dev:server": "pnpm --filter @xiaosongshu/server dev",
-		"dev:web": "pnpm --filter @xiaosongshu/web dev",
+		"dev": "bash scripts/with-local-node.sh pnpm --filter @xiaosongshu/shared build && bash scripts/with-local-node.sh pnpm --parallel --filter @xiaosongshu/server --filter @xiaosongshu/web dev",
+		"dev:server": "bash scripts/with-local-node.sh pnpm --filter @xiaosongshu/server dev",
+		"dev:web": "bash scripts/with-local-node.sh pnpm --filter @xiaosongshu/web dev",
 		"download:whisper-model": "pnpm --filter @xiaosongshu/server download:whisper-model",
 		"download:boss-scraper": "pnpm --filter @xiaosongshu/server download:boss-scraper",
 		"boss-scraper:check": "pnpm --filter @xiaosongshu/server boss-scraper:check",
@@ -32,8 +32,8 @@
 		"deploy:remote": "bash deploy/scripts/deploy-remote.sh",
 		"deploy:pack-images": "bash deploy/scripts/pack-images.sh",
 		"deploy:load-images": "bash deploy/scripts/load-images.sh",
-		"build": "pnpm -r build",
-		"typecheck": "pnpm -r typecheck",
+		"build": "bash scripts/with-local-node.sh pnpm -r build",
+		"typecheck": "bash scripts/with-local-node.sh pnpm -r typecheck",
 		"test:e2e": "playwright test",
 		"test:e2e:ui": "playwright test --ui",
 		"test:e2e:report": "playwright show-report",

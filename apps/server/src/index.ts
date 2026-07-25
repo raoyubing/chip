@@ -19,6 +19,8 @@ import {
   deleteCandidate,
   deleteJob,
   deleteVoiceAnalysis,
+  removeCandidateFromScreening,
+  removeCandidateFromTalentPool,
   getDatabasePath,
   getCandidateById,
   getCandidates,
@@ -70,7 +72,7 @@ const bossScraperPython = process.env.BOSS_SCRAPER_PYTHON
 const bossScraperOutputDir = resolveServerPath(process.env.BOSS_SCRAPER_OUTPUT_DIR || "data/salary-scraper");
 const bossScraperCdpPort = Number(process.env.BOSS_SCRAPER_CDP_PORT || 9222);
 const bossScraperPages = clampInteger(Number(process.env.BOSS_SCRAPER_PAGES || 1), 1, 10);
-const bossScraperTimeoutMs = Number(process.env.BOSS_SCRAPER_TIMEOUT_MS || 180000);
+const bossScraperTimeoutMs = Number(process.env.BOSS_SCRAPER_TIMEOUT_MS || 45000);
 await server.register(cors, { origin: true });
 await server.register(sensible);
 await server.register(multipart, {
@@ -176,11 +178,11 @@ const resumeSchema = z.object({
     candidateName: z.string().min(1, "候选人姓名不能为空"),
     source: z.string().min(1, "来源渠道不能为空"),
     resumeText: z.string().min(1, "简历原文不能为空"),
-  })).min(1, "请至少上传一份简历"),
+  })).min(1, "请至少上传一份简历").max(100, "单次处理的简历数量过多，请分批处理。"),
 });
 
 const resumeParseSchema = z.object({
-  files: z.array(resumeFilePayloadSchema).min(1).max(10),
+  files: z.array(resumeFilePayloadSchema).min(1).max(100, "单次解析的简历数量过多，请分批处理。"),
 });
 type ResumeFileInput = z.infer<typeof resumeFilePayloadSchema>;
 
@@ -424,7 +426,16 @@ server.post("/api/candidates/:id/talent-pool", async (request) => {
     isInTalentPool: true,
     talentPoolAt: candidate.talentPoolAt || new Date().toLocaleString("zh-CN"),
     talentPoolNote: body.note || candidate.talentPoolNote || "",
+    removedFromTalentPool: false,
   });
+  return getState();
+});
+
+server.post("/api/candidates/:id/talent-pool/remove", async (request) => {
+  const params = z.object({ id: z.string() }).parse(request.params);
+  const candidate = getCandidateById(params.id);
+  if (!candidate) throw server.httpErrors.notFound("候选人不存在");
+  removeCandidateFromTalentPool(params.id);
   return getState();
 });
 
@@ -473,11 +484,13 @@ server.post("/api/candidates/:id/recommend-to-job", async (request) => {
     isInTalentPool: false,
     talentPoolAt: "",
     talentPoolNote: "",
+    removedFromScreening: false,
+    removedFromTalentPool: false,
   };
 
-  const existingCandidate = findExistingCandidateInJob(clonedCandidate, targetJob.id);
+  const existingCandidate = findExistingCandidateInJob(clonedCandidate, targetJob.id, { includeRemovedFromScreening: true });
   if (existingCandidate) {
-    if (body.duplicateAction === "overwrite") {
+    if (existingCandidate.removedFromScreening || body.duplicateAction === "overwrite") {
       updateCandidate(mergeCandidateResumeOverwrite(existingCandidate, clonedCandidate));
     }
     setSetting("currentJobId", targetJob.id);
@@ -541,6 +554,25 @@ server.patch("/api/candidates/:id/interview-stage", async (request) => {
 
 server.delete("/api/candidates/:id", async (request) => {
   const params = z.object({ id: z.string() }).parse(request.params);
+  const candidate = getCandidateById(params.id);
+  if (!candidate) throw server.httpErrors.notFound("候选人不存在");
+  if (candidate.isInTalentPool || candidate.onboarded === "是") {
+    removeCandidateFromScreening(params.id);
+  } else {
+    deleteCandidate(params.id);
+  }
+  return getState();
+});
+
+server.delete("/api/candidates/:id/hard", async (request) => {
+  const params = z.object({ id: z.string() }).parse(request.params);
+  const candidate = getCandidateById(params.id);
+  if (!candidate) throw server.httpErrors.notFound("候选人不存在");
+  if (candidate.fileObjectKey) {
+    await fileService.deleteFile(candidate.fileObjectKey).catch((error) => {
+      server.log.warn({ event: "candidate_file_delete_failed", candidateId: candidate.id, fileObjectKey: candidate.fileObjectKey, error }, "候选人附件删除失败");
+    });
+  }
   deleteCandidate(params.id);
   return getState();
 });
@@ -3189,12 +3221,15 @@ async function generateSalaryDataWithDeepSeek(
   searchEvidence: Awaited<ReturnType<typeof collectSalarySearchEvidence>>,
 ): Promise<SalaryData> {
   const prompt = buildSalaryResearchPrompt(job, filters, searchEvidence);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(deepseekTimeoutMs, 45000));
   const response = await fetch(`${deepseekBaseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${deepseekApiKey}`,
     },
+    signal: controller.signal,
     body: JSON.stringify({
       model: deepseekModel,
       messages: [
@@ -3219,7 +3254,7 @@ async function generateSalaryDataWithDeepSeek(
         type: "json_object",
       },
     }),
-  });
+  }).finally(() => clearTimeout(timer));
 
   if (!response.ok) {
     const text = await response.text();
@@ -4126,8 +4161,10 @@ function formatBacktrackRecommendationDate(date = new Date()) {
   return `${date.getFullYear()}年${month}月${day}日`;
 }
 
-function findExistingCandidateInJob(sourceCandidate: Candidate, targetJobId: string) {
-  const matchedCandidates = getCandidates(targetJobId).filter((candidate) => isSameCandidateResume(candidate, sourceCandidate));
+function findExistingCandidateInJob(sourceCandidate: Candidate, targetJobId: string, options: { includeRemovedFromScreening?: boolean } = {}) {
+  const matchedCandidates = getCandidates(targetJobId)
+    .filter((candidate) => options.includeRemovedFromScreening || !candidate.removedFromScreening)
+    .filter((candidate) => isSameCandidateResume(candidate, sourceCandidate));
   return matchedCandidates.sort((left, right) => getExistingCandidatePriority(right) - getExistingCandidatePriority(left))[0] || null;
 }
 
@@ -4167,6 +4204,7 @@ function mergeCandidateResumeOverwrite(existingCandidate: Candidate, incomingCan
     interviewPlan: incomingCandidate.interviewPlan || existingCandidate.interviewPlan,
     keyPointAnalysis: incomingCandidate.keyPointAnalysis?.length ? incomingCandidate.keyPointAnalysis : existingCandidate.keyPointAnalysis,
     interviewQuestions: incomingCandidate.interviewQuestions?.length ? incomingCandidate.interviewQuestions : existingCandidate.interviewQuestions,
+    removedFromScreening: false,
   };
 }
 
@@ -4200,6 +4238,7 @@ function isSameCandidateResume(candidate: Candidate, sourceCandidate: Candidate)
 function getExistingCandidatePriority(candidate: Candidate) {
   let priority = 0;
   if (!candidate.source.startsWith("人才库回溯")) priority += 30;
+  if (candidate.removedFromScreening) priority -= 100;
   if (candidate.isInTalentPool) priority += 12;
   if (candidate.interviewStage && candidate.interviewStage !== "推荐") priority += 10;
   if (candidate.conclusion !== "待筛选") priority += 6;

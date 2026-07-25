@@ -254,6 +254,225 @@ test("简历甄选左右区域可独立滚动", async ({ page }) => {
   expect(scrollState!.detail.scrollTop).toBeGreaterThan(0);
 });
 
+test("简历甄选移除已入库人选后仍保留人才档案", async ({ page }) => {
+  const candidateId = "c5";
+  const candidateName = "宋天宇";
+
+  const archiveResponse = await page.request.post(`/api/candidates/${candidateId}/talent-pool`, { data: {} });
+  expect(archiveResponse.ok()).toBeTruthy();
+
+  const removeResponse = await page.request.delete(`/api/candidates/${candidateId}`);
+  expect(removeResponse.ok()).toBeTruthy();
+
+  const state = await (await page.request.get("/api/state")).json();
+  const archivedCandidate = state.candidates.job_001.find((candidate: { id: string }) => candidate.id === candidateId);
+  expect(archivedCandidate).toMatchObject({
+    id: candidateId,
+    isInTalentPool: true,
+    removedFromScreening: true,
+  });
+  expect(archivedCandidate.resumeText).toContain("招聘经验");
+
+  await page.request.post("/api/current-job", { data: { jobId: "job_001" } });
+  await page.goto("/");
+  await page.getByRole("button", { name: /简历甄选/ }).click();
+  await expect(page.locator(".candidate-card").filter({ hasText: candidateName })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "人才库", exact: true }).click();
+  await expect(page.locator(".talent-table tbody tr").filter({ hasText: candidateName })).toBeVisible();
+});
+
+test("简历服务返回 HTML 错误页时显示友好提示", async ({ page }) => {
+  await page.route("**/api/files/upload", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "file_e2e_overload",
+        name: "批量上传测试.pdf",
+        size: 24,
+        content_type: "application/pdf",
+        bucket: "e2e",
+        object_key: "resume/e2e/批量上传测试.pdf",
+        url: null,
+        view_url: null,
+      }),
+    });
+  });
+  await page.route("**/api/resumes/parse", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "<!doctype html><html><body><h1>Bad Gateway</h1></body></html>",
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /简历甄选/ }).click();
+  await page.getByRole("button", { name: "批量上传简历" }).click();
+  const modal = page.getByRole("dialog", { name: "批量上传简历" });
+  await modal.locator('input[type="file"]').setInputFiles({
+    name: "批量上传测试.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("%PDF-1.4\n"),
+  });
+
+  const failedCard = modal.locator(".resume-parse-card.error");
+  await expect(failedCard).toContainText("哎呀，服务器挤爆啦，请稍后重试。");
+  await expect(modal).not.toContainText("Bad Gateway");
+  await expect(modal).not.toContainText("Unexpected token");
+});
+
+test("单次选择超过五份简历时仍可排队上传解析", async ({ page }) => {
+  let uploadRequests = 0;
+  let parseRequests = 0;
+  await page.route("**/api/files/upload", async (route) => {
+    uploadRequests += 1;
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: `file_e2e_queue_${uploadRequests}`,
+        name: `候选人${uploadRequests}.pdf`,
+        size: 24,
+        content_type: "application/pdf",
+        bucket: "e2e",
+        object_key: `resume/e2e/候选人${uploadRequests}.pdf`,
+        url: null,
+        view_url: null,
+      }),
+    });
+  });
+  await page.route("**/api/resumes/parse", async (route) => {
+    parseRequests += 1;
+    const payload = route.request().postDataJSON() as { files: Array<Record<string, unknown>> };
+    const file = payload.files[0];
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        resumes: [{
+          file,
+          candidateName: `候选人${parseRequests}`,
+          source: "BOSS",
+          resumeText: `候选人${parseRequests}，招聘管理经验。`,
+          extractionMethod: "pdf",
+          warnings: [],
+        }],
+      }),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /简历甄选/ }).click();
+  await page.getByRole("button", { name: "批量上传简历" }).click();
+  const modal = page.getByRole("dialog", { name: "批量上传简历" });
+  await modal.locator('input[type="file"]').setInputFiles(
+    Array.from({ length: 6 }, (_, index) => ({
+      name: `候选人${index + 1}.pdf`,
+      mimeType: "application/pdf",
+      buffer: Buffer.from("%PDF-1.4\n"),
+    })),
+  );
+
+  await expect(modal.locator(".resume-parse-card")).toHaveCount(6);
+  await expect.poll(() => uploadRequests).toBe(6);
+  await expect.poll(() => parseRequests).toBe(6);
+  await expect(modal.locator(".resume-parse-card.ready")).toHaveCount(6);
+  await expect(modal.locator(".tool-error")).toHaveCount(0);
+});
+
+test("AI 入库返回 HTML 后自动回查已生成结果", async ({ page }) => {
+  const initialState = await (await page.request.get("/api/state")).json();
+  const jobId = initialState.currentJobId as string;
+  const objectKey = "resume/e2e/ai-result-reconcile.pdf";
+  let returnCommittedState = false;
+  let stateChecksAfterError = 0;
+
+  await page.route("**/api/state", async (route) => {
+    if (!returnCommittedState) {
+      await route.continue();
+      return;
+    }
+    stateChecksAfterError += 1;
+    const templateCandidate = initialState.candidates[jobId][0];
+    const committedCandidate = {
+      ...templateCandidate,
+      id: "candidate_e2e_reconciled",
+      name: "AI回查候选人",
+      source: "BOSS · AI回查候选人.pdf",
+      fileName: "AI回查候选人.pdf",
+      fileType: "application/pdf",
+      fileSize: 24,
+      fileObjectKey: objectKey,
+      resumeText: "AI回查候选人，8年招聘管理经验。",
+      removedFromScreening: false,
+    };
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...initialState,
+        candidates: {
+          ...initialState.candidates,
+          [jobId]: [...initialState.candidates[jobId], committedCandidate],
+        },
+      }),
+    });
+  });
+  await page.route("**/api/files/upload", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "file_e2e_reconciled",
+        name: "AI回查候选人.pdf",
+        size: 24,
+        content_type: "application/pdf",
+        bucket: "e2e",
+        object_key: objectKey,
+        url: null,
+        view_url: null,
+      }),
+    });
+  });
+  await page.route("**/api/resumes/parse", async (route) => {
+    const payload = route.request().postDataJSON() as { files: Array<Record<string, unknown>> };
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        resumes: [{
+          file: payload.files[0],
+          candidateName: "AI回查候选人",
+          source: "BOSS",
+          resumeText: "AI回查候选人，8年招聘管理经验。",
+          extractionMethod: "pdf",
+          warnings: [],
+        }],
+      }),
+    });
+  });
+  await page.route("**/api/jobs/*/resumes", async (route) => {
+    returnCommittedState = true;
+    await route.fulfill({
+      status: 200,
+      contentType: "text/html",
+      body: "<!doctype html><html><body>upstream timeout</body></html>",
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /简历甄选/ }).click();
+  await page.getByRole("button", { name: "批量上传简历" }).click();
+  const modal = page.getByRole("dialog", { name: "批量上传简历" });
+  await modal.locator('input[type="file"]').setInputFiles({
+    name: "AI回查候选人.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from("%PDF-1.4\n"),
+  });
+  await expect(modal.locator(".resume-parse-card.ready")).toBeVisible();
+  await modal.getByRole("button", { name: "分析并生成候选人" }).click();
+
+  await expect(modal).toBeHidden();
+  await expect(page.locator(".toast")).toContainText("简历分析完成");
+  expect(stateChecksAfterError).toBeGreaterThan(0);
+});
+
 test("批量简历上传仅允许 PDF、DOC、DOCX，并用解析结果生成多名候选人", async ({ page }) => {
   const rejectedResponse = await page.request.post("/api/files/upload", {
     multipart: {
@@ -413,7 +632,12 @@ test("批量简历上传仅允许 PDF、DOC、DOCX，并用解析结果生成多
   await songleCard.locator(".form-field").filter({ hasText: "候选人姓名" }).locator("input").fill("宋乐改");
   await sourceField.locator(".arco-select-view").click();
   const sourcePopup = page.locator(".arco-select-popup:visible").last();
+  await expect.poll(async () => {
+    const popupBox = await sourcePopup.boundingBox();
+    return popupBox?.height || Number.POSITIVE_INFINITY;
+  }).toBeLessThanOrEqual(300);
   await expect(sourcePopup.getByRole("option", { name: "智联", exact: true })).toBeVisible();
+  await expect(sourcePopup.getByRole("option", { name: "BOSS", exact: true })).toBeVisible();
   await expect(sourcePopup.getByRole("option", { name: "BOSS直聘", exact: true })).toHaveCount(0);
   await expect(sourcePopup.getByRole("option", { name: "智联招聘", exact: true })).toHaveCount(0);
   await sourceField.locator("input:visible").fill("小红书私域");
@@ -424,23 +648,60 @@ test("批量简历上传仅允许 PDF、DOC、DOCX，并用解析结果生成多
 
   const currentState = await (await page.request.get("/api/state")).json();
   let resumeAnalysisRequests = 0;
-  let resumeAnalysisPayload: Record<string, unknown> | null = null;
+  let activeResumeAnalysisRequests = 0;
+  let maxActiveResumeAnalysisRequests = 0;
+  const resumeAnalysisPayloads: Array<Record<string, unknown>> = [];
+  const analyzedCandidates: Array<Record<string, unknown>> = [];
   await page.route("**/api/jobs/*/resumes", async (route) => {
     resumeAnalysisRequests += 1;
-    resumeAnalysisPayload = route.request().postDataJSON() as Record<string, unknown>;
+    activeResumeAnalysisRequests += 1;
+    maxActiveResumeAnalysisRequests = Math.max(maxActiveResumeAnalysisRequests, activeResumeAnalysisRequests);
+    const requestPayload = route.request().postDataJSON() as Record<string, unknown>;
+    resumeAnalysisPayloads.push(requestPayload);
+    const submittedFile = (requestPayload.files as Array<Record<string, unknown>>)[0];
+    const templateCandidate = currentState.candidates[currentState.currentJobId][0];
+    analyzedCandidates.push({
+      ...templateCandidate,
+      id: `candidate_e2e_upload_${resumeAnalysisRequests}`,
+      name: String(submittedFile.candidateName || "候选人"),
+      source: `${String(submittedFile.source || "本地上传")} · ${String(submittedFile.name || "简历")}`,
+      fileName: submittedFile.name,
+      fileType: submittedFile.content_type,
+      fileSize: submittedFile.size,
+      fileObjectKey: submittedFile.object_key,
+      resumeText: submittedFile.resumeText,
+      reason: `AI已完成 ${String(submittedFile.candidateName || "候选人")} 的简历分析`,
+      removedFromScreening: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
     await route.fulfill({
       contentType: "application/json",
-      body: JSON.stringify({ state: currentState }),
+      body: JSON.stringify({
+        state: {
+          ...currentState,
+          candidates: {
+            ...currentState.candidates,
+            [currentState.currentJobId]: [...currentState.candidates[currentState.currentJobId], ...analyzedCandidates],
+          },
+        },
+      }),
     });
+    activeResumeAnalysisRequests -= 1;
   });
   await modal.getByRole("button", { name: "分析并生成候选人" }).click();
-  await expect.poll(() => resumeAnalysisRequests).toBe(1);
-  const submittedPayload = resumeAnalysisPayload as { files?: Array<Record<string, unknown>>; duplicateAction?: string } | null;
-  expect(submittedPayload).not.toHaveProperty("name");
-  expect(submittedPayload).not.toHaveProperty("source");
-  expect(submittedPayload).not.toHaveProperty("resumeText");
-  expect(submittedPayload?.files).toHaveLength(2);
-  expect(submittedPayload?.files).toEqual(expect.arrayContaining([
+  await expect(modal.locator(".resume-ai-status")).toContainText("AI 正在分析第 1 / 2 份");
+  await expect(modal.locator(".resume-ai-status")).toContainText("已完成 0 份");
+  await expect.poll(() => resumeAnalysisRequests).toBe(2);
+  expect(maxActiveResumeAnalysisRequests).toBe(1);
+  expect(resumeAnalysisPayloads).toHaveLength(2);
+  resumeAnalysisPayloads.forEach((payload) => {
+    expect(payload).not.toHaveProperty("name");
+    expect(payload).not.toHaveProperty("source");
+    expect(payload).not.toHaveProperty("resumeText");
+    expect(payload.files).toHaveLength(1);
+  });
+  const submittedFiles = resumeAnalysisPayloads.flatMap((payload) => payload.files as Array<Record<string, unknown>>);
+  expect(submittedFiles).toEqual(expect.arrayContaining([
     expect.objectContaining({
       name: "宋乐-前端高级工程师-BOSS.pdf",
       content_type: "application/pdf",
@@ -458,6 +719,19 @@ test("批量简历上传仅允许 PDF、DOC、DOCX，并用解析结果生成多
       resumeText: expect.stringContaining("5年HRBP经验"),
     }),
   ]));
+  await expect(modal).toBeHidden();
+
+  const candidateSearch = page.getByPlaceholder("搜索姓名、来源、文件名或简历内容");
+  await expect(candidateSearch).toBeVisible();
+  await candidateSearch.fill("宋乐改");
+  await expect(page.locator(".candidate-list .candidate-card")).toHaveCount(1);
+  await expect(page.locator(".candidate-list .candidate-card .candidate-search-mark").first()).toContainText("宋乐改");
+  await candidateSearch.fill("");
+
+  const recentUploadFilter = page.locator(".candidate-recent-toggle");
+  await expect(recentUploadFilter).toBeEnabled();
+  await recentUploadFilter.click();
+  await expect(page.locator(".candidate-list .candidate-card")).toHaveCount(2);
 });
 
 test("薪酬调研和职位管理支持省市区列式级联选择与任意层级搜索，职位薪资经验和关键词使用标准选项", async ({ page }) => {

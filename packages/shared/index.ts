@@ -296,6 +296,8 @@ export interface Candidate {
   isInTalentPool?: boolean;
   talentPoolAt?: string;
   talentPoolNote?: string;
+  removedFromScreening?: boolean;
+  removedFromTalentPool?: boolean;
 }
 
 export interface VoiceAnalysis {
