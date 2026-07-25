@@ -7,6 +7,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     allowedHosts: ["chip.wingblog.top"],
+    port:9700,
     proxy: {
       "/api": apiTarget,
     },
