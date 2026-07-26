@@ -1,8 +1,3 @@
-import { spawn } from "node:child_process";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-
 export interface ResumeUploadFile {
   name: string;
   type?: string | null;
@@ -10,13 +5,6 @@ export interface ResumeUploadFile {
   text?: string;
   dataBase64?: string | null;
 }
-
-type OcrWorker = {
-  recognize: (image: Buffer | Uint8Array | string) => Promise<{ data?: { text?: string } }>;
-  terminate: () => Promise<unknown>;
-};
-
-let ocrWorkerPromise: Promise<OcrWorker> | null = null;
 
 export async function extractResumeTextFromFile(file: ResumeUploadFile) {
   const extension = getFileExtension(file.name);
@@ -35,7 +23,7 @@ export async function extractResumeTextFromFile(file: ResumeUploadFile) {
   if (extension === "pdf" || mimeType === "application/pdf") {
     const pdfText = await extractPdfText(buffer);
     if (pdfText) return { text: pdfText, method: "pdf" as const };
-    const ocrText = await extractPdfImageText(buffer);
+    const ocrText = await extractPdfImageText(buffer, file.name);
     return { text: ocrText || providedText, method: ocrText ? "image" as const : "pdf" as const };
   }
 
@@ -50,7 +38,7 @@ export async function extractResumeTextFromFile(file: ResumeUploadFile) {
   }
 
   if (isImageFile(extension, mimeType)) {
-    const text = await extractImageText(buffer);
+    const text = await extractImageText(buffer, mimeType || "application/octet-stream", file.name);
     return { text: text || providedText, method: "image" as const };
   }
 
@@ -106,40 +94,8 @@ async function extractPdfText(buffer: Buffer) {
   }
 }
 
-async function extractPdfImageText(buffer: Buffer) {
-  const tempDir = await mkdtemp(join(tmpdir(), "resume-pdf-ocr-"));
-  try {
-    const pdfPath = join(tempDir, "resume.pdf");
-    const outputPrefix = join(tempDir, "page");
-    await writeFile(pdfPath, buffer);
-    await runCommand("pdftoppm", [
-      "-png",
-      "-r",
-      "180",
-      "-f",
-      "1",
-      "-l",
-      String(getPdfOcrMaxPages()),
-      pdfPath,
-      outputPrefix,
-    ], getPdfOcrTimeoutMs());
-
-    const imageFiles = (await readdir(tempDir))
-      .filter((fileName) => /^page-\d+\.png$/i.test(fileName) || /^page\.png$/i.test(fileName))
-      .sort((left, right) => left.localeCompare(right, "zh-Hans-CN", { numeric: true }));
-    const texts: string[] = [];
-    for (const imageFile of imageFiles) {
-      const imageBuffer = await readFile(join(tempDir, imageFile));
-      const text = await extractImageText(imageBuffer);
-      if (text) texts.push(text);
-      if (texts.join("\n").length >= 6000) break;
-    }
-    return normalizeExtractedText(texts.join("\n\n"));
-  } catch {
-    return "";
-  } finally {
-    await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
-  }
+async function extractPdfImageText(buffer: Buffer, fileName: string) {
+  return extractImageText(buffer, "application/pdf", fileName, getPdfOcrMaxPages());
 }
 
 async function extractDocxText(buffer: Buffer) {
@@ -175,24 +131,38 @@ async function extractDocText(buffer: Buffer) {
   }
 }
 
-async function extractImageText(buffer: Buffer) {
+async function extractImageText(buffer: Buffer, contentType: string, fileName: string, maxPages = 1) {
   try {
-    const worker = await getOcrWorker();
-    const result = await worker.recognize(buffer);
-    return normalizeExtractedText(result.data?.text || "");
-  } catch {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), getOcrRequestTimeoutMs());
+    try {
+      const response = await fetch(`${getOcrServiceUrl()}/ocr`, {
+        method: "POST",
+        headers: {
+          "content-type": contentType,
+          "x-file-name": encodeURIComponent(fileName),
+          "x-ocr-max-pages": String(maxPages),
+        },
+        body: Uint8Array.from(buffer).buffer,
+        signal: controller.signal,
+      });
+      if (!response.ok) {
+        const detail = (await response.text()).slice(0, 500);
+        throw new Error(`OCR 服务返回 ${response.status}：${detail}`);
+      }
+      const result = await response.json() as { text?: unknown };
+      return normalizeExtractedText(typeof result.text === "string" ? result.text : "");
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (error) {
+    console.warn(`[resume-ocr] ${fileName}: ${error instanceof Error ? error.message : String(error)}`);
     return "";
   }
 }
 
-async function getOcrWorker() {
-  if (!ocrWorkerPromise) {
-    ocrWorkerPromise = (async () => {
-      const { createWorker } = await import("tesseract.js");
-      return await createWorker("chi_sim+eng") as unknown as OcrWorker;
-    })();
-  }
-  return ocrWorkerPromise;
+function getOcrServiceUrl() {
+  return (process.env.OCR_SERVICE_URL || "http://127.0.0.1:8019").replace(/\/+$/, "");
 }
 
 function getPdfOcrMaxPages() {
@@ -201,37 +171,10 @@ function getPdfOcrMaxPages() {
   return Math.max(1, Math.min(5, Math.round(value)));
 }
 
-function getPdfOcrTimeoutMs() {
-  const value = Number(process.env.RESUME_PDF_OCR_TIMEOUT_MS || 20000);
-  if (!Number.isFinite(value)) return 20000;
-  return Math.max(5000, Math.min(60000, Math.round(value)));
-}
-
-function runCommand(command: string, args: string[], timeoutMs: number) {
-  return new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["ignore", "ignore", "pipe"] });
-    const stderrChunks: Buffer[] = [];
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`${command} 执行超时`));
-    }, timeoutMs);
-
-    child.stderr?.on("data", (chunk) => {
-      stderrChunks.push(Buffer.from(chunk));
-    });
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        resolve();
-        return;
-      }
-      reject(new Error(`${command} 执行失败：${Buffer.concat(stderrChunks).toString("utf8").trim() || code}`));
-    });
-  });
+function getOcrRequestTimeoutMs() {
+  const value = Number(process.env.OCR_REQUEST_TIMEOUT_MS || 180000);
+  if (!Number.isFinite(value)) return 180000;
+  return Math.max(5000, Math.min(600000, Math.round(value)));
 }
 
 function normalizeExtractedText(text: string) {

@@ -54,7 +54,7 @@ const deepseekBaseUrl = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.c
 const deepseekModel = process.env.DEEPSEEK_MODEL || "deepseek-v4-pro";
 const deepseekTimeoutMs = Number(process.env.DEEPSEEK_TIMEOUT_MS || 18000);
 const deepseekResumeTimeoutMs = Number(process.env.DEEPSEEK_RESUME_TIMEOUT_MS || 9000);
-const resumeExtractTimeoutMs = Number(process.env.RESUME_EXTRACT_TIMEOUT_MS || 12000);
+const resumeExtractTimeoutMs = Number(process.env.RESUME_EXTRACT_TIMEOUT_MS || 210000);
 const uploadMaxFileSizeMb = Number(process.env.UPLOAD_MAX_FILE_SIZE_MB || 20);
 const whisperModelId = process.env.WHISPER_MODEL_ID || "Xenova/whisper-tiny";
 const whisperModelDir = resolve(serverRoot, process.env.WHISPER_MODEL_DIR || "models");
@@ -2955,10 +2955,10 @@ interface SalarySearchEvidence {
 
 async function generateSalaryData(job: Job, filters: SalaryFilters): Promise<SalaryData> {
   const searchEvidence = await collectSalarySearchEvidence(job, filters);
-  return buildSalaryDataFromBossZhilianEvidence(job, filters, searchEvidence);
+  return buildSalaryDataFromBossEvidence(job, filters, searchEvidence);
 }
 
-function buildSalaryDataFromBossZhilianEvidence(
+function buildSalaryDataFromBossEvidence(
   job: Job,
   filters: SalaryFilters,
   searchEvidence: SalarySearchEvidence,
@@ -2987,15 +2987,13 @@ function buildSalaryDataFromBossZhilianEvidence(
   const suggestedHigh = sanitizeKNumber(Math.max(suggestedLow, Math.min(Math.max(quantile(highValues, 0.65), anchor * 1.08), anchor * 1.22)));
   const sampleCounts = countSamplesByPlatform(validSamples);
   const hasBossScraperSamples = validSamples.some((item) => item.sourceKind === "boss-scraper");
-  const dataWindow = hasBossScraperSamples ? "BOSS直聘 CDP 抓取 + 智联招聘公开搜索结果" : "BOSS直聘/智联招聘公开搜索结果";
+  const dataWindow = hasBossScraperSamples ? "BOSS直聘 CDP 抓取结果" : "BOSS直聘公开搜索结果";
   const bossSourceLabel = hasBossScraperSamples ? "BOSS直聘 CDP 明文薪资样本" : "BOSS直聘公开搜索样本";
-  const hasAllPlatforms = validPlatforms.length >= salaryResearchPlatforms.length;
-  const confidence = hasAllPlatforms && validSamples.length >= 8 ? "中" : "低";
-  const confidenceReason = hasAllPlatforms && validSamples.length >= 8
-    ? `${bossSourceLabel}和智联招聘公开样本均已覆盖，样本量达到基础参考要求；但智联侧仍基于公开搜索标题/摘要解析，因此置信度保持为中。`
-    : hasAllPlatforms
-      ? `${bossSourceLabel}和智联招聘均有可解析薪资样本，但样本量偏少，适合作为招聘沟通参考，不建议作为最终定薪依据。`
-      : `当前仅覆盖 ${validPlatforms.join("、")} 的可解析薪资样本，未完成 BOSS直聘和智联招聘双平台交叉验证，因此置信度为低。`;
+  const hasRequiredSource = validPlatforms.includes("BOSS直聘");
+  const confidence = hasRequiredSource && validSamples.length >= 8 ? "中" : "低";
+  const confidenceReason = validSamples.length >= 8
+    ? `${bossSourceLabel}已覆盖 ${validSamples.length} 条可解析样本，样本量达到基础参考要求；当前仅使用 BOSS直聘来源，因此置信度为中。`
+    : `${bossSourceLabel}当前有 ${validSamples.length} 条可解析样本，样本量偏少，适合作为招聘沟通参考，不建议作为最终定薪依据。`;
   const metricSourceSummary = buildSalaryMetricSourceSummary(validSamples, sampleCounts);
 
   return {
@@ -3015,7 +3013,7 @@ function buildSalaryDataFromBossZhilianEvidence(
     industryComparison: buildIndustryComparisonFromBenchmark(p50, filters),
     updatedAt: new Date().toLocaleDateString("zh-CN"),
     insights: [
-      { title: hasAllPlatforms ? "双平台综合" : "单平台参考", text: `当前综合 ${formatSampleCounts(sampleCounts)} 的可解析薪资样本，市场中位值约为 ${p50}k。` },
+      { title: "BOSS 样本", text: `当前综合 ${formatSampleCounts(sampleCounts)} 的可解析薪资样本，市场中位值约为 ${p50}k。` },
       { title: "建议锚点", text: `${filters.region}${filters.role} 建议以 ${anchor}k 作为沟通锚点，常规报价可控制在 ${suggestedLow}-${suggestedHigh}k。` },
       { title: "预算风险", text: `若预算低于 ${p25}k，在当前 ${filters.experience}、${filters.industry} 条件下，候选人转化可能承压。` },
     ],
@@ -3036,20 +3034,18 @@ function buildSalaryDataFromBossZhilianEvidence(
       confidenceReason,
       limitations: [
         hasBossScraperSamples
-          ? "BOSS直聘样本通过本地已登录 Chrome CDP 调用搜索 API 获取；智联招聘样本仍来自公开搜索标题和摘要解析。"
-          : "当前通过公开搜索索引返回的标题和摘要解析薪资，不登录平台、不抓取需要登录或反爬保护的详情页。",
+          ? "BOSS直聘样本通过本地已登录 Chrome CDP 调用搜索 API 获取。"
+          : "当前通过 BOSS直聘公开搜索索引返回的标题和摘要解析薪资，不登录平台、不抓取需要登录或反爬保护的详情页。",
         "招聘网站薪资口径可能包含 13 薪/14 薪、底薪+绩效、年薪等差异；当前统一折算为税前月薪 k。",
         hasBossScraperSamples
-          ? "BOSS直聘 CDP 抓取依赖本机专用 Chrome 登录态；智联公开搜索结果可能受搜索引擎索引更新时间影响。"
-          : "公开搜索结果可能受搜索引擎索引更新时间影响，不能完全代表平台实时全量岗位。",
+          ? "BOSS直聘 CDP 抓取依赖本机专用 Chrome 登录态，结果不能完全代表平台实时全量岗位。"
+          : "BOSS直聘公开搜索结果可能受搜索引擎索引更新时间影响，不能完全代表平台实时全量岗位。",
       ],
       triangulation: {
-        requiredSources: 2,
+        requiredSources: 1,
         actualSources: validPlatforms.length,
-        passed: hasAllPlatforms,
-        summary: hasAllPlatforms
-          ? `已综合 ${validPlatforms.join("、")} 两个平台的可解析薪资样本。`
-          : `当前仅拿到 ${validPlatforms.join("、")} 的可解析薪资样本，未完成双平台交叉验证。`,
+        passed: hasRequiredSource,
+        summary: `已基于 BOSS直聘的 ${validSamples.length} 条可解析薪资样本完成区间校验。`,
       },
       metricSources: {
         p25: `P25(${p25}K)：${metricSourceSummary}`,
@@ -3060,19 +3056,16 @@ function buildSalaryDataFromBossZhilianEvidence(
         hasBossScraperSamples
           ? "通过 boss-zhipin-scraper 连接本地已登录 Chrome CDP，抓取 BOSS直聘搜索 API 返回的明文薪资列表。"
           : "检索 BOSS直聘公开搜索结果。",
-        "检索智联招聘公开搜索结果。",
         "从标题与摘要中解析月薪区间，剔除无法稳定识别薪资的结果。",
         "以薪资区间中点计算 P25/P50/P75，并结合岗位关键词溢价生成建议报价区间。",
       ],
       coreSources: formatSalaryCoreSources(validPlatforms, hasBossScraperSamples),
-      validationSources: formatSalaryCoreSources(validPlatforms, hasBossScraperSamples),
+      validationSources: ["BOSS直聘样本薪资区间清洗与分位统计"],
       sampleNotes: [
         formatSampleCounts(sampleCounts),
         `检索词：${searchEvidence.queryBase}`,
         ...searchEvidence.sourceNotes.slice(0, 3),
-        hasAllPlatforms
-          ? "未从公开摘要中解析出薪资的结果仅作为样本不足说明，不参与分位数计算。"
-          : "当前未覆盖的平台会在后续刷新时继续尝试；本次结果按低置信度单平台样本展示。",
+        "未解析出稳定薪资区间的 BOSS直聘结果不参与分位数计算。",
       ],
       evidence: validSamples.slice(0, 10).map((item) => ({
         source: item.platform,
@@ -3084,11 +3077,9 @@ function buildSalaryDataFromBossZhilianEvidence(
         note: item.snippet,
         link: item.link,
       })),
-      disclaimer: hasAllPlatforms
-        ? hasBossScraperSamples
-          ? "当前薪酬调研基于 BOSS直聘 CDP 明文薪资样本与智联招聘公开搜索摘要解析结果，适合招聘预算参考；正式定薪前建议结合平台后台、HRBP 经验和实际候选人反馈复核。"
-          : "当前薪酬调研基于 BOSS直聘与智联招聘公开搜索标题/摘要解析结果，适合招聘预算参考；正式定薪前建议结合平台后台、HRBP 经验和实际候选人反馈复核。"
-        : "当前薪酬调研未完成 BOSS直聘与智联招聘双平台交叉验证，仅适合作为低置信度参考；正式定薪前建议补充另一平台后台数据、HRBP 经验和实际候选人反馈。",
+      disclaimer: hasBossScraperSamples
+        ? "当前薪酬调研仅基于 BOSS直聘 CDP 明文薪资样本，适合招聘预算参考；正式定薪前建议结合平台后台、HRBP 经验和实际候选人反馈复核。"
+        : "当前薪酬调研仅基于 BOSS直聘公开搜索标题与摘要解析结果，适合招聘预算参考；正式定薪前建议结合平台后台、HRBP 经验和实际候选人反馈复核。",
     },
   };
 }
@@ -3238,8 +3229,8 @@ async function generateSalaryDataWithDeepSeek(
           role: "system",
           content: [
             "你是一位中国招聘薪酬调研顾问，擅长聚合主流招聘网站和公开薪酬报告，给出谨慎、可解释、有依据的市场薪酬建议。",
-            "你必须扮演数据聚合器：你的任务是汇总和分析 BOSS直聘、智联招聘两个网站上的公开信息，而不是创作数据。",
-            "必须执行双平台交叉验证：不能只听信单一来源，请同时参考 BOSS直聘和智联招聘的数据，交叉验证后再给出最终区间。",
+            "你必须扮演数据聚合器：你的任务是汇总和分析所提供的 BOSS直聘公开样本，而不是创作数据。",
+            "当前调研只允许使用 BOSS直聘来源，不得声称引用了其他招聘平台。",
             "严禁编造数据：所有输出数值都必须有明确来源依据或推理逻辑；如果证据不足，必须明确说明不确定性，并给出合理估算依据，而不是伪造精确数据。",
             "请严格输出 JSON 对象，不要输出 markdown 代码块，不要输出额外解释。",
             "如果无法百分百确认，请给出保守、合理、可落地的估计，并明确降低置信度，不允许编造夸张或离谱的数字。",
@@ -3315,7 +3306,7 @@ async function generateSalaryDataWithDeepSeek(
       confidenceReason: z.string().min(1),
       limitations: z.array(z.string()).min(1).max(8),
       triangulation: z.object({
-        requiredSources: z.number().int().min(2).max(10),
+        requiredSources: z.number().int().min(1).max(10),
         actualSources: z.number().int().min(0).max(20),
         passed: z.boolean(),
         summary: z.string().min(1),
@@ -3326,7 +3317,7 @@ async function generateSalaryDataWithDeepSeek(
         p75: z.string().min(1),
       }),
       methodology: z.array(z.string()).min(3).max(6),
-      coreSources: z.array(z.string()).min(2).max(8),
+      coreSources: z.array(z.string()).min(1).max(8),
       validationSources: z.array(z.string()).min(1).max(6),
       sampleNotes: z.array(z.string()).min(2).max(6),
       evidence: z.array(z.object({
@@ -3343,9 +3334,9 @@ async function generateSalaryDataWithDeepSeek(
   });
 
   const result = schema.parse(parsed);
-  const normalizedActualSources = Math.max(result.research.triangulation.actualSources, result.research.coreSources.length);
-  const passedTriangulation = normalizedActualSources >= Math.max(2, result.research.triangulation.requiredSources);
-  if (normalizedActualSources < 2 || !passedTriangulation) {
+  const normalizedActualSources = Math.max(result.research.triangulation.actualSources, searchEvidence.distinctPlatforms.length);
+  const passedTriangulation = normalizedActualSources >= Math.max(1, result.research.triangulation.requiredSources);
+  if (normalizedActualSources < 1 || !passedTriangulation) {
     return buildInsufficientSalaryData(job, filters, "当前公开数据不足，无法生成高置信度报告", searchEvidence);
   }
   return {
@@ -3413,7 +3404,7 @@ function normalizeSalaryResearchPayload(raw: unknown) {
       confidenceReason: String(research.confidenceReason || research.confidence_reason || "模型已根据样本充分性、来源数量与一致性自动评估置信度。").trim(),
       limitations: normalizeStringList(research.limitations),
       triangulation: {
-        requiredSources: normalizeInteger(triangulation.requiredSources ?? triangulation.required_sources, 3),
+        requiredSources: normalizeInteger(triangulation.requiredSources ?? triangulation.required_sources, 1),
         actualSources: normalizeInteger(triangulation.actualSources ?? triangulation.actual_sources, 0),
         passed: normalizeBoolean(triangulation.passed),
         summary: String(triangulation.summary || "未提供三角验证摘要。").trim(),
@@ -3482,15 +3473,15 @@ function buildSalaryResearchPrompt(
   return [
     "请基于以下岗位信息，生成一份用于招聘实际工作的中国市场薪酬调研结果。",
     "核心要求：",
-    "0. 你必须主动使用我提供的搜索样本，对 BOSS直聘 / 智联招聘 两个平台公开招聘网站结果做整理分析，而不是凭空创作数据。",
-    "1. 优先并主要参考 BOSS直聘和智联招聘近3-6个月内相似岗位的招聘信息。",
-    "2. 可结合公开薪酬报告、人力资源咨询公司报告（如美世、太和顾问等）做交叉验证。",
+    "0. 你必须主动使用我提供的 BOSS直聘搜索样本做整理分析，而不是凭空创作数据。",
+    "1. 只参考 BOSS直聘近3-6个月内相似岗位的招聘信息，不得声称使用其他招聘平台。",
+    "2. 对 BOSS直聘样本做去重、薪资区间清洗和分位统计。",
     "3. 你必须扮演“数据聚合器”，只允许汇总公开信息和推理，不允许创作或编造数据。",
-    "4. 必须执行双平台交叉验证：至少同时参考 BOSS直聘和智联招聘的数据，通过交叉验证后给出最终区间；只有数值落在交叉重叠区间内，才可以作为依据；若做不到，必须直接返回公开数据不足。",
+    "4. BOSS直聘可解析薪资样本少于 2 条时，必须直接返回公开数据不足。",
     "5. 严禁编造数据：所有数值都必须有明确来源依据或推理逻辑，尤其是 P25 / P50 / P75。",
     "6. 输出必须严格为 JSON 对象，不要 markdown，不要解释。",
     "7. 所有金额单位统一为税前月薪整数 k（例如 25 表示 25k/月）。",
-    "8. 如果搜不到足够的有效数据（BOSS直聘或智联招聘任一平台缺少有效样本），请直接输出“当前公开数据不足，无法生成高置信度报告”，绝对禁止使用本地模型或内部系数进行填补。",
+    "8. 如果搜不到足够的 BOSS直聘有效样本，请直接输出“当前公开数据不足，无法生成高置信度报告”，绝对禁止使用本地模型或内部系数进行填补。",
     "9. 如果最终报告再次出现“来源：本地估算模型”或类似含义，则视为失败。",
     "10. 若信息存在不确定性，请降低 confidence，并在 confidenceReason / limitations / sampleNotes / disclaimer 中说明。",
     "",
@@ -3513,7 +3504,7 @@ function buildSalaryResearchPrompt(
     `岗位关键词：${job.keywords}`,
     `岗位描述：${job.description}`,
     "",
-    "搜索样本（先以这些公开搜索结果为基础，再做归纳；如果这些样本无法同时覆盖 BOSS直聘和智联招聘，则必须失败返回）：",
+    "搜索样本（只以这些 BOSS直聘公开结果为基础；样本不足时必须失败返回）：",
     ...searchEvidence.samples.map((sample, index) => `${index + 1}. [${sample.platform}] ${sample.title} | ${sample.link} | ${sample.snippet} | ${sample.publishWindow}`),
     "",
     "输出规则补充：",
@@ -3522,8 +3513,8 @@ function buildSalaryResearchPrompt(
     "3. educationComparison 请至少包含：大专、本科、硕士。",
     `4. industryComparison 必须包含当前行业 ${filters.industry}，并补充至少 3 个相近行业。`,
     "5. evidence 中请列出 4-8 条具有代表性的样本归纳，每条要写清来源平台、岗位、地区、经验、薪资区间、时间窗口和备注。",
-    "6. metricSources.p25 / metricSources.p50 / metricSources.p75 必须分别写明来源标注格式，例如：P50(37K)：综合参考 BOSS直聘 20 个相关岗位（月薪30-45K）和智联招聘 15 个相关岗位（月薪32-48K）的区间，交叉验证后取中位参考值。",
-    "7. research.triangulation 必须反映是否真的满足 BOSS直聘和智联招聘双平台交叉验证；未满足时 passed 必须为 false。",
+    "6. metricSources.p25 / metricSources.p50 / metricSources.p75 必须分别写明来源标注格式，例如：P50(37K)：基于 BOSS直聘 20 个相关岗位的可解析薪资中点计算。",
+    "7. research.triangulation 用于表示 BOSS直聘来源覆盖与样本校验；未拿到 BOSS直聘有效样本时 passed 必须为 false。",
     "8. advice.summary 要能直接给招聘者看；reasons 要解释为什么建议这个区间；keywordPremiums 要解释 JD 中哪些要求带来了溢价。",
     "9. limitations 必须如实写明数据不足、行业口径差异、城市样本不足、发布时间差异等局限性。",
   ].join("\n");
@@ -3531,7 +3522,6 @@ function buildSalaryResearchPrompt(
 
 const salaryResearchPlatforms = [
   { name: "BOSS直聘", domain: "zhipin.com" },
-  { name: "智联招聘", domain: "zhaopin.com" },
 ] as const;
 
 async function collectSalarySearchEvidence(job: Job, filters: SalaryFilters): Promise<SalarySearchEvidence> {
@@ -3986,21 +3976,20 @@ function buildInsufficientSalaryData(
     ],
     advice: {
       summary: message,
-      reasons: ["当前未满足 BOSS直聘和智联招聘两个平台均有可解析薪资样本的要求。"],
+      reasons: ["当前 BOSS直聘可解析薪资样本不足，无法稳定计算建议区间。"],
       keywordPremiums: [],
     },
     research: {
-      dataWindow: hasBossScraperSamples ? "BOSS直聘 CDP 抓取 + 智联招聘公开搜索结果" : "BOSS直聘/智联招聘公开搜索结果",
+      dataWindow: hasBossScraperSamples ? "BOSS直聘 CDP 抓取结果" : "BOSS直聘公开搜索结果",
       confidence: "低",
-      confidenceReason: "当前 BOSS直聘或智联招聘的公开搜索结果不足，无法完成双平台交叉验证。",
+      confidenceReason: "当前 BOSS直聘可解析薪资样本不足，无法形成稳定分位区间。",
       limitations: [
-        "当前要求 BOSS直聘与智联招聘均存在可解析薪资样本。",
         hasBossScraperSamples
-          ? "BOSS直聘已接入 boss-zhipin-scraper CDP 抓取；智联招聘仍使用公开搜索标题/摘要解析。"
-          : "当前实现只使用公开搜索标题/摘要，不登录平台、不抓取需要权限的详情页。",
+          ? "BOSS直聘已接入 boss-zhipin-scraper CDP 抓取，但当前有效样本量不足。"
+          : "当前仅使用 BOSS直聘公开搜索标题与摘要，不登录平台、不抓取需要权限的详情页。",
       ],
       triangulation: {
-        requiredSources: 2,
+        requiredSources: 1,
         actualSources: searchEvidence?.distinctPlatforms.length ?? 0,
         passed: false,
         summary: message,
@@ -4014,9 +4003,8 @@ function buildInsufficientSalaryData(
         hasBossScraperSamples
           ? "通过 boss-zhipin-scraper 连接本地已登录 Chrome CDP 抓取 BOSS直聘列表薪资。"
           : "检索 BOSS直聘公开搜索结果。",
-        "检索智联招聘公开搜索结果。",
         "从搜索结果标题与摘要中解析月薪区间。",
-        "未满足双平台均有可解析薪资样本时直接返回公开数据不足。",
+        "少于 2 条 BOSS直聘可解析薪资样本时直接返回公开数据不足。",
       ],
       coreSources: searchEvidence?.distinctPlatforms.length ? formatSalaryCoreSources(searchEvidence.distinctPlatforms, hasBossScraperSamples) : [],
       validationSources: [],

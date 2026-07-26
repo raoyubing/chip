@@ -50,6 +50,10 @@ services:
       BOSS_SCRAPER_CDP_PORT: ${BOSS_SCRAPER_CDP_PORT:-9222}
       BOSS_SCRAPER_PAGES: ${BOSS_SCRAPER_PAGES:-1}
       BOSS_SCRAPER_TIMEOUT_MS: ${BOSS_SCRAPER_TIMEOUT_MS:-180000}
+      OCR_SERVICE_URL: ${OCR_SERVICE_URL:-http://host.docker.internal:8019}
+      OCR_REQUEST_TIMEOUT_MS: ${OCR_REQUEST_TIMEOUT_MS:-180000}
+      RESUME_EXTRACT_TIMEOUT_MS: ${RESUME_EXTRACT_TIMEOUT_MS:-210000}
+      RESUME_PDF_OCR_MAX_PAGES: ${RESUME_PDF_OCR_MAX_PAGES:-5}
       RUSTFS_ENDPOINT: ${RUSTFS_ENDPOINT:-http://xiaosongshu-rustfs:9000}
       RUSTFS_REGION: ${RUSTFS_REGION:-us-east-1}
       RUSTFS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY_ID}
@@ -70,6 +74,8 @@ services:
       - ../:/app
       - ./pnpm-store:/pnpm/store
       - ./data/server:/app/apps/server/data
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
     command: sh -c "node apps/server/dist/index.js"
     depends_on:
       xiaosongshu-rustfs:

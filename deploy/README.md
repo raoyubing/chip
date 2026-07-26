@@ -27,11 +27,48 @@ pnpm deploy:logs
 pnpm deploy:ps
 pnpm deploy:backup
 pnpm deploy:reset-data -- --yes
+pnpm deploy:ocr:build
+pnpm deploy:ocr:load
+pnpm deploy:ocr:up
+pnpm deploy:ocr:down
+pnpm deploy:ocr:logs
 pnpm deploy:run 'pnpm --filter @xiaosongshu/server download:whisper-model'
 pnpm deploy:run 'pnpm --filter @xiaosongshu/server demo:load -- --reset'
 ```
 
 BOSS直聘薪酬抓取依赖 `boss-zhipin-scraper` 和本地已登录 Chrome CDP。普通 Docker 部署默认 `BOSS_SCRAPER_ENABLED=false`，会降级使用公开搜索结果；如要在服务器启用，需要先配置 Chrome、Python 依赖和登录态。
+
+## PP-OCRv6
+
+图片简历和扫描 PDF 的 OCR 由独立的 `xiaosongshu-ocr` 服务提供。它使用 `deploy/ocr/docker-compose.yml`，与主服务 Compose 分离，不会随主服务自动启动：
+
+```bash
+pnpm deploy:ocr:build
+pnpm deploy:ocr:up
+curl http://127.0.0.1:8019/health
+```
+
+构建命令同时将镜像导出到 `deploy/ocr/xiaosongshu-ppocrv6-3.7.0-amd64.tar`。换机后先加载镜像，再直接使用独立 Compose 启动：
+
+```bash
+pnpm deploy:ocr:load
+docker compose --env-file deploy/ocr/.env -f deploy/ocr/docker-compose.yml up -d
+```
+
+模型目录必须包含：
+
+```text
+PP-OCRv6_medium_det/
+PP-OCRv6_medium_rec/
+```
+
+启动脚本依次查找 `OCR_MODEL_HOST_DIR`、`apps/server/models/ppocrv6` 和 PaddleX 全局缓存目录，并以只读方式挂载到容器 `/models`。模型不复制到项目、不写入镜像，也不会由容器隐式下载。若模型已在其他位置，直接在 `deploy/ocr/.env` 中指定即可：
+
+```bash
+OCR_MODEL_HOST_DIR=/path/to/official_models
+```
+
+Apple Silicon 上默认通过 `linux/amd64` 运行，因为 PaddlePaddle 3.3.1 没有 Linux arm64 wheel；Linux x86_64 服务器可直接使用同一配置。主服务容器通过宿主机 `8019` 端口调用，本地开发默认通过 `http://127.0.0.1:8019` 调用。OCR 服务未启动时，普通文本型简历解析不受影响，但图片和扫描 PDF 不会产生 OCR 文本。
 
 ## 远程发布
 

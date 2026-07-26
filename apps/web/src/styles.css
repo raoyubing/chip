@@ -743,6 +743,7 @@ textarea:focus {
 .candidates-view .candidate-layout > .card {
   min-height: 0;
   height: 100%;
+  grid-template-columns: minmax(0, 1fr);
   overflow-x: hidden;
   overflow-y: auto;
   scrollbar-gutter: stable;
@@ -2983,11 +2984,26 @@ textarea:focus {
 
 .candidate-detail-panel {
   align-content: start;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .candidate-summary {
   display: grid;
-  gap: 14px;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+
+.candidate-summary > .row-between > div {
+  min-width: 0;
+}
+
+.candidate-source-meta {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .candidate-remark {
@@ -3018,17 +3034,18 @@ textarea:focus {
 }
 
 .salary-summary.compact {
-  gap: 10px;
+  gap: 8px;
 }
 
 .candidate-detail-panel .salary-summary.compact .salary-metric {
-  padding: 11px 14px;
+  padding: 9px 11px;
 }
 
 .candidate-detail-panel .salary-summary.compact .salary-metric strong {
-  margin-top: 4px;
-  font-size: 18px;
-  line-height: 1.3;
+  margin-top: 2px;
+  font-size: 14px;
+  font-weight: 750;
+  line-height: 1.4;
 }
 
 .detail-tabs {
@@ -3060,6 +3077,8 @@ textarea:focus {
 
 .tab-panel {
   display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
 }
 
@@ -4789,6 +4808,12 @@ textarea:focus {
   .talent-metrics,
   .salary-filter-row {
     grid-template-columns: 1fr;
+  }
+
+  .candidate-detail-panel .salary-summary,
+  .candidate-detail-panel .ai-grid,
+  .candidate-detail-panel .analysis-result {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .talent-detail-card .salary-summary.compact {

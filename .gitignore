@@ -18,6 +18,7 @@ deploy/data/
 deploy/pnpm-store/
 deploy/backups/
 deploy/images/*.tar
+deploy/ocr/*.tar
 ci/*.json
 !ci/example.json
 apps/server/.venv/

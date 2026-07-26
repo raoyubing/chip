@@ -2520,7 +2520,7 @@ function CandidateDetail({ candidate, activeTab, onTabChange, onMark, onAddToTal
         <div className="row-between">
           <div>
             <h3 className="candidate-name">{candidate.name}</h3>
-            <span className="meta">来源：{candidate.source} · {candidate.uploadTime}</span>
+            <span className="meta candidate-source-meta" title={`来源：${candidate.source} · ${candidate.uploadTime}`}>来源：{candidate.source} · {candidate.uploadTime}</span>
           </div>
           <Badge color={scoreColor(candidate.score)}>{candidate.score} 分</Badge>
         </div>
@@ -5295,7 +5295,7 @@ function SalaryView({
           <div className="empty">
             <div>
               <strong>当前公开数据不足，无法生成高置信度报告</strong><br />
-              {data.errorMessage || "未满足 BOSS直聘和智联招聘双平台可解析薪资样本要求。"}
+              {data.errorMessage || "BOSS直聘可解析薪资样本不足。"}
             </div>
           </div>
           <div className="grid cols-2">
@@ -5390,7 +5390,7 @@ function SalaryView({
               <div className="ai-grid spaced-small">
                 <section className="ai-point-card">
                   <strong>建议理由</strong>
-                  <ul>{data.advice.reasons.map((item) => <li key={item}>{item}</li>)}</ul>
+                  <ul>{getBossOnlySalaryReasons(data.advice.reasons).map((item) => <li key={item}>{item}</li>)}</ul>
                 </section>
                 <section className="ai-point-card">
                   <strong>岗位溢价点</strong>
@@ -5440,12 +5440,12 @@ function SalaryView({
                 </article>
               </div>
               <div className="salary-triangulation-card">
-                <strong>三角验证</strong>
+                <strong>来源覆盖</strong>
                 <p>{research?.triangulation.summary}</p>
                 <div className="salary-evidence-meta">
                   <span>要求来源数 {research?.triangulation.requiredSources}</span>
                   <span>实际来源数 {research?.triangulation.actualSources}</span>
-                  <span>{research?.triangulation.passed ? "已通过交叉验证" : "未满足交叉验证"}</span>
+                  <span>{research?.triangulation.passed ? "已通过样本校验" : "样本不足"}</span>
                 </div>
               </div>
               <div className="ai-grid spaced-small">
@@ -5454,7 +5454,7 @@ function SalaryView({
                   <ul>{research?.coreSources.map((item) => <li key={item}>{item}</li>)}</ul>
                 </section>
                 <section className="ai-point-card">
-                  <strong>验证来源</strong>
+                  <strong>校验方式</strong>
                   <ul>{research?.validationSources.map((item) => <li key={item}>{item}</li>)}</ul>
                 </section>
               </div>
@@ -5505,20 +5505,25 @@ type SalaryEvidenceItem = SalaryData["research"]["evidence"][number];
 
 function getSalaryEvidenceLink(item: SalaryEvidenceItem) {
   const explicitLink = item.link?.trim() || "";
-  const legacyLink = item.note.match(/[（(](https?:\/\/[^）)\s]+)[）)]\s*$/i)?.[1] || "";
+  const legacyLink = item.note.match(/https?:\/\/[^）)\s]+/i)?.[0] || "";
   const link = explicitLink || legacyLink;
   return /^https?:\/\//i.test(link) ? link : "";
 }
 
 function getSalaryEvidenceNote(item: SalaryEvidenceItem) {
-  const note = item.note.trim();
-  const link = getSalaryEvidenceLink(item);
-  if (!link) return note;
+  return item.note
+    .replace(/[（(]?https?:\/\/[^）)\s]+[）)]?/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
 
-  for (const suffix of [`（${link}）`, `(${link})`]) {
-    if (note.endsWith(suffix)) return note.slice(0, -suffix.length).trim();
-  }
-  return note;
+function getBossOnlySalaryReasons(reasons: string[]) {
+  const bossOnlyReasons = reasons
+    .map((item) => item.trim())
+    .filter((item) => item && !/智联/.test(item));
+  return bossOnlyReasons.length
+    ? bossOnlyReasons
+    : ["当前建议仅基于 BOSS直聘可解析薪资样本。"];
 }
 
 const defaultJobScoreWeights: JobScoreWeights = {

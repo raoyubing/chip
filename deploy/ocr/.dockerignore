@@ -1,0 +1,4 @@
+.env
+*.tar
+__pycache__/
+*.py[cod]
