@@ -2982,6 +2982,13 @@ textarea:focus {
   gap: 14px;
 }
 
+.job-detail-panel .salary-metric strong {
+  min-height: 28px;
+  font-size: 14px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 .candidate-detail-panel {
   align-content: start;
   min-width: 0;

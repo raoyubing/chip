@@ -1539,7 +1539,7 @@ function JobsView({
         </section>
 
         <section className="card pad">
-          <div className="detail-panel">
+          <div className="detail-panel job-detail-panel">
             <div className="row-between">
               <div>
                 <h3 className="card-title">{selectedJob.title}</h3>
