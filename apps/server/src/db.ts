@@ -3,7 +3,7 @@ import { drizzle, type SQLJsDatabase } from "drizzle-orm/sql-js";
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { AppState, Candidate, CandidateEvaluation, CandidateInterviewPlan, Job, SalaryData, VoiceAnalysis, VoiceTranscriptSegment } from "./types.js";
+import type { AppState, AuthRole, Candidate, CandidateEvaluation, CandidateInterviewPlan, Job, SalaryData, VoiceAnalysis, VoiceTranscriptSegment } from "./types.js";
 import { demoState } from "./demo-data.js";
 import * as dbSchema from "./db/schema.js";
 import { serverRoot } from "./env.js";
@@ -13,6 +13,8 @@ type JobRow = typeof dbSchema.jobs.$inferSelect;
 type CandidateRow = typeof dbSchema.candidates.$inferSelect;
 type VoiceAnalysisRow = typeof dbSchema.voiceAnalyses.$inferSelect;
 type VoiceTranscriptSegmentRow = typeof dbSchema.voiceTranscriptSegments.$inferSelect;
+type AuthUserRow = typeof dbSchema.authUsers.$inferSelect;
+type AuthSessionRow = typeof dbSchema.authSessions.$inferSelect;
 
 const defaultJobScoreWeights: Job["scoreWeights"] = {
   experience: 30,
@@ -243,6 +245,82 @@ export function getDatabasePath() {
 
 function getDefaultCurrentUser() {
   return process.env.DEFAULT_CURRENT_USER || "本地用户";
+}
+
+export interface StoredAuthUser {
+  username: "admin" | "guest";
+  role: AuthRole;
+  passwordHash: string;
+  passwordUpdatedAt: string;
+}
+
+export interface StoredAuthSession {
+  tokenHash: string;
+  username: "admin" | "guest";
+  expiresAt: string;
+  createdAt: string;
+}
+
+export function getAuthUser(username: string): StoredAuthUser | null {
+  const row = getDb().select().from(dbSchema.authUsers).where(eq(dbSchema.authUsers.username, username)).get();
+  return row ? rowToAuthUser(row) : null;
+}
+
+export function listAuthUsers(): StoredAuthUser[] {
+  return getDb().select().from(dbSchema.authUsers).orderBy(asc(dbSchema.authUsers.username)).all().map(rowToAuthUser);
+}
+
+export function setAuthUserPasswordHash(username: "admin" | "guest", passwordHash: string) {
+  getDb()
+    .update(dbSchema.authUsers)
+    .set({ passwordHash, passwordUpdatedAt: new Date().toISOString() })
+    .where(eq(dbSchema.authUsers.username, username))
+    .run();
+  getDb().delete(dbSchema.authSessions).where(eq(dbSchema.authSessions.username, username)).run();
+  persist();
+}
+
+export function createAuthSession(session: StoredAuthSession) {
+  getDb().insert(dbSchema.authSessions).values(session).run();
+  persist();
+}
+
+export function getAuthSession(tokenHash: string): StoredAuthSession | null {
+  const row = getDb().select().from(dbSchema.authSessions).where(eq(dbSchema.authSessions.tokenHash, tokenHash)).get();
+  if (!row) return null;
+  if (Date.parse(row.expiresAt) <= Date.now()) {
+    deleteAuthSession(tokenHash);
+    return null;
+  }
+  return rowToAuthSession(row);
+}
+
+export function deleteAuthSession(tokenHash: string) {
+  getDb().delete(dbSchema.authSessions).where(eq(dbSchema.authSessions.tokenHash, tokenHash)).run();
+  persist();
+}
+
+export function deleteAuthSessionsForUser(username: "admin" | "guest") {
+  getDb().delete(dbSchema.authSessions).where(eq(dbSchema.authSessions.username, username)).run();
+  persist();
+}
+
+function rowToAuthUser(row: AuthUserRow): StoredAuthUser {
+  return {
+    username: row.username as StoredAuthUser["username"],
+    role: row.role as AuthRole,
+    passwordHash: row.passwordHash,
+    passwordUpdatedAt: row.passwordUpdatedAt,
+  };
+}
+
+function rowToAuthSession(row: AuthSessionRow): StoredAuthSession {
+  return {
+    tokenHash: row.tokenHash,
+    username: row.username as StoredAuthSession["username"],
+    expiresAt: row.expiresAt,
+    createdAt: row.createdAt,
+  };
 }
 
 export function getVoiceAnalyses(jobId: string): VoiceAnalysis[] {
@@ -845,6 +923,20 @@ function getDb() {
 function ensureSchema() {
   sqliteDb.run("PRAGMA foreign_keys = ON");
   sqliteDb.run(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
+  sqliteDb.run(`CREATE TABLE IF NOT EXISTS auth_users (
+    username TEXT PRIMARY KEY,
+    role TEXT NOT NULL,
+    password_hash TEXT NOT NULL DEFAULT '',
+    password_updated_at TEXT NOT NULL DEFAULT ''
+  );`);
+  sqliteDb.run(`CREATE TABLE IF NOT EXISTS auth_sessions (
+    token_hash TEXT PRIMARY KEY,
+    username TEXT NOT NULL REFERENCES auth_users(username) ON DELETE CASCADE,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );`);
+  sqliteDb.run("INSERT OR IGNORE INTO auth_users (username, role) VALUES ('admin', 'admin');");
+  sqliteDb.run("INSERT OR IGNORE INTO auth_users (username, role) VALUES ('guest', 'guest');");
   sqliteDb.run(`CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,

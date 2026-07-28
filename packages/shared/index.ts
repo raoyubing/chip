@@ -411,6 +411,20 @@ export interface AppState {
   voiceAnalyses: Record<string, VoiceAnalysis[]>;
 }
 
+export type AuthRole = "admin" | "guest";
+
+export interface AuthUser {
+  username: "admin" | "guest";
+  role: AuthRole;
+}
+
+export interface AuthStatus {
+  authenticated: boolean;
+  needsSetup: boolean;
+  user: AuthUser | null;
+  expiresAt: string | null;
+}
+
 export interface ResumeFilePayload {
   name: string;
   candidateName?: string | null;

@@ -34,8 +34,8 @@ import {
 } from "@arco-design/web-react/icon";
 import zhCN from "@arco-design/web-react/es/locale/zh-CN";
 import { bossIndustryGroups, normalizeBossIndustryName, type RegionNode } from "@xiaosongshu/shared";
-import { api, type JobCopilotResult, type JobPayload, type ResumeUploadPayload } from "./api";
-import type { AppState, Candidate, CandidateInterviewPlan, CandidateInterviewPlanQuestion, InterviewMethodKey, Job, JobScoreWeights, ResumeFilePayload, SalaryData, SalaryFilters, UploadedFile, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceRecruiterCoachReport, VoiceSegmentInsight } from "./types";
+import { api, type AuthAccountSummary, type JobCopilotResult, type JobPayload, type ResumeUploadPayload } from "./api";
+import type { AppState, AuthStatus, Candidate, CandidateInterviewPlan, CandidateInterviewPlanQuestion, InterviewMethodKey, Job, JobScoreWeights, ResumeFilePayload, SalaryData, SalaryFilters, UploadedFile, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceRecruiterCoachReport, VoiceSegmentInsight } from "./types";
 import "@arco-design/web-react/dist/css/arco.css";
 import "./styles.css";
 
@@ -83,6 +83,7 @@ interface VoiceAiLiveState {
 type Modal =
   | { type: "job"; job?: Job }
   | { type: "resume" }
+  | { type: "accounts" }
   | null;
 
 function confirmAction(title: string, content: React.ReactNode) {
@@ -142,6 +143,7 @@ const durationPyramidTones = [
 const durationPyramidWidths = ["100%", "86%", "74%", "62%"];
 
 function App() {
+  const [authStatus, setAuthStatus] = useState<AuthStatus | null>(null);
   const [state, setState] = useState<AppState | null>(null);
   const [bootStatus, setBootStatus] = useState<"loading" | "ready" | "error">("loading");
   const [bootError, setBootError] = useState("");
@@ -156,9 +158,24 @@ function App() {
   const [toast, setToast] = useState("");
   const [dashboardGranularity, setDashboardGranularity] = useState<AnalyticsGranularity>("month");
   const [dashboardSelectedPeriod, setDashboardSelectedPeriod] = useState("");
+  const isAdmin = authStatus?.user?.role === "admin";
 
   useEffect(() => {
-    void loadState();
+    void bootstrapAuth();
+  }, []);
+
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      setAuthStatus({ authenticated: false, needsSetup: false, user: null, expiresAt: null });
+      setState(null);
+      setSalaryData(null);
+      setActiveView("dashboard");
+      setModal(null);
+      setBootStatus("ready");
+      showToast("登录状态已失效，请重新登录");
+    };
+    window.addEventListener("xiaosongshu:unauthorized", handleUnauthorized);
+    return () => window.removeEventListener("xiaosongshu:unauthorized", handleUnauthorized);
   }, []);
 
   useEffect(() => {
@@ -180,6 +197,46 @@ function App() {
     }
     return message;
   };
+
+  async function bootstrapAuth() {
+    setBootStatus("loading");
+    setBootError("");
+    try {
+      const nextAuthStatus = await api.authStatus();
+      setAuthStatus(nextAuthStatus);
+      if (nextAuthStatus.authenticated) {
+        await loadState();
+      } else {
+        setState(null);
+        setBootStatus("ready");
+      }
+    } catch (error) {
+      setAuthStatus(null);
+      setState(null);
+      const message = normalizeBootError(error);
+      setBootError(message);
+      setBootStatus("error");
+    }
+  }
+
+  async function handleAuthenticated(nextAuthStatus: AuthStatus) {
+    setAuthStatus(nextAuthStatus);
+    setSalaryData(null);
+    setActiveView("dashboard");
+    await loadState();
+  }
+
+  async function logout() {
+    try {
+      await api.logout();
+    } catch {}
+    setAuthStatus({ authenticated: false, needsSetup: false, user: null, expiresAt: null });
+    setState(null);
+    setSalaryData(null);
+    setActiveView("dashboard");
+    setModal(null);
+    setBootStatus("ready");
+  }
 
   async function loadState() {
     setBootStatus("loading");
@@ -263,9 +320,9 @@ function App() {
 
   async function deleteCandidate() {
     const targetCandidate = currentCandidates.find((candidate) => candidate.id === selectedCandidateId);
-    const shouldKeepArchive = Boolean(targetCandidate?.isInTalentPool || targetCandidate?.onboarded === "是");
+    const shouldKeepArchive = !isAdmin || Boolean(targetCandidate?.isInTalentPool || targetCandidate?.onboarded === "是");
     const message = shouldKeepArchive
-      ? "该候选人已进入人才库，本次仅从当前职位的简历甄选列表移除，人才库档案会保留。确认移除？"
+      ? "本次仅从当前职位的简历甄选列表移除，人才档案和流程数据会继续保留。确认移除？"
       : "确认删除该候选人？";
     const title = shouldKeepArchive ? "移出简历甄选" : "删除候选人";
     if (!selectedCandidateId || !(await confirmAction(title, message))) return;
@@ -353,6 +410,15 @@ function App() {
     );
   }
 
+  if (!authStatus?.authenticated || !authStatus.user) {
+    return (
+      <AuthScreen
+        needsSetup={Boolean(authStatus?.needsSetup)}
+        onAuthenticated={(nextAuthStatus) => void handleAuthenticated(nextAuthStatus)}
+      />
+    );
+  }
+
   if (!state) {
     return (
       <div className="loading-shell">
@@ -393,7 +459,8 @@ function App() {
     );
   }
 
-  const title = views.find(([view]) => view === activeView)?.[1] || "工作台概览";
+  const availableViews = isAdmin ? views : views.filter(([view]) => view !== "salary");
+  const title = availableViews.find(([view]) => view === activeView)?.[1] || "工作台概览";
   const showJobSwitcher = activeView === "jobs" || activeView === "candidates";
   const showDashboardFilters = activeView === "dashboard";
 
@@ -405,12 +472,22 @@ function App() {
           <div><h1>小松鼠</h1><p>轻松招到对的人</p></div>
         </div>
         <nav className="nav" aria-label="主导航">
-          {views.map(([view, label, ViewIcon]) => (
+          {availableViews.map(([view, label, ViewIcon]) => (
             <Button key={view} className={`nav-item ${activeView === view ? "active" : ""}`} onClick={() => setActiveView(view)}>
               <span className="nav-icon"><ViewIcon /></span><span>{label}</span>
             </Button>
           ))}
         </nav>
+        <div className="sidebar-account">
+          <div className="sidebar-account-identity">
+            <span className="sidebar-account-icon"><IconUser /></span>
+            <span><strong>{authStatus.user.username}</strong><small>{isAdmin ? "管理员" : "普通用户"}</small></span>
+          </div>
+          <div className="sidebar-account-actions">
+            {isAdmin ? <Button className="sidebar-account-button" type="button" onClick={() => setModal({ type: "accounts" })}>账号管理</Button> : null}
+            <Button className="sidebar-account-button" type="button" onClick={() => void logout()}>退出登录</Button>
+          </div>
+        </div>
       </aside>
 
       <main className={`main main-${activeView}`}>
@@ -436,7 +513,7 @@ function App() {
                 selectedPeriod={dashboardSelectedPeriod}
                 onPeriodChange={setDashboardSelectedPeriod}
                 periodOptions={dashboardPeriodOptions}
-                onClearData={clearData}
+                onClearData={isAdmin ? clearData : undefined}
               />
             </div>
           )}
@@ -453,9 +530,9 @@ function App() {
               selectedPeriod={dashboardSelectedPeriod}
             />
           )}
-          {activeView === "jobs" && <JobsView state={state} currentJob={currentJob} onSelect={changeJob} onEdit={(job) => setModal({ type: "job", job })} onCreate={() => setModal({ type: "job" })} onCloseJob={closeJob} onDelete={deleteJob} />}
+          {activeView === "jobs" && <JobsView state={state} currentJob={currentJob} canDelete={isAdmin} onSelect={changeJob} onEdit={(job) => setModal({ type: "job", job })} onCreate={() => setModal({ type: "job" })} onCloseJob={closeJob} onDelete={deleteJob} />}
           {activeView === "candidates" && <CandidatesView candidates={currentCandidates} recentUploadedIds={recentCandidateIdsByJob[currentJob.id] || []} selectedId={selectedCandidateId} onSelect={setSelectedCandidateId} onUpload={() => setModal({ type: "resume" })} onMark={markInterview} onAddToTalentPool={addToTalentPool} onDelete={deleteCandidate} currentJob={currentJob} onStateChange={setRemoteState} />}
-          {activeView === "talent" && <TalentPoolView jobs={state.jobs} currentJob={currentJob} candidatesByJob={state.candidates} onStateChange={setRemoteState} onToast={showToast} />}
+          {activeView === "talent" && <TalentPoolView jobs={state.jobs} currentJob={currentJob} candidatesByJob={state.candidates} canHardDelete={isAdmin} onStateChange={setRemoteState} onToast={showToast} />}
           {activeView === "interviews" && <InterviewsView jobs={ongoingJobs} selectedJobId={activeInterviewJobId} onJobChange={setActiveInterviewJobId} selectedMonth={activeInterviewMonth} onMonthChange={setActiveInterviewMonth} activeStage={activeInterviewStage} candidates={interviewCandidates} onStageChange={setActiveInterviewStage} onSaveStage={updateInterviewStage} />}
           {activeView === "voice" && (
             <VoiceParseView
@@ -467,14 +544,196 @@ function App() {
               onToast={showToast}
             />
           )}
-          {activeView === "salary" && <SalaryView data={salaryData} onRefresh={refreshSalary} />}
+          {isAdmin && activeView === "salary" && <SalaryView data={salaryData} onRefresh={refreshSalary} />}
         </section>
       </main>
 
       {modal?.type === "job" && <JobModal job={modal.job} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); showToast(modal.job ? "职位已更新" : "职位已新增"); }} />}
       {modal?.type === "resume" && <ResumeModal job={currentJob} candidates={currentCandidates} onClose={() => setModal(null)} onStateChange={setRemoteState} onSaved={(next, uploadedCandidateIds) => { setModal(null); setRemoteState(next); setRecentCandidateIdsByJob((current) => ({ ...current, [currentJob.id]: uploadedCandidateIds })); showToast("简历分析完成"); }} />}
+      {modal?.type === "accounts" && <AccountManagementModal currentUsername={authStatus.user.username} onClose={() => setModal(null)} onRequireRelogin={() => void logout()} onToast={showToast} />}
       {toast && <div className="toast">{toast}</div>}
     </div>
+  );
+}
+
+function AuthScreen({ needsSetup, onAuthenticated }: { needsSetup: boolean; onAuthenticated: (status: AuthStatus) => void }) {
+  const [username, setUsername] = useState<"admin" | "guest">("guest");
+  const [password, setPassword] = useState("");
+  const [adminPassword, setAdminPassword] = useState("");
+  const [adminPasswordConfirm, setAdminPasswordConfirm] = useState("");
+  const [guestPassword, setGuestPassword] = useState("");
+  const [guestPasswordConfirm, setGuestPasswordConfirm] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  const submitLogin = async (event: FormEvent) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setError("");
+    try {
+      onAuthenticated(await api.login(username, password));
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "登录失败，请稍后重试");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const submitSetup = async (event: FormEvent) => {
+    event.preventDefault();
+    setError("");
+    if (adminPassword !== adminPasswordConfirm) {
+      setError("两次输入的管理员密码不一致");
+      return;
+    }
+    if (guestPassword !== guestPasswordConfirm) {
+      setError("两次输入的普通用户密码不一致");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      onAuthenticated(await api.setupAccounts(adminPassword, guestPassword));
+    } catch (submitError) {
+      setError(submitError instanceof Error ? submitError.message : "账号初始化失败，请稍后重试");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <main className="auth-shell">
+      <section className="auth-brand-panel">
+        <div className="brand auth-brand">
+          <div className="brand-mark"><SquirrelLogo /></div>
+          <div><h1>小松鼠</h1><p>轻松招到对的人</p></div>
+        </div>
+        <div className="auth-brand-copy">
+          <strong>内部招聘工作台</strong>
+          <p>请使用已分配的账号进入系统。</p>
+        </div>
+      </section>
+
+      <section className="auth-form-panel">
+        {needsSetup ? (
+          <form className="auth-form" onSubmit={submitSetup}>
+            <div className="auth-form-heading">
+              <span>首次使用</span>
+              <h2>设置内置账号密码</h2>
+              <p>系统固定使用 admin 和 guest 两个账号，密码至少8位。</p>
+            </div>
+            <div className="auth-setup-grid">
+              <div className="auth-account-setup">
+                <div className="auth-account-title"><strong>admin</strong><span>管理员</span></div>
+                <label className="auth-field"><span>设置密码</span><ArcoInput.Password aria-label="设置管理员密码" value={adminPassword} onChange={setAdminPassword} placeholder="至少8位" /></label>
+                <label className="auth-field"><span>确认密码</span><ArcoInput.Password aria-label="确认管理员密码" value={adminPasswordConfirm} onChange={setAdminPasswordConfirm} placeholder="再次输入" /></label>
+              </div>
+              <div className="auth-account-setup">
+                <div className="auth-account-title"><strong>guest</strong><span>普通用户</span></div>
+                <label className="auth-field"><span>设置密码</span><ArcoInput.Password aria-label="设置普通用户密码" value={guestPassword} onChange={setGuestPassword} placeholder="至少8位" /></label>
+                <label className="auth-field"><span>确认密码</span><ArcoInput.Password aria-label="确认普通用户密码" value={guestPasswordConfirm} onChange={setGuestPasswordConfirm} placeholder="再次输入" /></label>
+              </div>
+            </div>
+            {error ? <div className="auth-error">{error}</div> : null}
+            <Button className="btn primary auth-submit" type="submit" disabled={submitting}>{submitting ? "正在初始化..." : "完成设置并进入系统"}</Button>
+          </form>
+        ) : (
+          <form className="auth-form auth-login-form" onSubmit={submitLogin}>
+            <div className="auth-form-heading">
+              <span>欢迎回来</span>
+              <h2>登录小松鼠</h2>
+              <p>登录状态自本次登录起保留15天。</p>
+            </div>
+            <div className="auth-role-switch" aria-label="选择登录账号">
+              {(["guest", "admin"] as const).map((account) => (
+                <Button key={account} className={`auth-role-option ${username === account ? "active" : ""}`} type="button" onClick={() => { setUsername(account); setPassword(""); setError(""); }}>
+                  <strong>{account}</strong><span>{account === "admin" ? "管理员" : "普通用户"}</span>
+                </Button>
+              ))}
+            </div>
+            <label className="auth-field"><span>密码</span><ArcoInput.Password aria-label="登录密码" autoFocus value={password} onChange={setPassword} placeholder={`请输入 ${username} 密码`} /></label>
+            {error ? <div className="auth-error">{error}</div> : null}
+            <Button className="btn primary auth-submit" type="submit" disabled={submitting || !password}>{submitting ? "正在登录..." : "登录"}</Button>
+          </form>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function AccountManagementModal({ currentUsername, onClose, onRequireRelogin, onToast }: {
+  currentUsername: "admin" | "guest";
+  onClose: () => void;
+  onRequireRelogin: () => void;
+  onToast: (message: string) => void;
+}) {
+  const [accounts, setAccounts] = useState<AuthAccountSummary[]>([]);
+  const [selectedUsername, setSelectedUsername] = useState<"admin" | "guest">("guest");
+  const [password, setPassword] = useState("");
+  const [passwordConfirm, setPasswordConfirm] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    void api.authUsers()
+      .then((result) => setAccounts(result.users))
+      .catch((loadError) => setError(loadError instanceof Error ? loadError.message : "账号信息加载失败"));
+  }, []);
+
+  const savePassword = async () => {
+    setError("");
+    if (password !== passwordConfirm) {
+      setError("两次输入的密码不一致");
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await api.updateAuthPassword(selectedUsername, password);
+      setAccounts(result.users);
+      setPassword("");
+      setPasswordConfirm("");
+      onToast(`${selectedUsername} 密码已更新`);
+      if (result.requiresRelogin) onRequireRelogin();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "密码更新失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const selectedAccount = accounts.find((account) => account.username === selectedUsername);
+  return (
+    <Modal
+      title="账号管理"
+      className="account-management-modal"
+      onClose={onClose}
+      actions={(
+        <>
+          <Button className="btn" type="button" onClick={onClose} disabled={loading}>取消</Button>
+          <Button className="btn primary" type="button" onClick={() => void savePassword()} disabled={loading || password.length < 8}>{loading ? "保存中..." : "更新密码"}</Button>
+        </>
+      )}
+    >
+      <div className="account-management-body">
+        <div className="account-role-list">
+          {(["admin", "guest"] as const).map((username) => (
+            <Button key={username} className={`account-role-card ${selectedUsername === username ? "active" : ""}`} type="button" onClick={() => { setSelectedUsername(username); setPassword(""); setPasswordConfirm(""); setError(""); }}>
+              <span><strong>{username}</strong><small>{username === "admin" ? "管理员" : "普通用户"}</small></span>
+              <em>{username === currentUsername ? "当前账号" : ""}</em>
+            </Button>
+          ))}
+        </div>
+        <div className="account-password-form">
+          <div className="account-password-summary">
+            <strong>修改 {selectedUsername} 密码</strong>
+            <span>{selectedUsername === "admin" ? "修改当前管理员密码后，所有设备需要重新登录。" : "修改后，guest 已登录的设备会立即退出。"}</span>
+            {selectedAccount?.passwordUpdatedAt ? <small>上次更新：{new Date(selectedAccount.passwordUpdatedAt).toLocaleString("zh-CN")}</small> : null}
+          </div>
+          <label className="auth-field"><span>新密码</span><ArcoInput.Password aria-label="新密码" value={password} onChange={setPassword} placeholder="至少8位" /></label>
+          <label className="auth-field"><span>确认新密码</span><ArcoInput.Password aria-label="确认新密码" value={passwordConfirm} onChange={setPasswordConfirm} placeholder="再次输入" /></label>
+          {error ? <div className="auth-error">{error}</div> : null}
+        </div>
+      </div>
+    </Modal>
   );
 }
 
@@ -924,7 +1183,7 @@ function AnalyticsPeriodFilters({
   selectedPeriod: string;
   onPeriodChange: (value: string) => void;
   periodOptions: Array<{ value: string; label: string }>;
-  onClearData: () => void;
+  onClearData?: () => void;
 }) {
   return (
     <div className="analytics-filters dashboard-global-filters">
@@ -950,7 +1209,7 @@ function AnalyticsPeriodFilters({
           {periodOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </Select>
       </label>
-      <Button className="btn ghost" onClick={onClearData}>清空本地数据</Button>
+      {onClearData ? <Button className="btn ghost" onClick={onClearData}>清空本地数据</Button> : null}
     </div>
   );
 }
@@ -1452,6 +1711,7 @@ function Dashboard({
 function JobsView({
   state,
   currentJob,
+  canDelete,
   onSelect,
   onEdit,
   onCreate,
@@ -1460,6 +1720,7 @@ function JobsView({
 }: {
   state: AppState;
   currentJob: Job;
+  canDelete: boolean;
   onSelect: (id: string) => void;
   onEdit: (job: Job) => void;
   onCreate: () => void;
@@ -1557,7 +1818,7 @@ function JobsView({
             <div className="toolbar-left">
               <Button className="btn primary" onClick={() => onEdit(selectedJob)}>编辑职位</Button>
               {selectedJob.status !== "已关闭" && <Button className="btn" onClick={() => handleCloseJob(selectedJob)}>关闭招聘</Button>}
-              <Button className="btn danger" onClick={() => onDelete(selectedJob)}>删除职位</Button>
+              {canDelete ? <Button className="btn danger" onClick={() => onDelete(selectedJob)}>删除职位</Button> : null}
             </div>
           </div>
         </section>
@@ -1720,7 +1981,7 @@ function extractCandidateProfileTags(candidate: Candidate) {
   ].filter((tag): tag is { label: string; value: string } => Boolean(tag));
 }
 
-function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onToast }: { jobs: Job[]; currentJob: Job; candidatesByJob: AppState["candidates"]; onStateChange: (state: AppState) => void; onToast: (message: string) => void }) {
+function TalentPoolView({ jobs, currentJob, candidatesByJob, canHardDelete, onStateChange, onToast }: { jobs: Job[]; currentJob: Job; candidatesByJob: AppState["candidates"]; canHardDelete: boolean; onStateChange: (state: AppState) => void; onToast: (message: string) => void }) {
   const [keyword, setKeyword] = useState("");
   const [jobId, setJobId] = useState("all");
   const [profileFilter, setProfileFilter] = useState("all");
@@ -2069,7 +2330,7 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
             <>
               <Button className="btn" type="button" onClick={() => setDeleteTalentCandidate(null)} disabled={Boolean(deleteTalentLoading)}>取消</Button>
               <Button className="btn" type="button" onClick={removeTalentFromPool} disabled={Boolean(deleteTalentLoading)}>{deleteTalentLoading === "remove" ? "移出中..." : "移出人才库"}</Button>
-              <Button className="btn danger" type="button" onClick={hardDeleteTalentArchive} disabled={Boolean(deleteTalentLoading)}>{deleteTalentLoading === "hard" ? "删除中..." : "彻底删除档案"}</Button>
+              {canHardDelete ? <Button className="btn danger" type="button" onClick={hardDeleteTalentArchive} disabled={Boolean(deleteTalentLoading)}>{deleteTalentLoading === "hard" ? "删除中..." : "彻底删除档案"}</Button> : null}
             </>
           )}
         >
@@ -2079,11 +2340,13 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, onStateChange, onTo
               <p>仅从人才库列表移除，不影响简历甄选、面试管理中的已有记录。</p>
               <small>适合误入库、暂不运营或画像不准确的人选。</small>
             </div>
-            <div className="talent-delete-danger">
-              <strong>彻底删除档案</strong>
-              <p>删除候选人记录、简历原文、附件和关联解析记录，无法恢复。</p>
-              <small>{isScreeningCandidate(deleteTalentCandidate) || isInterviewCandidate(deleteTalentCandidate) ? "该候选人仍有关联流程数据，请确认确实不再需要追溯。" : "适合重复数据、无价值简历或合规删除。"}</small>
-            </div>
+            {canHardDelete ? (
+              <div className="talent-delete-danger">
+                <strong>彻底删除档案</strong>
+                <p>删除候选人记录、简历原文、附件和关联解析记录，无法恢复。</p>
+                <small>{isScreeningCandidate(deleteTalentCandidate) || isInterviewCandidate(deleteTalentCandidate) ? "该候选人仍有关联流程数据，请确认确实不再需要追溯。" : "适合重复数据、无价值简历或合规删除。"}</small>
+              </div>
+            ) : null}
             {deleteTalentError ? <div className="tool-error">{deleteTalentError}</div> : null}
           </div>
         </Modal>

@@ -19,6 +19,7 @@
 		"download:boss-scraper": "pnpm --filter @xiaosongshu/server download:boss-scraper",
 		"boss-scraper:check": "pnpm --filter @xiaosongshu/server boss-scraper:check",
 		"boss-scraper:setup-chrome": "pnpm --filter @xiaosongshu/server boss-scraper:setup-chrome",
+		"auth:reset-admin": "bash scripts/with-local-node.sh pnpm --filter @xiaosongshu/server auth:reset-admin",
 		"demo:load": "pnpm --filter @xiaosongshu/server demo:load",
 		"deploy:init": "bash deploy/scripts/init-server.sh",
 		"deploy:up": "docker compose --env-file deploy/.env -f deploy/docker-compose.yml up -d",

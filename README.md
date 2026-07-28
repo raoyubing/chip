@@ -54,6 +54,7 @@ pnpm download:whisper-model # 下载本地语音转写模型到 apps/server/mode
 pnpm download:boss-scraper  # 下载 boss-zhipin-scraper 并安装 Python 依赖到 apps/server/.venv
 pnpm boss-scraper:setup-chrome # 启动 BOSS 专用 Chrome 并登录
 pnpm boss-scraper:check # 检查 BOSS CDP、依赖和登录态
+pnpm auth:reset-admin # 停止后端后，在本机安全重置 admin 密码
 pnpm deploy:ocr:build # 构建 PP-OCRv6 镜像并导出到 deploy/ocr
 pnpm deploy:ocr:up # 单独启动 PP-OCRv6 服务
 pnpm deploy:ocr:down # 停止 PP-OCRv6 服务

@@ -1,3 +1,4 @@
+import { authApi } from "./auth.api";
 import { candidateApi } from "./candidate.api";
 import { fileApi } from "./file.api";
 import { jobApi } from "./job.api";
@@ -10,6 +11,7 @@ export type { JobCopilotPayload, JobCopilotResult, JobPayload, ResumeUploadPaylo
 export type { VoiceAnalysisPayload, VoiceChunkPayload, VoiceFinalEvaluatePayload, VoiceSegmentAnalyzePayload } from "./voice.api";
 
 export const api = {
+  ...authApi,
   ...jobApi,
   ...regionApi,
   ...fileApi,
@@ -17,3 +19,4 @@ export const api = {
   ...salaryApi,
   ...voiceApi,
 };
+export type { AuthAccountSummary } from "./auth.api";

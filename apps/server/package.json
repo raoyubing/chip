@@ -12,7 +12,8 @@
     "download:boss-scraper": "bash scripts/install-boss-scraper.sh",
     "boss-scraper:check": "bash scripts/run-boss-scraper.sh --check",
     "boss-scraper:setup-chrome": "bash scripts/run-boss-scraper.sh --setup-chrome",
-    "demo:load": "tsx src/scripts/load-demo-data.ts"
+    "demo:load": "tsx src/scripts/load-demo-data.ts",
+    "auth:reset-admin": "tsx src/scripts/reset-admin-password.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1052.0",

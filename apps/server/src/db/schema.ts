@@ -6,6 +6,20 @@ export const settings = sqliteTable("settings", {
   value: text("value").notNull(),
 });
 
+export const authUsers = sqliteTable("auth_users", {
+  username: text("username").primaryKey(),
+  role: text("role").notNull(),
+  passwordHash: text("password_hash").notNull().default(""),
+  passwordUpdatedAt: text("password_updated_at").notNull().default(""),
+});
+
+export const authSessions = sqliteTable("auth_sessions", {
+  tokenHash: text("token_hash").primaryKey(),
+  username: text("username").notNull().references(() => authUsers.username, { onDelete: "cascade" }),
+  expiresAt: text("expires_at").notNull(),
+  createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+});
+
 export const jobs = sqliteTable("jobs", {
   id: text("id").primaryKey(),
   title: text("title").notNull(),

@@ -10,6 +10,23 @@ import wavefile from "wavefile";
 import { z } from "zod";
 import { bossIndustryCodeByName, normalizeBossIndustryName } from "@xiaosongshu/shared";
 import { createCandidate, normalizeKeywords } from "./analyzer.js";
+import {
+  authenticateCredentials,
+  authenticateSessionToken,
+  authCookieName,
+  buildExpiredSessionCookie,
+  buildSessionCookie,
+  createSessionForUser,
+  getBuiltInAccountSummaries,
+  getPublicAuthStatus,
+  initializeAuthFromEnvironment,
+  isAuthSetupRequired,
+  parseCookieValue,
+  resetBuiltInPassword,
+  revokeSession,
+  setupBuiltInAccounts,
+  type AuthSessionContext,
+} from "./auth.js";
 import { loadLocalEnv, serverRoot } from "./env.js";
 import { fileService } from "./file-service.js";
 import { extractResumeTextFromFile } from "./resume-parser.js";
@@ -39,7 +56,7 @@ import {
   updateVoiceTranscriptSegmentAnalysis,
   upsertJob,
 } from "./db.js";
-import type { Candidate, CandidateEvaluation, CandidateInterviewPlan, InterviewMethodKey, Job, SalaryData, SalaryFilters, VoiceAnalysis, VoiceFinalEvaluation, VoiceRecruiterCoachReport, VoiceTranscriptResult, VoiceTranscriptSegment } from "./types.js";
+import type { AppState, AuthUser, Candidate, CandidateEvaluation, CandidateInterviewPlan, InterviewMethodKey, Job, SalaryData, SalaryFilters, VoiceAnalysis, VoiceFinalEvaluation, VoiceRecruiterCoachReport, VoiceTranscriptResult, VoiceTranscriptSegment } from "./types.js";
 
 loadLocalEnv();
 
@@ -73,7 +90,7 @@ const bossScraperOutputDir = resolveServerPath(process.env.BOSS_SCRAPER_OUTPUT_D
 const bossScraperCdpPort = Number(process.env.BOSS_SCRAPER_CDP_PORT || 9222);
 const bossScraperPages = clampInteger(Number(process.env.BOSS_SCRAPER_PAGES || 1), 1, 10);
 const bossScraperTimeoutMs = Number(process.env.BOSS_SCRAPER_TIMEOUT_MS || 45000);
-await server.register(cors, { origin: true });
+await server.register(cors, { origin: true, credentials: true });
 await server.register(sensible);
 await server.register(multipart, {
   throwFileSizeLimit: true,
@@ -84,6 +101,84 @@ await server.register(multipart, {
   },
 });
 await initDb();
+const authInitializedFromEnvironment = initializeAuthFromEnvironment();
+if (authInitializedFromEnvironment) {
+  server.log.info("Built-in admin and guest accounts initialized from environment variables");
+}
+
+const requestAuthContexts = new WeakMap<FastifyRequest, AuthSessionContext>();
+const publicApiRoutes = new Set(["/api/health", "/api/auth/status", "/api/auth/setup", "/api/auth/login"]);
+const failedLoginAttempts = new Map<string, { count: number; blockedUntil: number }>();
+
+server.addHook("preHandler", async (request, reply) => {
+  if (request.method === "OPTIONS") return;
+  const routePath = request.routeOptions.url || request.url.split("?")[0];
+  if (publicApiRoutes.has(routePath)) return;
+
+  const context = getRequestAuthContext(request);
+  if (!context) {
+    return reply.code(401).send({ message: "登录状态已失效，请重新登录。" });
+  }
+  requestAuthContexts.set(request, context);
+
+  if (context.user.role === "guest" && isAdminOnlyRoute(request.method, routePath)) {
+    return reply.code(403).send({ message: "当前账号没有该操作权限。" });
+  }
+});
+
+server.addHook("preSerialization", async (request, _reply, payload) => {
+  const context = requestAuthContexts.get(request);
+  return context ? sanitizePayloadForUser(payload, context.user) : payload;
+});
+
+function getRequestAuthContext(request: FastifyRequest) {
+  const token = parseCookieValue(request.headers.cookie, authCookieName);
+  return authenticateSessionToken(token);
+}
+
+function requireRequestAuthContext(request: FastifyRequest) {
+  const context = requestAuthContexts.get(request);
+  if (!context) throw server.httpErrors.unauthorized("登录状态已失效，请重新登录。");
+  return context;
+}
+
+function isAdminOnlyRoute(method: string, routePath: string) {
+  if (routePath.startsWith("/api/auth/users")) return true;
+  if (routePath.startsWith("/api/salary") || routePath === "/api/jobs/:id/salary/refresh") return true;
+  if (method === "POST" && (routePath === "/api/data/clear" || routePath === "/api/reset")) return true;
+  if (method === "DELETE" && routePath === "/api/jobs/:id") return true;
+  if (method === "DELETE" && routePath === "/api/candidates/:id/hard") return true;
+  return false;
+}
+
+function sanitizePayloadForUser(payload: unknown, user: AuthUser): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  if (isAppStatePayload(payload)) return sanitizeAppStateForUser(payload, user);
+  const source = payload as Record<string, unknown>;
+  if (isAppStatePayload(source.state)) {
+    return { ...source, state: sanitizeAppStateForUser(source.state, user) };
+  }
+  return payload;
+}
+
+function isAppStatePayload(payload: unknown): payload is AppState {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const source = payload as Partial<AppState>;
+  return Array.isArray(source.jobs) && Boolean(source.candidates) && Boolean(source.voiceAnalyses) && typeof source.currentJobId === "string";
+}
+
+function sanitizeAppStateForUser(state: AppState, user: AuthUser): AppState {
+  return {
+    ...state,
+    currentUser: user.username,
+    jobs: user.role === "guest" ? state.jobs.map((job) => ({ ...job, salaryData: null })) : state.jobs,
+  };
+}
+
+function isSecureRequest(request: FastifyRequest) {
+  const forwardedProto = String(request.headers["x-forwarded-proto"] || "").split(",")[0].trim();
+  return request.protocol === "https" || forwardedProto === "https";
+}
 
 const defaultJobScoreWeights: Job["scoreWeights"] = {
   experience: 30,
@@ -261,6 +356,76 @@ const jobCopilotSchema = jobSchema.extend({
 
 const candidateInterviewPlanSchema = z.object({
   candidateId: z.string().min(1),
+});
+
+const authPasswordSchema = z.string().min(8, "密码至少需要8位").max(128, "密码不能超过128位");
+const authLoginSchema = z.object({
+  username: z.enum(["admin", "guest"]),
+  password: z.string().min(1, "请输入密码").max(128),
+});
+const authSetupSchema = z.object({
+  adminPassword: authPasswordSchema,
+  guestPassword: authPasswordSchema,
+});
+
+server.get("/api/auth/status", async (request) => {
+  return getPublicAuthStatus(getRequestAuthContext(request));
+});
+
+server.post("/api/auth/setup", async (request, reply) => {
+  if (!isAuthSetupRequired()) throw server.httpErrors.conflict("账号已经初始化，请直接登录。");
+  const body = authSetupSchema.parse(request.body);
+  setupBuiltInAccounts(body.adminPassword, body.guestPassword);
+  const user: AuthUser = { username: "admin", role: "admin" };
+  const session = createSessionForUser(user);
+  reply.header("Set-Cookie", buildSessionCookie(session.token, isSecureRequest(request)));
+  return getPublicAuthStatus({ user, tokenHash: "", expiresAt: session.expiresAt });
+});
+
+server.post("/api/auth/login", async (request, reply) => {
+  if (isAuthSetupRequired()) throw server.httpErrors.conflict("请先完成首次账号设置。");
+  const body = authLoginSchema.parse(request.body);
+  const attemptKey = `${request.ip}:${body.username}`;
+  const attempt = failedLoginAttempts.get(attemptKey);
+  if (attempt && attempt.blockedUntil > Date.now()) {
+    throw server.httpErrors.tooManyRequests("登录失败次数过多，请5分钟后再试。");
+  }
+
+  const user = authenticateCredentials(body.username, body.password);
+  if (!user) {
+    const nextCount = (attempt?.count || 0) + 1;
+    failedLoginAttempts.set(attemptKey, {
+      count: nextCount,
+      blockedUntil: nextCount >= 5 ? Date.now() + 5 * 60 * 1000 : 0,
+    });
+    throw server.httpErrors.unauthorized("账号或密码不正确。");
+  }
+
+  failedLoginAttempts.delete(attemptKey);
+  const session = createSessionForUser(user);
+  reply.header("Set-Cookie", buildSessionCookie(session.token, isSecureRequest(request)));
+  return getPublicAuthStatus({ user, tokenHash: "", expiresAt: session.expiresAt });
+});
+
+server.post("/api/auth/logout", async (request, reply) => {
+  const context = requireRequestAuthContext(request);
+  revokeSession(context.tokenHash);
+  reply.header("Set-Cookie", buildExpiredSessionCookie(isSecureRequest(request)));
+  return { ok: true };
+});
+
+server.get("/api/auth/users", async () => ({ users: getBuiltInAccountSummaries() }));
+
+server.put("/api/auth/users/:username/password", async (request) => {
+  const params = z.object({ username: z.enum(["admin", "guest"]) }).parse(request.params);
+  const body = z.object({ password: authPasswordSchema }).parse(request.body);
+  const currentUser = requireRequestAuthContext(request).user;
+  resetBuiltInPassword(params.username, body.password);
+  return {
+    ok: true,
+    requiresRelogin: currentUser.username === params.username,
+    users: getBuiltInAccountSummaries(),
+  };
 });
 
 server.get("/api/health", async () => ({ ok: true }));
@@ -556,7 +721,8 @@ server.delete("/api/candidates/:id", async (request) => {
   const params = z.object({ id: z.string() }).parse(request.params);
   const candidate = getCandidateById(params.id);
   if (!candidate) throw server.httpErrors.notFound("候选人不存在");
-  if (candidate.isInTalentPool || candidate.onboarded === "是") {
+  const user = requireRequestAuthContext(request).user;
+  if (user.role === "guest" || candidate.isInTalentPool || candidate.onboarded === "是") {
     removeCandidateFromScreening(params.id);
   } else {
     deleteCandidate(params.id);

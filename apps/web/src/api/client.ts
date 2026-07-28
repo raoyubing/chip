@@ -56,6 +56,7 @@ export async function request<T>(url: string, options: RequestInit = {}): Promis
   let response: Response;
   try {
     response = await fetch(url, {
+      credentials: "include",
       headers,
       ...options,
     });
@@ -64,6 +65,9 @@ export async function request<T>(url: string, options: RequestInit = {}): Promis
   }
   const text = await response.text();
   if (!response.ok) {
+    if (response.status === 401 && !url.startsWith("/api/auth/")) {
+      window.dispatchEvent(new Event("xiaosongshu:unauthorized"));
+    }
     let message = buildHttpErrorMessage(url, response.status, text);
     try {
       const parsed = JSON.parse(text);

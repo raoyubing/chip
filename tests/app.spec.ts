@@ -41,6 +41,73 @@ function isKnownThirdPartyConsoleNoise(message: string) {
   return message.includes("Accessing element.ref was removed in React 19");
 }
 
+test.beforeEach(async ({ page }) => {
+  const response = await page.request.post("/api/auth/login", {
+    data: { username: "admin", password: "e2e-admin-password" },
+  });
+  expect(response.ok(), await response.text()).toBeTruthy();
+});
+
+test("登录页支持内置账号，普通用户无法访问薪酬和高风险功能", async ({ page }) => {
+  await page.request.post("/api/auth/logout");
+  await page.goto("/");
+  await expect(page.getByRole("heading", { name: "登录小松鼠" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /guest/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /admin/ })).toBeVisible();
+
+  await page.getByRole("button", { name: /guest/ }).click();
+  await page.getByLabel("登录密码").fill("e2e-guest-password");
+  await page.getByRole("button", { name: "登录", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "工作台概览", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: /薪酬调研/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "清空本地数据" })).toHaveCount(0);
+
+  const stateResponse = await page.request.get("/api/state");
+  expect(stateResponse.ok()).toBeTruthy();
+  const state = await stateResponse.json();
+  expect(state.currentUser).toBe("guest");
+  expect(state.jobs.every((job: { salaryData: unknown }) => job.salaryData === null)).toBeTruthy();
+
+  const salaryResponse = await page.request.post("/api/salary/research", {
+    data: { role: "HRBP", region: "石家庄市", experience: "3-5年", industry: "互联网", education: "本科" },
+  });
+  expect(salaryResponse.status()).toBe(403);
+
+  const deleteJobResponse = await page.request.delete(`/api/jobs/${state.jobs[0].id}`);
+  expect(deleteJobResponse.status()).toBe(403);
+  const candidate = Object.values(state.candidates).flat()[0] as { id: string } | undefined;
+  expect(candidate).toBeTruthy();
+  const hardDeleteResponse = await page.request.delete(`/api/candidates/${candidate!.id}/hard`);
+  expect(hardDeleteResponse.status()).toBe(403);
+
+  const accountResponse = await page.request.get("/api/auth/users");
+  expect(accountResponse.status()).toBe(403);
+});
+
+test("管理员可打开账号管理并校验密码，账号接口不返回密码哈希", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "账号管理" }).click();
+
+  const modal = page.getByRole("dialog", { name: "账号管理" });
+  await expect(modal).toBeVisible();
+  await expect(modal.locator(".account-role-card")).toHaveCount(2);
+  await expect(modal.locator(".account-role-card.active")).toContainText("guest");
+
+  const accountsResponse = await page.request.get("/api/auth/users");
+  expect(accountsResponse.ok(), await accountsResponse.text()).toBeTruthy();
+  const accountsPayload = await accountsResponse.json() as { users: Array<Record<string, unknown>> };
+  expect(accountsPayload.users).toHaveLength(2);
+  expect(accountsPayload.users.map((account) => account.username)).toEqual(["admin", "guest"]);
+  for (const account of accountsPayload.users) {
+    expect(account).not.toHaveProperty("passwordHash");
+  }
+
+  await modal.getByLabel("新密码", { exact: true }).fill("guest-next-password");
+  await modal.getByLabel("确认新密码").fill("guest-other-password");
+  await modal.getByRole("button", { name: "更新密码" }).click();
+  await expect(modal).toContainText("两次输入的密码不一致");
+});
+
 test("工作台时间筛选固定在右上角并作用于四个分区", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "工作台概览", exact: true })).toBeVisible();
@@ -735,6 +802,7 @@ test("批量简历上传仅允许 PDF、DOC、DOCX，并用解析结果生成多
 });
 
 test("薪酬调研和职位管理支持省市区列式级联选择与任意层级搜索，职位薪资经验和关键词使用标准选项", async ({ page }) => {
+  test.setTimeout(45_000);
   const consoleErrors: string[] = [];
   const failedRequests: string[] = [];
   const experienceOptions = ["无经验", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"];
