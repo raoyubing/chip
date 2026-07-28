@@ -312,14 +312,19 @@ button {
 .account-management-body {
   display: grid;
   grid-template-columns: 190px minmax(0, 1fr);
-  gap: 18px;
+  gap: 24px;
+  padding: 20px 24px 24px;
 }
 
 .account-role-list,
 .account-password-form,
 .account-password-summary {
   display: grid;
-  gap: 10px;
+  gap: 12px;
+}
+
+.account-role-list {
+  align-content: start;
 }
 
 .account-role-card {
@@ -357,10 +362,12 @@ button {
 
 .account-password-form {
   align-content: start;
+  gap: 14px;
 }
 
 .account-password-summary {
-  margin-bottom: 4px;
+  gap: 8px;
+  margin-bottom: 2px;
 }
 
 .account-password-summary strong {
@@ -5103,6 +5110,11 @@ textarea:focus {
   .auth-setup-grid,
   .account-management-body {
     grid-template-columns: 1fr;
+  }
+
+  .account-management-body {
+    gap: 18px;
+    padding: 18px;
   }
 
   .account-role-list {
