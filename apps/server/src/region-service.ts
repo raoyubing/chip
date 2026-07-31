@@ -46,9 +46,10 @@ function normalizeProvince(province: GaodeDistrict): RegionNode | null {
   const code = province.adcode;
   const name = province.name;
   const children = (province.districts || [])
-    .map((child) => child.level === "city" ? normalizeCity(child, name) : normalizeDirectDistrict(child))
+    .filter((child) => child.level === "city")
+    .map((child) => normalizeCity(child, name))
     .filter((region): region is RegionNode => Boolean(region));
-  const hasDirectDistrict = children.some((child) => child.level === "district");
+  const hasDirectDistrict = (province.districts || []).some((child) => child.level === "district");
 
   return {
     code,
@@ -59,7 +60,7 @@ function normalizeProvince(province: GaodeDistrict): RegionNode | null {
         code: `${code}-city`,
         name,
         level: "city",
-        children,
+        children: [],
       }]
       : children,
   };
@@ -72,24 +73,6 @@ function normalizeCity(city: GaodeDistrict, provinceName: string): RegionNode | 
     code: city.adcode,
     name: displayName,
     level: "city",
-    children: (city.districts || [])
-      .filter((district) => district.level === "district")
-      .filter((district): district is GaodeDistrict & { adcode: string; name: string } => Boolean(district.adcode && district.name))
-      .map((district) => ({
-        code: district.adcode,
-        name: district.name,
-        level: "district" as const,
-        children: [],
-      })),
-  };
-}
-
-function normalizeDirectDistrict(district: GaodeDistrict): RegionNode | null {
-  if (district.level !== "district" || !district.adcode || !district.name) return null;
-  return {
-    code: district.adcode,
-    name: district.name,
-    level: "district",
     children: [],
   };
 }

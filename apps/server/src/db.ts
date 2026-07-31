@@ -1,9 +1,11 @@
 import { asc, desc, eq, ne } from "drizzle-orm";
 import { drizzle, type SQLJsDatabase } from "drizzle-orm/sql-js";
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import type { AppState, AuthRole, Candidate, CandidateEvaluation, CandidateInterviewPlan, Job, SalaryData, VoiceAnalysis, VoiceTranscriptSegment } from "./types.js";
+import { normalizeRegionToCity } from "@xiaosongshu/shared";
+import type { AppState, AuthRole, Candidate, CandidateEvaluation, CandidateInterviewPlan, Job, RecruitmentBatch, SalaryData, VoiceAnalysis, VoiceTranscriptSegment } from "./types.js";
 import { demoState } from "./demo-data.js";
 import * as dbSchema from "./db/schema.js";
 import { serverRoot } from "./env.js";
@@ -15,6 +17,11 @@ type VoiceAnalysisRow = typeof dbSchema.voiceAnalyses.$inferSelect;
 type VoiceTranscriptSegmentRow = typeof dbSchema.voiceTranscriptSegments.$inferSelect;
 type AuthUserRow = typeof dbSchema.authUsers.$inferSelect;
 type AuthSessionRow = typeof dbSchema.authSessions.$inferSelect;
+type JobUpsertInput = Omit<Job, "resumeCount" | "sortOrder" | "currentBatchId" | "recruitmentBatches"> & {
+  sortOrder?: number;
+  currentBatchId?: string;
+  recruitmentBatches?: RecruitmentBatch[];
+};
 
 const defaultJobScoreWeights: Job["scoreWeights"] = {
   experience: 30,
@@ -65,15 +72,21 @@ export function getJobs(): Job[] {
     .from(dbSchema.jobs)
     .orderBy(asc(dbSchema.jobs.sortOrder), asc(dbSchema.jobs.createdAt))
     .all()
-    .map((row) => rowToJob(row, getCandidateCount(row.id)));
+    .map((row) => {
+      const job = rowToJob(row, 0);
+      return { ...job, resumeCount: getCandidateCount(row.id, job.currentBatchId) };
+    });
 }
 
 export function getJob(id: string): Job | null {
   const row = getDb().select().from(dbSchema.jobs).where(eq(dbSchema.jobs.id, id)).get();
-  return row ? rowToJob(row, getCandidateCount(row.id)) : null;
+  if (!row) return null;
+  const job = rowToJob(row, 0);
+  return { ...job, resumeCount: getCandidateCount(row.id, job.currentBatchId) };
 }
 
-export function upsertJob(job: Omit<Job, "resumeCount" | "sortOrder"> & { sortOrder?: number }) {
+export function upsertJob(job: JobUpsertInput) {
+  const recruitmentContext = buildJobRecruitmentContext(job);
   const existing = getDb().select({ id: dbSchema.jobs.id }).from(dbSchema.jobs).where(eq(dbSchema.jobs.id, job.id)).get();
   if (existing) {
     getDb()
@@ -81,14 +94,18 @@ export function upsertJob(job: Omit<Job, "resumeCount" | "sortOrder"> & { sortOr
       .set({
         title: job.title,
         dept: job.dept,
-        location: job.location,
+        location: normalizeRegionToCity(job.location),
         experience: job.experience,
         level: job.level,
         salaryRange: job.salaryRange,
+        demandType: job.demandType,
+        plannedHeadcount: normalizePlannedHeadcount(job.plannedHeadcount),
         keywords: job.keywords,
         scoreWeights: JSON.stringify(normalizeJobScoreWeights(job.scoreWeights)),
         description: job.description,
         status: job.status,
+        currentBatchId: recruitmentContext.currentBatchId,
+        recruitmentBatches: JSON.stringify(recruitmentContext.recruitmentBatches),
         salaryData: job.salaryData ? JSON.stringify(job.salaryData) : null,
         updatedAt: new Date().toISOString(),
       })
@@ -106,14 +123,18 @@ export function upsertJob(job: Omit<Job, "resumeCount" | "sortOrder"> & { sortOr
         id: job.id,
         title: job.title,
         dept: job.dept,
-        location: job.location,
+        location: normalizeRegionToCity(job.location),
         experience: job.experience,
         level: job.level,
         salaryRange: job.salaryRange,
+        demandType: job.demandType,
+        plannedHeadcount: normalizePlannedHeadcount(job.plannedHeadcount),
         keywords: job.keywords,
         scoreWeights: JSON.stringify(normalizeJobScoreWeights(job.scoreWeights)),
         description: job.description,
         status: job.status,
+        currentBatchId: recruitmentContext.currentBatchId,
+        recruitmentBatches: JSON.stringify(recruitmentContext.recruitmentBatches),
         salaryData: job.salaryData ? JSON.stringify(job.salaryData) : null,
         sortOrder: job.sortOrder ?? maxSort + 1,
       })
@@ -123,10 +144,42 @@ export function upsertJob(job: Omit<Job, "resumeCount" | "sortOrder"> & { sortOr
 }
 
 export function closeJob(id: string) {
-  getDb().update(dbSchema.jobs).set({ status: "已关闭", updatedAt: new Date().toISOString() }).where(eq(dbSchema.jobs.id, id)).run();
+  const job = getJob(id);
+  if (!job) return;
+  const closedAt = new Date().toISOString();
+  const recruitmentBatches = job.recruitmentBatches.map((batch) => batch.id === job.currentBatchId ? {
+    ...batch,
+    status: "已关闭" as const,
+    closedAt,
+    profileSnapshot: buildJobProfileSnapshot(job),
+  } : batch);
+  getDb().update(dbSchema.jobs).set({
+    status: "已关闭",
+    recruitmentBatches: JSON.stringify(recruitmentBatches),
+    updatedAt: closedAt,
+  }).where(eq(dbSchema.jobs.id, id)).run();
   const nextOngoing = getJobs().find((job) => job.status === "招聘中" && job.id !== id);
   if (nextOngoing) setSettingNoPersist("currentJobId", nextOngoing.id);
   persist();
+}
+
+export function reopenJob(id: string, targetMonth: string, demandType: Job["demandType"], plannedHeadcount: number) {
+  const job = getJob(id);
+  if (!job || job.status !== "已关闭") return null;
+  const sequence = Math.max(0, ...job.recruitmentBatches.map((batch) => batch.sequence)) + 1;
+  const batch = createRecruitmentBatch(job, sequence, targetMonth, "招聘中", demandType, plannedHeadcount);
+  const recruitmentBatches = [...job.recruitmentBatches, batch];
+  getDb().update(dbSchema.jobs).set({
+    status: "招聘中",
+    demandType,
+    plannedHeadcount: batch.plannedHeadcount,
+    currentBatchId: batch.id,
+    recruitmentBatches: JSON.stringify(recruitmentBatches),
+    updatedAt: batch.startedAt,
+  }).where(eq(dbSchema.jobs.id, id)).run();
+  setSettingNoPersist("currentJobId", id);
+  persist();
+  return batch;
 }
 
 export function deleteJob(id: string) {
@@ -175,6 +228,7 @@ export function updateCandidate(candidate: Candidate) {
   getDb()
     .update(dbSchema.candidates)
     .set({
+      recruitmentBatchId: data.recruitmentBatchId,
       name: data.name,
       source: data.source,
       score: data.score,
@@ -440,19 +494,24 @@ function getSetting(key: string) {
 }
 
 function upsertJobNoPersist(job: Job) {
+  const recruitmentContext = buildJobRecruitmentContext(job);
   const existing = getDb().select({ id: dbSchema.jobs.id }).from(dbSchema.jobs).where(eq(dbSchema.jobs.id, job.id)).get();
   const row = {
     id: job.id,
     title: job.title,
     dept: job.dept,
-    location: job.location,
+    location: normalizeRegionToCity(job.location),
     experience: job.experience,
     level: job.level,
     salaryRange: job.salaryRange,
+    demandType: job.demandType,
+    plannedHeadcount: normalizePlannedHeadcount(job.plannedHeadcount),
     keywords: job.keywords,
     scoreWeights: JSON.stringify(normalizeJobScoreWeights(job.scoreWeights)),
     description: job.description,
     status: job.status,
+    currentBatchId: recruitmentContext.currentBatchId,
+    recruitmentBatches: JSON.stringify(recruitmentContext.recruitmentBatches),
     salaryData: job.salaryData ? JSON.stringify(job.salaryData) : null,
     sortOrder: job.sortOrder,
   };
@@ -471,6 +530,7 @@ function insertCandidateNoPersist(candidate: Candidate) {
     .values({
       id: data.id,
       jobId: data.jobId,
+      recruitmentBatchId: data.recruitmentBatchId,
       name: data.name,
       source: data.source,
       score: data.score,
@@ -506,33 +566,167 @@ function insertCandidateNoPersist(candidate: Candidate) {
     .run();
 }
 
-function getCandidateCount(jobId: string) {
+function getCandidateCount(jobId: string, recruitmentBatchId: string) {
   return getDb()
-    .select({ removedFromScreening: dbSchema.candidates.removedFromScreening })
+    .select({
+      recruitmentBatchId: dbSchema.candidates.recruitmentBatchId,
+      removedFromScreening: dbSchema.candidates.removedFromScreening,
+    })
     .from(dbSchema.candidates)
     .where(eq(dbSchema.candidates.jobId, jobId))
     .all()
-    .filter((candidate) => !Boolean(candidate.removedFromScreening))
+    .filter((candidate) => candidate.recruitmentBatchId === recruitmentBatchId && !Boolean(candidate.removedFromScreening))
     .length;
 }
 
 function rowToJob(row: JobRow, resumeCount: number): Job {
+  const recruitmentBatches = normalizeRecruitmentBatches(row.recruitmentBatches, {
+    ...row,
+    location: normalizeRegionToCity(row.location),
+    demandType: normalizeRecruitmentDemandType(row.demandType),
+    scoreWeights: normalizeJobScoreWeights(row.scoreWeights),
+    status: isJobStatus(row.status) ? row.status : "已关闭",
+  });
+  const currentBatchId = recruitmentBatches.some((batch) => batch.id === row.currentBatchId)
+    ? row.currentBatchId
+    : recruitmentBatches.find((batch) => batch.status !== "已关闭")?.id || recruitmentBatches.at(-1)?.id || "";
   return {
     id: row.id,
     title: row.title,
     dept: row.dept,
-    location: row.location,
+    location: normalizeRegionToCity(row.location),
     experience: row.experience,
     level: row.level,
     salaryRange: row.salaryRange || "面议",
+    demandType: normalizeRecruitmentDemandType(row.demandType),
+    plannedHeadcount: normalizePlannedHeadcount(row.plannedHeadcount),
     keywords: row.keywords,
     scoreWeights: normalizeJobScoreWeights(row.scoreWeights),
     description: row.description,
     status: row.status as Job["status"],
+    currentBatchId,
+    recruitmentBatches,
     resumeCount,
     salaryData: row.salaryData ? normalizeSalaryData(JSON.parse(row.salaryData), row) : null,
     sortOrder: row.sortOrder ?? 0,
   };
+}
+
+type JobProfileSource = Pick<Job, "title" | "dept" | "location" | "experience" | "level" | "salaryRange" | "keywords" | "scoreWeights" | "description">;
+type RecruitmentBatchFallback = JobProfileSource & {
+  id: string;
+  demandType: Job["demandType"];
+  plannedHeadcount: number;
+  status: Job["status"];
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+function buildJobProfileSnapshot(job: JobProfileSource) {
+  return {
+    title: job.title,
+    dept: job.dept,
+    location: normalizeRegionToCity(job.location),
+    experience: job.experience,
+    level: job.level,
+    salaryRange: job.salaryRange,
+    keywords: job.keywords,
+    scoreWeights: normalizeJobScoreWeights(job.scoreWeights),
+    description: job.description,
+  };
+}
+
+function buildJobRecruitmentContext(job: JobUpsertInput | Job) {
+  const recruitmentBatches = normalizeRecruitmentBatches(job.recruitmentBatches || [], job);
+  const currentBatchId = recruitmentBatches.some((batch) => batch.id === job.currentBatchId)
+    ? String(job.currentBatchId)
+    : recruitmentBatches.find((batch) => batch.status !== "已关闭")?.id || recruitmentBatches[recruitmentBatches.length - 1]?.id || "";
+  const now = new Date().toISOString();
+  return {
+    currentBatchId,
+    recruitmentBatches: recruitmentBatches.map((batch) => batch.id === currentBatchId ? {
+      ...batch,
+      demandType: job.status === "已关闭" ? batch.demandType : job.demandType,
+      plannedHeadcount: job.status === "已关闭" ? batch.plannedHeadcount : normalizePlannedHeadcount(job.plannedHeadcount),
+      status: job.status,
+      closedAt: job.status === "已关闭" ? batch.closedAt || now : undefined,
+      profileSnapshot: job.status === "已关闭" ? batch.profileSnapshot : buildJobProfileSnapshot(job),
+    } : batch),
+  };
+}
+
+function normalizeRecruitmentBatches(value: unknown, fallback: RecruitmentBatchFallback): RecruitmentBatch[] {
+  const parsed = typeof value === "string" ? safeJsonParse(value) : value;
+  const fallbackProfile = buildJobProfileSnapshot(fallback);
+  const batches = Array.isArray(parsed) ? parsed.map((item, index) => {
+    const source = item && typeof item === "object" ? item as Partial<RecruitmentBatch> : {};
+    const sequence = Number.isInteger(source.sequence) && Number(source.sequence) > 0 ? Number(source.sequence) : index + 1;
+    const startedAt = String(source.startedAt || fallback.createdAt || new Date().toISOString());
+    const profileSource = source.profileSnapshot && typeof source.profileSnapshot === "object"
+      ? { ...fallbackProfile, ...source.profileSnapshot }
+      : fallbackProfile;
+    return {
+      id: String(source.id || `${fallback.id}_batch_${sequence}`),
+      sequence,
+      label: String(source.label || `第${sequence}批`),
+      targetMonth: String(source.targetMonth || formatRecruitmentMonth(startedAt)),
+      demandType: normalizeRecruitmentDemandType(source.demandType || fallback.demandType),
+      plannedHeadcount: normalizePlannedHeadcount(source.plannedHeadcount ?? fallback.plannedHeadcount),
+      status: isJobStatus(source.status) ? source.status : fallback.status,
+      startedAt,
+      closedAt: source.closedAt ? String(source.closedAt) : undefined,
+      profileSnapshot: buildJobProfileSnapshot(profileSource),
+    };
+  }) : [];
+  if (batches.length) return batches.sort((left, right) => left.sequence - right.sequence);
+  const startedAt = fallback.createdAt || new Date().toISOString();
+  return [{
+    id: `${fallback.id}_batch_1`,
+    sequence: 1,
+    label: "第1批",
+    targetMonth: formatRecruitmentMonth(startedAt),
+    demandType: fallback.demandType,
+    plannedHeadcount: normalizePlannedHeadcount(fallback.plannedHeadcount),
+    status: fallback.status,
+    startedAt,
+    closedAt: fallback.status === "已关闭" ? fallback.updatedAt || startedAt : undefined,
+    profileSnapshot: fallbackProfile,
+  }];
+}
+
+function createRecruitmentBatch(job: Job, sequence: number, targetMonth: string, status: Job["status"], demandType = job.demandType, plannedHeadcount = job.plannedHeadcount): RecruitmentBatch {
+  const startedAt = new Date().toISOString();
+  return {
+    id: `${job.id}_batch_${sequence}_${randomUUID()}`,
+    sequence,
+    label: `第${sequence}批`,
+    targetMonth: targetMonth || formatRecruitmentMonth(startedAt),
+    demandType,
+    plannedHeadcount: normalizePlannedHeadcount(plannedHeadcount),
+    status,
+    startedAt,
+    profileSnapshot: buildJobProfileSnapshot(job),
+  };
+}
+
+function formatRecruitmentMonth(value: string | Date) {
+  const date = value instanceof Date ? value : new Date(value);
+  const validDate = Number.isNaN(date.getTime()) ? new Date() : date;
+  return `${validDate.getFullYear()}年${String(validDate.getMonth() + 1).padStart(2, "0")}月`;
+}
+
+function isJobStatus(value: unknown): value is Job["status"] {
+  return value === "招聘中" || value === "暂停" || value === "已关闭";
+}
+
+function normalizeRecruitmentDemandType(value: unknown): Job["demandType"] {
+  return value === "离职替补" || value === "计划内提前" || value === "计划内新增" || value === "计划外新增" ? value : "";
+}
+
+function normalizePlannedHeadcount(value: unknown) {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) return 1;
+  return Math.min(parsed, 999);
 }
 
 function normalizeJobScoreWeights(value: unknown): Job["scoreWeights"] {
@@ -602,7 +796,7 @@ function normalizeSalaryData(raw: unknown, row: JobRow): SalaryData {
   const p25 = Number(legacy.p25 ?? 18);
   const p50 = Number(legacy.p50 ?? 24);
   const p75 = Number(legacy.p75 ?? 30);
-  const region = row.location || "北京";
+  const region = normalizeRegionToCity(row.location || "北京");
   const experience = normalizeLegacyExperience(row.experience || "3-5年");
   const regionComparison = Array.isArray(legacy.cities)
     ? (legacy.cities as Array<Record<string, unknown>>).map((item) => ({
@@ -697,6 +891,7 @@ function rowToCandidate(row: CandidateRow): Candidate {
   return {
     id: row.id,
     jobId: row.jobId,
+    recruitmentBatchId: row.recruitmentBatchId || undefined,
     name: row.name,
     source: row.source,
     score: Number(row.score),
@@ -799,6 +994,7 @@ function normalizeBlob(value: unknown) {
 function serializeCandidate(candidate: Candidate) {
   return {
     ...candidate,
+    recruitmentBatchId: candidate.recruitmentBatchId || getJob(candidate.jobId)?.currentBatchId || "",
     fileName: candidate.fileName ?? null,
     fileType: candidate.fileType ?? null,
     fileSize: candidate.fileSize ?? null,
@@ -835,8 +1031,20 @@ function parseCandidateEvaluation(raw: unknown): CandidateEvaluation | undefined
     const weaknesses = Array.isArray(parsed.weaknesses) ? parsed.weaknesses.map((item) => String(item).trim()).filter(Boolean) : [];
     const risks = Array.isArray(parsed.risks) ? parsed.risks.map((item) => String(item).trim()).filter(Boolean) : [];
     const interviewFocuses = Array.isArray(parsed.interviewFocuses) ? parsed.interviewFocuses.map((item) => String(item).trim()).filter(Boolean) : [];
-    if (!summary && !strengths.length && !weaknesses.length && !risks.length && !interviewFocuses.length) return undefined;
-    return { summary, strengths, weaknesses, risks, interviewFocuses };
+    const scoreDimensionKeys = new Set(["experience", "professional", "stability", "education", "business"]);
+    const scoreDimensions = Array.isArray(parsed.scoreDimensions)
+      ? parsed.scoreDimensions
+        .map((item) => ({
+          key: String(item?.key || ""),
+          label: String(item?.label || "").trim(),
+          weight: Number(item?.weight || 0),
+          score: Number(item?.score || 0),
+          reason: String(item?.reason || "").trim(),
+        }))
+        .filter((item) => scoreDimensionKeys.has(item.key)) as NonNullable<CandidateEvaluation["scoreDimensions"]>
+      : [];
+    if (!summary && !strengths.length && !weaknesses.length && !risks.length && !interviewFocuses.length && !scoreDimensions.length) return undefined;
+    return { summary, strengths, weaknesses, risks, interviewFocuses, scoreDimensions };
   } catch {
     return undefined;
   }
@@ -945,20 +1153,29 @@ function ensureSchema() {
     experience TEXT NOT NULL,
     level TEXT NOT NULL,
 	    salary_range TEXT NOT NULL DEFAULT '面议',
+	    demand_type TEXT NOT NULL DEFAULT '',
+	    planned_headcount INTEGER NOT NULL DEFAULT 1,
 	    keywords TEXT NOT NULL,
 	    score_weights TEXT NOT NULL DEFAULT '{"experience":30,"professional":30,"stability":15,"education":10,"business":15}',
-	    description TEXT NOT NULL,
+    description TEXT NOT NULL,
     status TEXT NOT NULL,
+    current_batch_id TEXT NOT NULL DEFAULT '',
+    recruitment_batches TEXT NOT NULL DEFAULT '[]',
     salary_data TEXT,
     sort_order INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 	  );`);
 	  ensureColumn("jobs", "salary_range", "TEXT NOT NULL DEFAULT '面议'");
+	  ensureColumn("jobs", "demand_type", "TEXT NOT NULL DEFAULT ''");
+	  ensureColumn("jobs", "planned_headcount", "INTEGER NOT NULL DEFAULT 1");
 	  ensureColumn("jobs", "score_weights", `TEXT NOT NULL DEFAULT '{"experience":30,"professional":30,"stability":15,"education":10,"business":15}'`);
+  ensureColumn("jobs", "current_batch_id", "TEXT NOT NULL DEFAULT ''");
+  ensureColumn("jobs", "recruitment_batches", "TEXT NOT NULL DEFAULT '[]'");
   sqliteDb.run(`CREATE TABLE IF NOT EXISTS candidates (
     id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    recruitment_batch_id TEXT NOT NULL DEFAULT '',
     name TEXT NOT NULL,
     source TEXT NOT NULL,
     score REAL NOT NULL,
@@ -993,6 +1210,7 @@ function ensureSchema() {
     removed_from_talent_pool INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );`);
+  ensureColumn("candidates", "recruitment_batch_id", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("candidates", "interview_recommendation", "TEXT NOT NULL DEFAULT '待定'");
 	  ensureColumn("candidates", "stage_recommendation", "TEXT NOT NULL DEFAULT '待定'");
   ensureColumn("candidates", "interview_result", "TEXT NOT NULL DEFAULT '待定'");
@@ -1012,6 +1230,7 @@ function ensureSchema() {
   ensureColumn("candidates", "talent_pool_note", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("candidates", "removed_from_screening", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn("candidates", "removed_from_talent_pool", "INTEGER NOT NULL DEFAULT 0");
+  ensureRecruitmentBatchAssignments();
   sqliteDb.run(`CREATE TABLE IF NOT EXISTS voice_analyses (
     id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
@@ -1042,6 +1261,49 @@ function ensureSchema() {
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );`);
   ensureColumn("voice_transcript_segments", "analysis_json", "TEXT");
+}
+
+function ensureRecruitmentBatchAssignments() {
+  const statement = sqliteDb.prepare(`SELECT
+    id, title, dept, location, experience, level, salary_range, demand_type, planned_headcount, keywords, score_weights,
+    description, status, current_batch_id, recruitment_batches, created_at, updated_at
+    FROM jobs`);
+  const jobs: Record<string, unknown>[] = [];
+  while (statement.step()) jobs.push(statement.getAsObject());
+  statement.free();
+
+  jobs.forEach((row) => {
+    const fallback: RecruitmentBatchFallback = {
+      id: String(row.id || ""),
+      title: String(row.title || ""),
+      dept: String(row.dept || ""),
+      location: normalizeRegionToCity(String(row.location || "")),
+      experience: String(row.experience || ""),
+      level: String(row.level || ""),
+      salaryRange: String(row.salary_range || "面议"),
+      demandType: normalizeRecruitmentDemandType(row.demand_type),
+      plannedHeadcount: normalizePlannedHeadcount(row.planned_headcount),
+      keywords: String(row.keywords || ""),
+      scoreWeights: normalizeJobScoreWeights(row.score_weights),
+      description: String(row.description || ""),
+      status: isJobStatus(row.status) ? row.status : "已关闭",
+      createdAt: String(row.created_at || ""),
+      updatedAt: String(row.updated_at || ""),
+    };
+    const recruitmentBatches = normalizeRecruitmentBatches(row.recruitment_batches, fallback);
+    const storedCurrentBatchId = String(row.current_batch_id || "");
+    const currentBatchId = recruitmentBatches.some((batch) => batch.id === storedCurrentBatchId)
+      ? storedCurrentBatchId
+      : recruitmentBatches.find((batch) => batch.status !== "已关闭")?.id || recruitmentBatches[recruitmentBatches.length - 1]?.id || "";
+    sqliteDb.run(
+      "UPDATE jobs SET current_batch_id = ?, recruitment_batches = ? WHERE id = ?",
+      [currentBatchId, JSON.stringify(recruitmentBatches), fallback.id],
+    );
+    sqliteDb.run(
+      "UPDATE candidates SET recruitment_batch_id = ? WHERE job_id = ? AND (recruitment_batch_id IS NULL OR recruitment_batch_id = '')",
+      [currentBatchId, fallback.id],
+    );
+  });
 }
 
 function ensureColumn(table: string, column: string, definition: string) {

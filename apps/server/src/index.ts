@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import wavefile from "wavefile";
 import { z } from "zod";
-import { bossIndustryCodeByName, normalizeBossIndustryName } from "@xiaosongshu/shared";
+import { bossIndustryCodeByName, normalizeBossIndustryName, normalizeRegionToCity } from "@xiaosongshu/shared";
 import { createCandidate, normalizeKeywords } from "./analyzer.js";
 import {
   authenticateCredentials,
@@ -38,6 +38,7 @@ import {
   deleteVoiceAnalysis,
   removeCandidateFromScreening,
   removeCandidateFromTalentPool,
+  reopenJob,
   getDatabasePath,
   getCandidateById,
   getCandidates,
@@ -191,12 +192,14 @@ const defaultJobScoreWeights: Job["scoreWeights"] = {
 const jobSchema = z.object({
   title: z.string().min(1),
   dept: z.string().min(1),
-  location: z.string().min(1),
+  location: z.string().min(1).transform(normalizeRegionToCity),
   experience: z.string().min(1),
   level: z.string().min(1),
   salaryRange: z.string().trim()
     .refine((value) => Boolean(normalizeJobSalaryRangeInput(value)), "薪资范围格式必须为 20k - 30k")
     .transform((value) => normalizeJobSalaryRangeInput(value) || value),
+  demandType: z.enum(["离职替补", "计划内提前", "计划内新增", "计划外新增"]),
+  plannedHeadcount: z.number().int().min(1).max(999),
   keywords: z.string().min(1),
   scoreWeights: z.object({
     experience: z.number().int().min(0).max(100),
@@ -301,7 +304,7 @@ const getFileStreamQuerySchema = z.object({
 
 const salaryFilterSchema = z.object({
   role: z.string().min(1),
-  region: z.string().min(1),
+  region: z.string().min(1).transform(normalizeRegionToCity),
   experience: z.string().min(1),
   industry: z.string().min(1),
   education: z.string().min(1),
@@ -528,7 +531,14 @@ server.put("/api/jobs/:id", async (request) => {
   const existing = getJob(params.id);
   if (!existing) throw server.httpErrors.notFound("职位不存在");
   const body = jobSchema.parse(request.body);
-  upsertJob({ ...existing, ...body, salaryData: null });
+  if (existing.status === "已关闭" && body.status !== "已关闭") {
+    throw server.httpErrors.badRequest("已关闭职位请使用“重新招聘”，系统会新建招聘批次并保留历史人选。");
+  }
+  const completedHeadcount = getCandidates(existing.id).filter((candidate) => candidate.recruitmentBatchId === existing.currentBatchId && candidate.onboarded === "是").length;
+  if (existing.status !== "已关闭" && body.plannedHeadcount < completedHeadcount) {
+    throw server.httpErrors.badRequest(`当前批次已有 ${completedHeadcount} 人入职，计划 HC 不能低于已完成人数。`);
+  }
+  upsertJob({ ...existing, ...body, plannedHeadcount: existing.status === "已关闭" ? existing.plannedHeadcount : body.plannedHeadcount, salaryData: null });
   return getState();
 });
 
@@ -537,6 +547,21 @@ server.post("/api/jobs/:id/close", async (request) => {
   const existing = getJob(params.id);
   if (!existing) throw server.httpErrors.notFound("职位不存在");
   closeJob(params.id);
+  return getState();
+});
+
+server.post("/api/jobs/:id/reopen", async (request) => {
+  const params = z.object({ id: z.string() }).parse(request.params);
+  const body = z.object({
+    targetMonth: z.string().regex(/^\d{4}年(?:0[1-9]|1[0-2])月$/, "招聘月份格式应为2026年07月"),
+    demandType: z.enum(["离职替补", "计划内提前", "计划内新增", "计划外新增"]),
+    plannedHeadcount: z.number().int().min(1).max(999),
+  }).parse(request.body);
+  const existing = getJob(params.id);
+  if (!existing) throw server.httpErrors.notFound("职位不存在");
+  if (existing.status !== "已关闭") throw server.httpErrors.badRequest("只有已关闭职位可以重新招聘");
+  reopenJob(params.id, body.targetMonth, body.demandType, body.plannedHeadcount);
+  prioritizeJob(params.id);
   return getState();
 });
 
@@ -618,51 +643,54 @@ server.post("/api/candidates/:id/recommend-to-job", async (request) => {
 
   const recommendationDate = formatBacktrackRecommendationDate();
   const remark = `由人才库于 ${recommendationDate} 回溯推荐`;
-  const summary = candidate.evaluation?.summary || candidate.reason || "该候选人来自人才库回溯推荐，建议结合目标岗位重新筛选。";
-  const clonedCandidate: Candidate = {
-    ...candidate,
+  const targetBatch = targetJob.recruitmentBatches.find((batch) => batch.id === targetJob.currentBatchId);
+  const draftCandidate = createCandidate({
     id: `c_${Date.now()}_${nanoid(6)}`,
-    jobId: targetJob.id,
+    job: targetJob,
+    name: candidate.name,
     source: `人才库回溯 · ${candidate.source}`,
-    conclusion: "待筛选",
-    reason: summary,
-    remark,
-    uploadTime: new Date().toLocaleDateString("zh-CN"),
-    evaluation: {
-      summary,
-      strengths: candidate.evaluation?.strengths || [],
-      weaknesses: candidate.evaluation?.weaknesses || [],
-      risks: candidate.evaluation?.risks || [],
-      interviewFocuses: candidate.evaluation?.interviewFocuses || [],
-      scoreDimensions: candidate.evaluation?.scoreDimensions || [],
-    },
-    interviewPlan: undefined,
-    interviewQuestions: [],
-    interviewStage: undefined,
-    stageRecommendation: "待定",
-    interviewResult: "待定",
-    onboarded: "待入职",
-    reportMonth: formatReportMonth(),
-    interviewReason: "",
-    reasonTags: [],
-    interviewTimeline: {},
-    isInTalentPool: false,
-    talentPoolAt: "",
-    talentPoolNote: "",
-    removedFromScreening: false,
-    removedFromTalentPool: false,
+    resumeText: candidate.resumeText,
+    fileName: candidate.fileName,
+    fileType: candidate.fileType,
+    fileSize: candidate.fileSize,
+    fileDataBase64: candidate.fileDataBase64,
+    fileObjectKey: candidate.fileObjectKey,
+    fileUrl: candidate.fileUrl,
+  });
+  const buildReevaluatedCandidate = async () => {
+    const assessedCandidate = await enrichCandidateAssessmentWithDeepSeek(draftCandidate, targetJob);
+    return {
+      ...assessedCandidate,
+      conclusion: "待筛选",
+      reason: assessedCandidate.evaluation?.summary || assessedCandidate.reason,
+      remark,
+      interviewPlan: undefined,
+      interviewStage: undefined,
+      stageRecommendation: "待定" as const,
+      interviewResult: "待定" as const,
+      onboarded: "待入职" as const,
+      reportMonth: targetBatch?.targetMonth || formatReportMonth(),
+      interviewReason: "",
+      reasonTags: [],
+      interviewTimeline: {},
+      isInTalentPool: false,
+      talentPoolAt: "",
+      talentPoolNote: "",
+      removedFromScreening: false,
+      removedFromTalentPool: false,
+    } satisfies Candidate;
   };
 
-  const existingCandidate = findExistingCandidateInJob(clonedCandidate, targetJob.id, { includeRemovedFromScreening: true });
+  const existingCandidate = findExistingCandidateInJob(draftCandidate, targetJob.id, { includeRemovedFromScreening: true });
   if (existingCandidate) {
     if (existingCandidate.removedFromScreening || body.duplicateAction === "overwrite") {
-      updateCandidate(mergeCandidateResumeOverwrite(existingCandidate, clonedCandidate));
+      updateCandidate(mergeCandidateResumeOverwrite(existingCandidate, await buildReevaluatedCandidate()));
     }
     setSetting("currentJobId", targetJob.id);
     return getState();
   }
 
-  insertCandidates([clonedCandidate]);
+  insertCandidates([await buildReevaluatedCandidate()]);
   setSetting("currentJobId", targetJob.id);
   return getState();
 });
@@ -698,6 +726,15 @@ server.patch("/api/candidates/:id/interview-stage", async (request) => {
   }).parse(request.body);
   const candidate = getCandidateById(params.id);
   if (!candidate) throw server.httpErrors.notFound("候选人不存在");
+  if (body.onboarded === "是" && candidate.onboarded !== "是") {
+    const job = getJob(candidate.jobId);
+    const batch = job?.recruitmentBatches.find((item) => item.id === candidate.recruitmentBatchId);
+    if (!job || !batch) throw server.httpErrors.badRequest("候选人关联的招聘批次不存在，请刷新后重试。");
+    const completedHeadcount = getCandidates(candidate.jobId).filter((item) => item.recruitmentBatchId === batch.id && item.id !== candidate.id && item.onboarded === "是").length;
+    if (completedHeadcount >= batch.plannedHeadcount) {
+      throw server.httpErrors.badRequest(`该批次计划 HC 为 ${batch.plannedHeadcount}，已全部完成。如需继续入职，请先在职位管理中增加 HC。`);
+    }
+  }
   const stageRecommendation = resolveStageRecommendation(body.interviewStage, body.stageRecommendation);
   const reasonTags = shouldManageReasonTags(body.interviewStage, body.interviewResult, body.onboarded)
     ? normalizeReasonTags(body.reasonTags.length ? body.reasonTags : inferReasonTags(body.interviewReason, body.interviewStage, body.onboarded), body.interviewStage, body.onboarded)
@@ -4199,18 +4236,38 @@ function buildInsufficientSalaryData(
 }
 
 function buildVirtualSalaryResearchJob(filters: SalaryFilters): Job {
-  return {
-    id: `salary_research_${Date.now()}`,
+  const id = `salary_research_${Date.now()}`;
+  const startedAt = new Date().toISOString();
+  const currentBatchId = `${id}_batch_1`;
+  const profile = {
     title: filters.role,
     dept: filters.industry || "独立薪酬调研",
     location: filters.region,
     experience: filters.experience,
     level: "调研岗位",
-	    salaryRange: "待调研",
-	    keywords: `${filters.role}、${filters.industry}、${filters.education}`,
-	    scoreWeights: defaultJobScoreWeights,
-	    description: `这是一个独立的薪酬调研请求，目标岗位为${filters.role}，地区为${filters.region}，经验要求为${filters.experience}，行业为${filters.industry}，学历为${filters.education}。请仅基于公开招聘信息与公开报告完成市场薪酬研究。`,
+	  salaryRange: "待调研",
+	  demandType: "" as const,
+	  plannedHeadcount: 1,
+	  keywords: `${filters.role}、${filters.industry}、${filters.education}`,
+	  scoreWeights: defaultJobScoreWeights,
+	  description: `这是一个独立的薪酬调研请求，目标岗位为${filters.role}，地区为${filters.region}，经验要求为${filters.experience}，行业为${filters.industry}，学历为${filters.education}。请仅基于公开招聘信息与公开报告完成市场薪酬研究。`,
+  };
+  return {
+    id,
+    ...profile,
     status: "招聘中",
+    currentBatchId,
+    recruitmentBatches: [{
+      id: currentBatchId,
+      sequence: 1,
+      label: "第1批",
+      targetMonth: formatReportMonth(),
+      demandType: "",
+      plannedHeadcount: 1,
+      status: "招聘中",
+      startedAt,
+      profileSnapshot: profile,
+    }],
     resumeCount: 0,
     salaryData: null,
     sortOrder: 0,
@@ -4317,8 +4374,10 @@ function formatBacktrackRecommendationDate(date = new Date()) {
   return `${date.getFullYear()}年${month}月${day}日`;
 }
 
-function findExistingCandidateInJob(sourceCandidate: Candidate, targetJobId: string, options: { includeRemovedFromScreening?: boolean } = {}) {
+function findExistingCandidateInJob(sourceCandidate: Candidate, targetJobId: string, options: { includeRemovedFromScreening?: boolean; recruitmentBatchId?: string } = {}) {
+  const recruitmentBatchId = options.recruitmentBatchId || getJob(targetJobId)?.currentBatchId || "";
   const matchedCandidates = getCandidates(targetJobId)
+    .filter((candidate) => candidate.recruitmentBatchId === recruitmentBatchId)
     .filter((candidate) => options.includeRemovedFromScreening || !candidate.removedFromScreening)
     .filter((candidate) => isSameCandidateResume(candidate, sourceCandidate));
   return matchedCandidates.sort((left, right) => getExistingCandidatePriority(right) - getExistingCandidatePriority(left))[0] || null;

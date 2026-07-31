@@ -5,8 +5,14 @@ export declare namespace RequestDTO {
     jobId: string;
   }
 
-  export type CreateJob = Pick<SchemaDTO.Job, "title" | "dept" | "location" | "experience" | "level" | "salaryRange" | "keywords" | "scoreWeights" | "description" | "status">;
+  export type CreateJob = Pick<SchemaDTO.Job, "title" | "dept" | "location" | "experience" | "level" | "salaryRange" | "demandType" | "plannedHeadcount" | "keywords" | "scoreWeights" | "description" | "status">;
   export type UpdateJob = CreateJob;
+
+  export interface ReopenJob {
+    targetMonth: string;
+    demandType: SchemaDTO.RecruitmentDemandType;
+    plannedHeadcount: number;
+  }
 
   export interface JobPath {
     ":id": string;

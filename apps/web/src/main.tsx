@@ -22,8 +22,10 @@ import {
   IconDelete,
   IconFileAudio,
   IconLaunch,
+  IconMinus,
   IconPause,
   IconPlayArrow,
+  IconPlus,
   IconRecord,
   IconRecordStop,
   IconRedo,
@@ -33,9 +35,9 @@ import {
   IconUpload,
 } from "@arco-design/web-react/icon";
 import zhCN from "@arco-design/web-react/es/locale/zh-CN";
-import { bossIndustryGroups, normalizeBossIndustryName, type RegionNode } from "@xiaosongshu/shared";
+import { bossIndustryGroups, normalizeBossIndustryName, normalizeRegionToCity, type RegionNode } from "@xiaosongshu/shared";
 import { api, type AuthAccountSummary, type JobCopilotResult, type JobPayload, type ResumeUploadPayload } from "./api";
-import type { AppState, AuthStatus, Candidate, CandidateInterviewPlan, CandidateInterviewPlanQuestion, InterviewMethodKey, Job, JobScoreWeights, ResumeFilePayload, SalaryData, SalaryFilters, UploadedFile, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceRecruiterCoachReport, VoiceSegmentInsight } from "./types";
+import type { AppState, AuthStatus, Candidate, CandidateInterviewPlan, CandidateInterviewPlanQuestion, InterviewMethodKey, Job, JobScoreWeights, RecruitmentBatch, ResumeFilePayload, SalaryData, SalaryFilters, UploadedFile, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceRecruiterCoachReport, VoiceSegmentInsight } from "./types";
 import "@arco-design/web-react/dist/css/arco.css";
 import "./styles.css";
 
@@ -82,6 +84,7 @@ interface VoiceAiLiveState {
 
 type Modal =
   | { type: "job"; job?: Job }
+  | { type: "reopen-job"; job: Job }
   | { type: "resume" }
   | { type: "accounts" }
   | null;
@@ -150,6 +153,7 @@ function App() {
   const [activeView, setActiveView] = useState<View>("dashboard");
   const [activeInterviewStage, setActiveInterviewStage] = useState<InterviewStage>("推荐");
   const [activeInterviewJobId, setActiveInterviewJobId] = useState<string>("all");
+  const [activeInterviewBatchId, setActiveInterviewBatchId] = useState<string>("current");
   const [activeInterviewMonth, setActiveInterviewMonth] = useState<string>("all");
   const [salaryData, setSalaryData] = useState<SalaryData | null>(null);
   const [selectedCandidateId, setSelectedCandidateId] = useState<string | null>(null);
@@ -259,7 +263,11 @@ function App() {
     return state.jobs.find((job) => job.id === state.currentJobId) || state.jobs[0] || null;
   }, [state]);
 
-  const currentCandidates = currentJob && state ? (state.candidates[currentJob.id] || []).filter(isScreeningCandidate) : [];
+  const currentCandidates = currentJob && state
+    ? (state.candidates[currentJob.id] || [])
+      .filter((candidate) => candidate.recruitmentBatchId === currentJob.currentBatchId)
+      .filter(isScreeningCandidate)
+    : [];
   const interviewCandidates = useMemo(() => {
     if (!state) return [] as Candidate[];
     const sourceJobs = activeInterviewJobId === "all"
@@ -273,7 +281,10 @@ function App() {
 
   const setRemoteState = (next: AppState) => {
     setState(next);
-    const candidates = (next.candidates[next.currentJobId] || []).filter(isScreeningCandidate);
+    const nextCurrentJob = next.jobs.find((job) => job.id === next.currentJobId);
+    const candidates = (next.candidates[next.currentJobId] || [])
+      .filter((candidate) => candidate.recruitmentBatchId === nextCurrentJob?.currentBatchId)
+      .filter(isScreeningCandidate);
     setSelectedCandidateId((id) => (id && candidates.some((candidate) => candidate.id === id) ? id : candidates[0]?.id || null));
   };
 
@@ -281,6 +292,8 @@ function App() {
     const next = await api.setCurrentJob(jobId);
     setRemoteState(next);
     setActiveInterviewJobId(jobId);
+    setActiveInterviewBatchId("current");
+    setActiveInterviewMonth("all");
   }
 
   async function deleteJob(job: Job) {
@@ -291,10 +304,10 @@ function App() {
   }
 
   async function closeJob(job: Job) {
-    if (!(await confirmAction("关闭招聘", `确认关闭职位“${job.title}”？关闭后将从进行中岗位下拉中移除，但历史数据会保留。`))) return false;
+    if (!(await confirmAction("关闭本轮招聘", `确认结束“${job.title}”的${getCurrentRecruitmentBatch(job)?.label || "当前批次"}？本轮人选与面试记录会归档保留，后续可通过“重新招聘”开启新批次。`))) return false;
     const next = await api.closeJob(job.id);
     setRemoteState(next);
-    showToast("职位已关闭并归档");
+    showToast("本轮招聘已关闭并归档");
     return true;
   }
 
@@ -313,6 +326,7 @@ function App() {
     setSelectedCandidateId(targetCandidateId);
     setActiveInterviewStage("推荐");
     setActiveInterviewJobId(currentJob?.id || "all");
+    setActiveInterviewBatchId("current");
     setActiveInterviewMonth("all");
     setActiveView("interviews");
     showToast("已进入推荐，确认推荐后再推进初试");
@@ -351,9 +365,14 @@ function App() {
     reasonTags: string[],
     interviewTimeline: NonNullable<Candidate["interviewTimeline"]>,
   ) {
-    const next = await api.updateInterviewStage(candidateId, { interviewStage, stageRecommendation, interviewResult, onboarded, reportMonth, interviewReason, reasonTags, interviewTimeline });
-    setRemoteState(next);
-    showToast("面试阶段已保存");
+    try {
+      const next = await api.updateInterviewStage(candidateId, { interviewStage, stageRecommendation, interviewResult, onboarded, reportMonth, interviewReason, reasonTags, interviewTimeline });
+      setRemoteState(next);
+      showToast("面试阶段已保存");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "面试阶段保存失败");
+      throw error;
+    }
   }
 
   async function refreshSalary(filters: SalaryFilters) {
@@ -365,8 +384,8 @@ function App() {
   const ongoingJobs = state?.jobs.filter((job) => job.status === "招聘中") || [];
   const dashboardCandidates = useMemo(() => state ? Object.values(state.candidates).flat() : [] as Candidate[], [state]);
   const dashboardPeriodOptions = useMemo(
-    () => getAnalyticsPeriodOptions(dashboardCandidates, dashboardGranularity),
-    [dashboardCandidates, dashboardGranularity],
+    () => getAnalyticsPeriodOptions(dashboardCandidates, dashboardGranularity, state?.jobs || []),
+    [dashboardCandidates, dashboardGranularity, state?.jobs],
   );
 
   useEffect(() => {
@@ -453,7 +472,7 @@ function App() {
             <Button className="btn primary" type="button" onClick={() => setModal({ type: "job" })}>新增职位</Button>
           </div>
         </section>
-        {modal?.type === "job" && <JobModal job={modal.job} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); showToast("职位已新增"); }} />}
+        {modal?.type === "job" && <JobModal job={modal.job} minimumHeadcount={0} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); showToast("职位已新增"); }} />}
         {toast && <div className="toast">{toast}</div>}
       </div>
     );
@@ -530,10 +549,10 @@ function App() {
               selectedPeriod={dashboardSelectedPeriod}
             />
           )}
-          {activeView === "jobs" && <JobsView state={state} currentJob={currentJob} canDelete={isAdmin} onSelect={changeJob} onEdit={(job) => setModal({ type: "job", job })} onCreate={() => setModal({ type: "job" })} onCloseJob={closeJob} onDelete={deleteJob} />}
+          {activeView === "jobs" && <JobsView state={state} currentJob={currentJob} canDelete={isAdmin} onSelect={changeJob} onEdit={(job) => setModal({ type: "job", job })} onCreate={() => setModal({ type: "job" })} onCloseJob={closeJob} onReopen={(job) => setModal({ type: "reopen-job", job })} onDelete={deleteJob} />}
           {activeView === "candidates" && <CandidatesView candidates={currentCandidates} recentUploadedIds={recentCandidateIdsByJob[currentJob.id] || []} selectedId={selectedCandidateId} onSelect={setSelectedCandidateId} onUpload={() => setModal({ type: "resume" })} onMark={markInterview} onAddToTalentPool={addToTalentPool} onDelete={deleteCandidate} currentJob={currentJob} onStateChange={setRemoteState} />}
           {activeView === "talent" && <TalentPoolView jobs={state.jobs} currentJob={currentJob} candidatesByJob={state.candidates} canHardDelete={isAdmin} onStateChange={setRemoteState} onToast={showToast} />}
-          {activeView === "interviews" && <InterviewsView jobs={ongoingJobs} selectedJobId={activeInterviewJobId} onJobChange={setActiveInterviewJobId} selectedMonth={activeInterviewMonth} onMonthChange={setActiveInterviewMonth} activeStage={activeInterviewStage} candidates={interviewCandidates} onStageChange={setActiveInterviewStage} onSaveStage={updateInterviewStage} />}
+          {activeView === "interviews" && <InterviewsView jobs={ongoingJobs} selectedJobId={activeInterviewJobId} onJobChange={(jobId) => { setActiveInterviewJobId(jobId); setActiveInterviewBatchId("current"); setActiveInterviewMonth("all"); }} selectedBatchId={activeInterviewBatchId} onBatchChange={setActiveInterviewBatchId} selectedMonth={activeInterviewMonth} onMonthChange={setActiveInterviewMonth} activeStage={activeInterviewStage} candidates={interviewCandidates} onStageChange={setActiveInterviewStage} onSaveStage={updateInterviewStage} />}
           {activeView === "voice" && (
             <VoiceParseView
               jobs={state.jobs}
@@ -548,7 +567,8 @@ function App() {
         </section>
       </main>
 
-      {modal?.type === "job" && <JobModal job={modal.job} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); showToast(modal.job ? "职位已更新" : "职位已新增"); }} />}
+      {modal?.type === "job" && <JobModal job={modal.job} minimumHeadcount={modal.job ? getBatchHeadcountProgress(getCurrentRecruitmentBatch(modal.job), state.candidates[modal.job.id] || []).completed : 0} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); showToast(modal.job ? "职位已更新" : "职位已新增"); }} />}
+      {modal?.type === "reopen-job" && <ReopenJobModal job={modal.job} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); setActiveInterviewJobId(modal.job.id); setActiveInterviewBatchId("current"); showToast("新招聘批次已开启"); }} />}
       {modal?.type === "resume" && <ResumeModal job={currentJob} candidates={currentCandidates} onClose={() => setModal(null)} onStateChange={setRemoteState} onSaved={(next, uploadedCandidateIds) => { setModal(null); setRemoteState(next); setRecentCandidateIdsByJob((current) => ({ ...current, [currentJob.id]: uploadedCandidateIds })); showToast("简历分析完成"); }} />}
       {modal?.type === "accounts" && <AccountManagementModal currentUsername={authStatus.user.username} onClose={() => setModal(null)} onRequireRelogin={() => void logout()} onToast={showToast} />}
       {toast && <div className="toast">{toast}</div>}
@@ -932,7 +952,12 @@ function RegionCascaderControl({ value, onChange }: { value: string; onChange: (
   }, []);
 
   const options = useMemo(() => toRegionCascaderOptions(regions), [regions]);
-  const selectedPath = useMemo(() => findRegionPath(regions, value), [regions, value]);
+  const selectedPath = useMemo(() => findRegionPath(regions, value).slice(0, 2), [regions, value]);
+
+  useEffect(() => {
+    const normalizedValue = normalizeRegionToCity(value);
+    if (normalizedValue && normalizedValue !== value) onChange(normalizedValue);
+  }, [value]);
 
   return (
     <ArcoCascader
@@ -942,7 +967,7 @@ function RegionCascaderControl({ value, onChange }: { value: string; onChange: (
       options={options}
       value={selectedPath}
       disabled={loading || !options.length}
-      placeholder={loading ? "地区加载中..." : "选择省 / 市 / 区"}
+      placeholder={loading ? "地区加载中..." : "选择省 / 市"}
       showSearch
       filterOption={regionCascaderFilterOption}
       expandTrigger="click"
@@ -951,17 +976,17 @@ function RegionCascaderControl({ value, onChange }: { value: string; onChange: (
       onChange={(next, selectedOptions) => {
         const labels = getSelectedRegionLabels(selectedOptions);
         const fallbackLabels = getCascaderPathValue(next).map((code) => findRegionLabel(options, code)).filter(Boolean);
-        onChange((labels.length ? labels : fallbackLabels).join(" / "));
+        onChange(normalizeRegionToCity((labels.length ? labels : fallbackLabels).join(" / ")));
       }}
     />
   );
 }
 
-function toRegionCascaderOptions(nodes: RegionNode[]): RegionCascaderOption[] {
+function toRegionCascaderOptions(nodes: RegionNode[], depth = 0): RegionCascaderOption[] {
   return nodes.map((node) => ({
     value: node.code,
     label: node.name,
-    ...(node.children.length ? { children: toRegionCascaderOptions(node.children) } : {}),
+    ...(depth < 1 && node.children.length ? { children: toRegionCascaderOptions(node.children, depth + 1) } : {}),
   }));
 }
 
@@ -974,7 +999,7 @@ function findRegionPath(nodes: RegionNode[], value: string): string[] {
   if (segments.length > 1) {
     let currentNodes = nodes;
     const path: string[] = [];
-    for (const segment of segments) {
+    for (const segment of segments.slice(0, 2)) {
       const match = currentNodes.find((node) => regionNamesMatch(node.name, segment));
       if (!match) return findRegionPathByJoinedName(nodes, value);
       path.push(match.code);
@@ -1232,7 +1257,7 @@ function Dashboard({
   const candidates = Object.values(state.candidates).flat();
   const [focusJobId, setFocusJobId] = useState(currentJob.id);
   const [insightJobId, setInsightJobId] = useState<string>("all");
-  const [selectedChannel, setSelectedChannel] = useState<string>("");
+  const [selectedChannel, setSelectedChannel] = useState<string>("all");
   const [activeSection, setActiveSection] = useState<"overview" | "jobs" | "flow" | "actions">("overview");
 
   useEffect(() => {
@@ -1254,11 +1279,17 @@ function Dashboard({
     if (!previousPeriod) return [] as Candidate[];
     return candidates.filter((candidate) => getCandidatePeriodValue(candidate, granularity) === previousPeriod);
   }, [candidates, granularity, previousPeriod]);
-  const completedOffers = filteredCandidates.filter((candidate) => candidate.interviewStage === "offer" && candidate.onboarded === "是").length;
-  const pendingOffers = filteredCandidates.filter((candidate) => candidate.interviewStage === "offer" && candidate.onboarded === "待入职").length;
+  const headcountAnalytics = buildHeadcountAnalytics(state.jobs, candidates, granularity, selectedPeriod);
+  const departmentHeadcountAnalytics = buildDepartmentHeadcountAnalytics(state.jobs, candidates, granularity, selectedPeriod);
   const insightCandidates = filterCandidatesByJobScope(filteredCandidates, insightJobId);
   const issueReview = buildIssueReview(insightCandidates);
   const channelAnalytics = buildChannelAnalytics(insightCandidates);
+  const visibleChannelRows = selectedChannel === "all"
+    ? channelAnalytics.rows
+    : channelAnalytics.rows.filter((item) => item.source === selectedChannel);
+  const selectedChannelSummary = selectedChannel === "all"
+    ? channelAnalytics.summary
+    : visibleChannelRows[0]?.summary || "当前渠道暂无足够数据。";
   const durationAnalytics = buildStageDurationAnalytics(insightCandidates);
   const durationBottleneck = durationAnalytics.rows
     .filter((item) => item.averageDays !== null)
@@ -1291,11 +1322,11 @@ function Dashboard({
 
   useEffect(() => {
     if (!channelAnalytics.rows.length) {
-      setSelectedChannel("");
+      setSelectedChannel("all");
       return;
     }
-    if (!channelAnalytics.rows.some((item) => item.source === selectedChannel)) {
-      setSelectedChannel(channelAnalytics.rows[0]?.source || "");
+    if (selectedChannel !== "all" && !channelAnalytics.rows.some((item) => item.source === selectedChannel)) {
+      setSelectedChannel("all");
     }
   }, [channelAnalytics.rows, selectedChannel]);
 
@@ -1314,11 +1345,24 @@ function Dashboard({
       />
 
       {activeSection === "overview" ? (
-        <div className="grid cols-4 dashboard-summary-grid section-panel-enter">
-          <section className="card dashboard-summary-card"><span className="dashboard-summary-label">招聘中岗位</span><strong className="dashboard-summary-value">{activeJobs.length}</strong><span className="dashboard-summary-extra">{selectedPeriod === "all" ? "当前在招" : `${formatAnalyticsGranularity(granularity)}筛选视角`}</span></section>
-          <section className="card dashboard-summary-card"><span className="dashboard-summary-label">推荐简历数</span><strong className="dashboard-summary-value">{overview.recommendedTotal}</strong><span className="dashboard-summary-extra">{selectedPeriod === "all" ? "面试管理流程起点" : `周期：${selectedPeriod}`}</span></section>
-          <section className="card dashboard-summary-card"><span className="dashboard-summary-label">最终录用人数</span><strong className="dashboard-summary-value">{overview.hiredCount}</strong><span className="dashboard-summary-extra">{pendingOffers ? `${pendingOffers} 位待入职` : "已含入职转化"}</span></section>
-          <section className="card dashboard-summary-card"><span className="dashboard-summary-label">实际入职人数</span><strong className="dashboard-summary-value">{completedOffers}</strong><span className="dashboard-summary-extra">{overview.recommendedTotal ? `录用转化 ${formatPercent(overview.hiredCount, overview.recommendedTotal)}` : "暂无数据"}</span></section>
+        <div className="section-panel-enter">
+          <div className="grid cols-4 dashboard-summary-grid">
+            <section className="card dashboard-summary-card"><span className="dashboard-summary-label">计划 HC</span><strong className="dashboard-summary-value">{headcountAnalytics.planned}</strong><span className="dashboard-summary-extra">{headcountAnalytics.batchCount} 个招聘批次</span></section>
+            <section className="card dashboard-summary-card"><span className="dashboard-summary-label">已完成 HC</span><strong className="dashboard-summary-value">{headcountAnalytics.completed}</strong><span className="dashboard-summary-extra">完成率 {formatPercent(headcountAnalytics.completed, headcountAnalytics.planned)}</span></section>
+            <section className="card dashboard-summary-card"><span className="dashboard-summary-label">待入职</span><strong className="dashboard-summary-value">{headcountAnalytics.pending}</strong><span className="dashboard-summary-extra">确认入职后计入完成</span></section>
+            <section className="card dashboard-summary-card"><span className="dashboard-summary-label">剩余 HC</span><strong className="dashboard-summary-value">{headcountAnalytics.remaining}</strong><span className="dashboard-summary-extra">按招聘批次月份归集</span></section>
+          </div>
+          <section className="hc-overview-band">
+            <div className="hc-overview-progress">
+              <div><span>HC 完成进度</span><strong>{formatPercent(headcountAnalytics.completed, headcountAnalytics.planned)}</strong></div>
+              <div className="hc-progress-track" aria-label={`HC完成率${formatPercent(headcountAnalytics.completed, headcountAnalytics.planned)}`}><span style={{ width: `${Math.min(100, percentValue(headcountAnalytics.completed, headcountAnalytics.planned))}%` }} /></div>
+            </div>
+            <div className="hc-demand-breakdown">
+              {headcountAnalytics.byDemandType.length
+                ? headcountAnalytics.byDemandType.map((item) => <div key={item.demandType}><span>{item.demandType}</span><strong>{item.completed}/{item.planned}</strong><small>完成 / 计划</small></div>)
+                : <p className="hc-demand-empty">该周期暂无招聘批次</p>}
+            </div>
+          </section>
         </div>
       ) : null}
 
@@ -1500,6 +1544,7 @@ function Dashboard({
             </div>
           </div>
         </section>
+
       </div> : null}
 
       {activeSection === "actions" ? <div className="grid cols-1 dashboard-review-grid section-panel-enter">
@@ -1555,9 +1600,10 @@ function Dashboard({
             </div>
             {channelAnalytics.rows.length ? (
               <div className="toolbar-right analytics-filters">
-                <label className="interview-filter-field analytics-scope-field">
+                <label className="interview-filter-field analytics-scope-field analytics-channel-filter">
                   <span>选择渠道</span>
                   <Select value={selectedChannel} onChange={(event) => setSelectedChannel(event.target.value)}>
+                    <option value="all">全部渠道</option>
                     {channelAnalytics.rows.map((item) => <option key={item.source} value={item.source}>{item.source}</option>)}
                   </Select>
                 </label>
@@ -1566,8 +1612,8 @@ function Dashboard({
           </div>
           {channelAnalytics.rows.length ? (
             <>
-              <div className="analytics-channel-grid">
-                {channelAnalytics.rows.filter((item) => item.source === selectedChannel).map((item) => (
+              <div className={`analytics-channel-grid ${selectedChannel === "all" ? "multi" : "single"}`}>
+                {visibleChannelRows.map((item) => (
                   <article className="analytics-channel-card" key={item.source}>
                     <div className="analytics-channel-head">
                       <strong>{item.source}</strong>
@@ -1576,12 +1622,14 @@ function Dashboard({
                     <div className="analytics-channel-metrics">
                       <div><span>推荐初试</span><strong>{item.invitedCount}</strong></div>
                       <div><span>初试通过</span><strong>{item.firstPassCount}</strong></div>
+                      <div><span>offer</span><strong>{item.offerCount}</strong></div>
                       <div><span>入职</span><strong>{item.onboardedCount}</strong></div>
                     </div>
                     <div className="analytics-channel-side">
                       <div className="analytics-channel-rates">
                         <span>推荐率 {item.inviteRate}</span>
                         <span>初试通过率 {item.firstPassRate}</span>
+                        <span>offer转化 {item.offerRate}</span>
                         <span>入职转化 {item.onboardRate}</span>
                       </div>
                       <div className="analytics-channel-note">{item.summary}</div>
@@ -1589,6 +1637,7 @@ function Dashboard({
                   </article>
                 ))}
               </div>
+              <div className="analytics-channel-summary">{selectedChannelSummary}</div>
             </>
           ) : <div className="empty"><div><strong>暂无渠道数据</strong><br />请先上传简历并进入后续流程。</div></div>}
         </section>
@@ -1664,6 +1713,84 @@ function Dashboard({
             </div>
           </div>
         </section>
+
+        <section className="card pad analytics-funnel-card department-hc-card">
+          <div className="analytics-table-head">
+            <div>
+              <h3 className="card-title">部门 HC 分布与完成情况</h3>
+              <p className="helper-text">按 {selectedPeriod || "当前周期"} 的招聘批次归集，统一查看各部门 HC 占比、需求来源和招聘交付进度。</p>
+            </div>
+          </div>
+          {departmentHeadcountAnalytics.rows.length ? (
+            <div className="department-hc-table-scroll">
+              <table className="department-hc-table">
+                <thead>
+                  <tr>
+                    <th>部门</th>
+                    <th>计划 HC</th>
+                    <th>HC 占比</th>
+                    <th>离职替补</th>
+                    <th>计划内提前</th>
+                    <th>计划内新增</th>
+                    <th>计划外新增</th>
+                    <th>未分类</th>
+                    <th>复试通过</th>
+                    <th>待入职</th>
+                    <th>已入职</th>
+                    <th>剩余 HC</th>
+                    <th>完成率</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {departmentHeadcountAnalytics.rows.map((row) => (
+                    <tr key={row.department} data-department={row.department}>
+                      <th scope="row">{row.department}</th>
+                      <td data-column="计划 HC">{row.planned}</td>
+                      <td data-column="HC 占比">{row.share}%</td>
+                      <td data-column="离职替补">{row.demandTypeCounts["离职替补"] || 0}</td>
+                      <td data-column="计划内提前">{row.demandTypeCounts["计划内提前"] || 0}</td>
+                      <td data-column="计划内新增">{row.demandTypeCounts["计划内新增"] || 0}</td>
+                      <td data-column="计划外新增">{row.demandTypeCounts["计划外新增"] || 0}</td>
+                      <td data-column="未分类">{row.demandTypeCounts["未分类"] || 0}</td>
+                      <td data-column="复试通过">{row.finalInterviewPassed}</td>
+                      <td data-column="待入职">{row.pending}</td>
+                      <td data-column="已入职">{row.completed}</td>
+                      <td data-column="剩余 HC">{row.remaining}</td>
+                      <td data-column="完成率">
+                        <div className="department-hc-completion">
+                          <span className="department-hc-progress"><i style={{ width: `${Math.min(100, row.completionRate)}%` }} /></span>
+                          <strong>{row.completionRate}%</strong>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr data-department="总计">
+                    <th scope="row">总计</th>
+                    <td data-column="计划 HC">{departmentHeadcountAnalytics.total.planned}</td>
+                    <td data-column="HC 占比">{departmentHeadcountAnalytics.total.share}%</td>
+                    <td data-column="离职替补">{departmentHeadcountAnalytics.total.demandTypeCounts["离职替补"] || 0}</td>
+                    <td data-column="计划内提前">{departmentHeadcountAnalytics.total.demandTypeCounts["计划内提前"] || 0}</td>
+                    <td data-column="计划内新增">{departmentHeadcountAnalytics.total.demandTypeCounts["计划内新增"] || 0}</td>
+                    <td data-column="计划外新增">{departmentHeadcountAnalytics.total.demandTypeCounts["计划外新增"] || 0}</td>
+                    <td data-column="未分类">{departmentHeadcountAnalytics.total.demandTypeCounts["未分类"] || 0}</td>
+                    <td data-column="复试通过">{departmentHeadcountAnalytics.total.finalInterviewPassed}</td>
+                    <td data-column="待入职">{departmentHeadcountAnalytics.total.pending}</td>
+                    <td data-column="已入职">{departmentHeadcountAnalytics.total.completed}</td>
+                    <td data-column="剩余 HC">{departmentHeadcountAnalytics.total.remaining}</td>
+                    <td data-column="完成率">
+                      <div className="department-hc-completion">
+                        <span className="department-hc-progress"><i style={{ width: `${Math.min(100, departmentHeadcountAnalytics.total.completionRate)}%` }} /></span>
+                        <strong>{departmentHeadcountAnalytics.total.completionRate}%</strong>
+                      </div>
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          ) : <div className="empty department-hc-empty"><div><strong>当前周期暂无 HC 数据</strong><br />请先在职位管理中创建对应月份的招聘批次。</div></div>}
+        </section>
       </div> : null}
 
       {activeSection === "actions" ? <div className="grid cols-2 dashboard-action-grid section-panel-enter">
@@ -1716,6 +1843,7 @@ function JobsView({
   onEdit,
   onCreate,
   onCloseJob,
+  onReopen,
   onDelete,
 }: {
   state: AppState;
@@ -1725,6 +1853,7 @@ function JobsView({
   onEdit: (job: Job) => void;
   onCreate: () => void;
   onCloseJob: (job: Job) => Promise<boolean>;
+  onReopen: (job: Job) => void;
   onDelete: (job: Job) => void;
 }) {
   const [statusFilter, setStatusFilter] = useState<Job["status"] | "全部">("招聘中");
@@ -1735,6 +1864,9 @@ function JobsView({
     [state.jobs, statusFilter],
   );
   const selectedJob = state.jobs.find((job) => job.id === selectedJobId) || currentJob;
+  const currentBatch = getCurrentRecruitmentBatch(selectedJob);
+  const currentHeadcount = getBatchHeadcountProgress(currentBatch, state.candidates[selectedJob.id] || []);
+  const historyBatches = [...selectedJob.recruitmentBatches].sort((left, right) => right.sequence - left.sequence);
 
   useEffect(() => {
     if (!visibleJobs.some((job) => job.id === selectedJobId)) {
@@ -1760,7 +1892,7 @@ function JobsView({
         <div className="toolbar">
           <div>
             <h3 className="card-title">职位池</h3>
-            <p className="helper-text">默认聚焦招聘中岗位，已关闭岗位会归档保留。</p>
+            <p className="helper-text">岗位长期保留，每次重新招聘生成新批次；旧批次的人选和面试记录自动归档。</p>
           </div>
           <div className="toolbar-right">
             <Button className="btn" onClick={() => downloadJobsExcel(visibleJobs, statusFilter)}>导出Excel</Button>
@@ -1780,8 +1912,10 @@ function JobsView({
         <section className="card pad">
           {visibleJobs.length ? (
             <div className="job-list">
-              {visibleJobs.map((job) => (
-                <article className={`job-card ${job.id === selectedJob.id ? "active" : ""}`} key={job.id} onClick={() => selectJob(job)}>
+              {visibleJobs.map((job) => {
+                const batch = getCurrentRecruitmentBatch(job);
+                const headcount = getBatchHeadcountProgress(batch, state.candidates[job.id] || []);
+                return <article className={`job-card ${job.id === selectedJob.id ? "active" : ""}`} key={job.id} onClick={() => selectJob(job)}>
                   <div className="job-topline">
                     <div>
                       <h4>{job.title}</h4>
@@ -1790,9 +1924,10 @@ function JobsView({
                     <Badge color={statusColor(job.status)}>{job.status}</Badge>
                   </div>
                   <div className="kv"><span>{job.salaryRange}</span><span>{job.location}</span><span>{job.experience}</span></div>
+                  <div className="job-batch-line"><span>{batch?.label || "当前批次"}</span><span>{batch?.targetMonth || "未设置月份"}</span><span>{batch?.demandType || "需求未分类"}</span><span>HC {headcount.completed}/{headcount.planned}</span><span>{job.resumeCount}份简历</span></div>
                   <p className="desc job-card-desc">{job.description}</p>
-                </article>
-              ))}
+                </article>;
+              })}
             </div>
           ) : (
             <div className="empty"><div><strong>暂无{statusFilter}岗位</strong><br />可切换筛选或新增职位。</div></div>
@@ -1814,10 +1949,38 @@ function JobsView({
               <Metric label="经验年限" value={selectedJob.experience} />
             </div>
             <div><span className="meta">关键词</span><KeywordList keywords={selectedJob.keywords} /></div>
+            <div className="job-batch-overview">
+              <div className="row-between">
+                <span className="meta">招聘批次</span>
+                <strong>{currentBatch ? `${currentBatch.label} · ${currentBatch.targetMonth}` : "尚未建立批次"}</strong>
+              </div>
+              <div className="job-batch-overview-meta">
+                <span>需求类型 {currentBatch?.demandType || "未分类"}</span>
+                <span>计划 HC {currentHeadcount.planned} 人</span>
+                <span>已完成 {currentHeadcount.completed} 人</span>
+                <span>待入职 {currentHeadcount.pending} 人</span>
+                <span>剩余 {currentHeadcount.remaining} 人</span>
+                <span>当前批次简历 {selectedJob.resumeCount} 份</span>
+                <span>累计 {selectedJob.recruitmentBatches.length} 个批次</span>
+              </div>
+              {historyBatches.length > 1 ? (
+                <details className="job-batch-history">
+                  <summary>查看历史批次</summary>
+                  <div className="job-batch-history-list">
+                    {historyBatches.map((batch) => {
+                      const headcount = getBatchHeadcountProgress(batch, state.candidates[selectedJob.id] || []);
+                      return <div key={batch.id}><span>{batch.label} · {batch.targetMonth} · {batch.demandType || "需求未分类"} · HC {headcount.completed}/{headcount.planned}</span><Badge color={statusColor(batch.status)}>{batch.status}</Badge></div>;
+                    })}
+                  </div>
+                </details>
+              ) : null}
+            </div>
             <div><span className="meta">职位描述</span><p className="desc spaced-small">{selectedJob.description}</p></div>
             <div className="toolbar-left">
               <Button className="btn primary" onClick={() => onEdit(selectedJob)}>编辑职位</Button>
-              {selectedJob.status !== "已关闭" && <Button className="btn" onClick={() => handleCloseJob(selectedJob)}>关闭招聘</Button>}
+              {selectedJob.status === "已关闭"
+                ? <Button className="btn primary" onClick={() => onReopen(selectedJob)}>重新招聘</Button>
+                : <Button className="btn" onClick={() => handleCloseJob(selectedJob)}>关闭本轮招聘</Button>}
               {canDelete ? <Button className="btn danger" onClick={() => onDelete(selectedJob)}>删除职位</Button> : null}
             </div>
           </div>
@@ -2021,8 +2184,11 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, canHardDelete, onSt
   }), [talentCandidates, jobs, keyword, jobId, profileFilter]);
   const selectedTalent = filteredCandidates.find((candidate) => candidate.id === selectedTalentId) || filteredCandidates[0] || null;
   const selectedJob = selectedTalent ? jobs.find((job) => job.id === selectedTalent.jobId) || null : null;
+  const recommendTargetJob = jobs.find((job) => job.id === recommendTargetJobId) || null;
   const recommendDuplicateCandidate = recommendCandidate && recommendTargetJobId
-    ? findDuplicateCandidateInList((candidatesByJob[recommendTargetJobId] || []).filter(isScreeningCandidate), recommendCandidate)
+    ? findDuplicateCandidateInList((candidatesByJob[recommendTargetJobId] || [])
+      .filter((candidate) => candidate.recruitmentBatchId === recommendTargetJob?.currentBatchId)
+      .filter(isScreeningCandidate), recommendCandidate)
     : null;
   const recommendCandidateAgeDays = recommendCandidate ? getTalentArchiveAgeDays(recommendCandidate) : null;
   const shouldWarnRevival = typeof recommendCandidateAgeDays === "number" && recommendCandidateAgeDays > 90;
@@ -2066,17 +2232,20 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, canHardDelete, onSt
     setRecommendLoading(true);
     setRecommendError("");
     try {
-      const beforeCount = (candidatesByJob[recommendTargetJobId] || []).filter(isScreeningCandidate).length;
+      const beforeCount = (candidatesByJob[recommendTargetJobId] || [])
+        .filter((candidate) => candidate.recruitmentBatchId === recommendTargetJob?.currentBatchId)
+        .filter(isScreeningCandidate).length;
       const next = await api.recommendTalentToJob(recommendCandidate.id, {
         jobId: recommendTargetJobId,
         duplicateAction: "skip",
       });
-      const targetJob = jobs.find((job) => job.id === recommendTargetJobId);
-      const afterCount = (next.candidates[recommendTargetJobId] || []).filter(isScreeningCandidate).length;
+      const afterCount = (next.candidates[recommendTargetJobId] || [])
+        .filter((candidate) => candidate.recruitmentBatchId === recommendTargetJob?.currentBatchId)
+        .filter(isScreeningCandidate).length;
       onStateChange(next);
       onToast(afterCount > beforeCount
-        ? `已推荐至${targetJob?.title || "目标岗位"}，可在简历甄选查看`
-        : `${targetJob?.title || "目标岗位"}的简历甄选已存在该人选，未重复新增`);
+        ? `已推荐至${recommendTargetJob?.title || "目标岗位"}，可在简历甄选查看`
+        : `${recommendTargetJob?.title || "目标岗位"}的简历甄选已存在该人选，未重复新增`);
       setRecommendCandidate(null);
     } catch (error) {
       setRecommendError(error instanceof Error ? error.message : "推荐失败，请稍后重试");
@@ -2289,7 +2458,7 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, canHardDelete, onSt
               <div className="talent-recommend-preview">
                 <strong>系统备注</strong>
                 <p>由人才库于 {formatSimpleDate()} 回溯推荐</p>
-                <small>确认后，该候选人会出现在目标岗位的“简历甄选”列表中，状态默认为“待筛选”。</small>
+                <small>确认后，系统会按当前招聘批次的岗位画像重新 AI 评分，并以“待筛选”状态进入简历甄选；旧批次记录不会被覆盖。</small>
               </div>
               {shouldWarnRevival ? (
                 <div className="talent-revival-warning">
@@ -2306,8 +2475,8 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, canHardDelete, onSt
               {recommendDuplicateCandidate ? (
                 <div className="talent-overwrite-option">
                   <span>
-                    <strong>简历甄选中已有 {recommendDuplicateCandidate.name} 的简历</strong>
-                    <small>系统会保留当前岗位已有简历，不覆盖、不重复新增。</small>
+                    <strong>当前招聘批次已有 {recommendDuplicateCandidate.name} 的简历</strong>
+                    <small>系统会保留当前批次已有简历，不覆盖、不重复新增；新招聘批次仍可重新推荐。</small>
                   </span>
                 </div>
               ) : null}
@@ -2425,6 +2594,25 @@ function dedupeCandidateList(candidates: Candidate[]) {
 
 function isScreeningCandidate(candidate: Candidate) {
   return !candidate.removedFromScreening;
+}
+
+function getCurrentRecruitmentBatch(job: Job) {
+  return job.recruitmentBatches.find((batch) => batch.id === job.currentBatchId)
+    || job.recruitmentBatches[job.recruitmentBatches.length - 1]
+    || null;
+}
+
+function getBatchHeadcountProgress(batch: RecruitmentBatch | null, candidates: Candidate[]) {
+  const planned = batch?.plannedHeadcount || 0;
+  const batchCandidates = batch ? candidates.filter((candidate) => candidate.recruitmentBatchId === batch.id) : [];
+  const completed = batchCandidates.filter((candidate) => candidate.onboarded === "是").length;
+  const pending = batchCandidates.filter((candidate) => candidate.onboarded === "待入职" && candidate.interviewStage === "offer").length;
+  return {
+    planned,
+    completed,
+    pending,
+    remaining: Math.max(planned - completed, 0),
+  };
 }
 
 function isReactivatedTalentCandidate(candidate: Candidate, candidates: Candidate[]) {
@@ -3277,17 +3465,27 @@ function formatInterviewStageLabel(stage: InterviewStage | NonNullable<Candidate
   return stage;
 }
 
-function InterviewsView({ jobs, selectedJobId, onJobChange, selectedMonth, onMonthChange, candidates, activeStage, onStageChange, onSaveStage }: { jobs: Job[]; selectedJobId: string; onJobChange: (jobId: string) => void; selectedMonth: string; onMonthChange: (month: string) => void; candidates: Candidate[]; activeStage: InterviewStage; onStageChange: (stage: InterviewStage) => void; onSaveStage: (candidateId: string, interviewStage: NonNullable<Candidate["interviewStage"]>, stageRecommendation: NonNullable<Candidate["stageRecommendation"]>, interviewResult: NonNullable<Candidate["interviewResult"]>, onboarded: NonNullable<Candidate["onboarded"]>, reportMonth: string, interviewReason: string, reasonTags: string[], interviewTimeline: NonNullable<Candidate["interviewTimeline"]>) => Promise<void> }) {
-  const monthOptions = Array.from(new Set(candidates.map((candidate) => normalizeReportMonth(candidate.reportMonth || formatReportMonth())))).sort((a, b) => b.localeCompare(a, "zh-Hans-CN"));
+function InterviewsView({ jobs, selectedJobId, onJobChange, selectedBatchId, onBatchChange, selectedMonth, onMonthChange, candidates, activeStage, onStageChange, onSaveStage }: { jobs: Job[]; selectedJobId: string; onJobChange: (jobId: string) => void; selectedBatchId: string; onBatchChange: (batchId: string) => void; selectedMonth: string; onMonthChange: (month: string) => void; candidates: Candidate[]; activeStage: InterviewStage; onStageChange: (stage: InterviewStage) => void; onSaveStage: (candidateId: string, interviewStage: NonNullable<Candidate["interviewStage"]>, stageRecommendation: NonNullable<Candidate["stageRecommendation"]>, interviewResult: NonNullable<Candidate["interviewResult"]>, onboarded: NonNullable<Candidate["onboarded"]>, reportMonth: string, interviewReason: string, reasonTags: string[], interviewTimeline: NonNullable<Candidate["interviewTimeline"]>) => Promise<void> }) {
+  const selectedJob = selectedJobId === "all" ? null : jobs.find((job) => job.id === selectedJobId) || null;
+  const currentBatch = selectedJob ? getCurrentRecruitmentBatch(selectedJob) : null;
+  const previousBatches = selectedJob
+    ? [...selectedJob.recruitmentBatches].filter((batch) => batch.id !== selectedJob.currentBatchId).sort((left, right) => right.sequence - left.sequence)
+    : [];
+  const batchScopedCandidates = candidates.filter((candidate) => {
+    if (selectedBatchId === "all") return true;
+    if (selectedBatchId !== "current") return candidate.recruitmentBatchId === selectedBatchId;
+    const candidateJob = jobs.find((job) => job.id === candidate.jobId);
+    return Boolean(candidateJob && candidate.recruitmentBatchId === candidateJob.currentBatchId);
+  });
+  const monthOptions = Array.from(new Set(batchScopedCandidates.map((candidate) => normalizeReportMonth(candidate.reportMonth || formatReportMonth())))).sort((a, b) => b.localeCompare(a, "zh-Hans-CN"));
   const showJobColumn = selectedJobId === "all";
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
   const [tableScrollState, setTableScrollState] = useState({ clientWidth: 0, scrollWidth: 0, scrollLeft: 0 });
-  const interviewCandidates = candidates
+  const periodScopedCandidates = batchScopedCandidates
     .filter((candidate) => isInterviewCandidate(candidate))
-    .filter((candidate) => selectedMonth === "all" || normalizeReportMonth(candidate.reportMonth || formatReportMonth()) === selectedMonth)
+    .filter((candidate) => selectedMonth === "all" || normalizeReportMonth(candidate.reportMonth || formatReportMonth()) === selectedMonth);
+  const interviewCandidates = periodScopedCandidates
     .filter((candidate) => (candidate.interviewStage || "推荐") === activeStage);
-
-  const selectedJob = selectedJobId === "all" ? null : jobs.find((job) => job.id === selectedJobId) || null;
   const maxTableScrollLeft = Math.max(tableScrollState.scrollWidth - tableScrollState.clientWidth, 0);
 
   useEffect(() => {
@@ -3332,7 +3530,7 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedMonth, onMon
       wrap.removeEventListener("scroll", scheduleMeasure);
       window.removeEventListener("resize", scheduleMeasure);
     };
-  }, [activeStage, interviewCandidates.length, selectedJobId, selectedMonth, showJobColumn]);
+  }, [activeStage, interviewCandidates.length, selectedBatchId, selectedJobId, selectedMonth, showJobColumn]);
 
   const handleTableScrollbarChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     const nextScrollLeft = Number(event.target.value);
@@ -3348,7 +3546,7 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedMonth, onMon
         <div className="toolbar">
           <div>
             <h3 className="card-title">{selectedJob ? `${selectedJob.title} · 面试管理` : "面试管理"}</h3>
-            <p className="helper-text">支持按岗位与统计月份组合筛选；可查看单岗位全周期，也可查看某月全部在招岗位的人选。</p>
+            <p className="helper-text">默认只看当前招聘批次；切换历史批次可回看旧人选，数据不会混入本轮招聘。</p>
           </div>
           <div className="toolbar-right interview-filters">
             <label className="interview-filter-field">
@@ -3356,6 +3554,14 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedMonth, onMon
               <Select value={selectedJobId} onChange={(event) => onJobChange(event.target.value)}>
                 <option value="all">全部</option>
                 {jobs.map((job) => <option key={job.id} value={job.id}>{formatJobOption(job)}</option>)}
+              </Select>
+            </label>
+            <label className="interview-filter-field">
+              <span>招聘批次</span>
+              <Select value={selectedBatchId} onChange={(event) => { onBatchChange(event.target.value); onMonthChange("all"); }}>
+                <option value="current">{selectedJob && currentBatch ? `当前 · ${currentBatch.label} ${currentBatch.targetMonth}` : "全部岗位当前批次"}</option>
+                {previousBatches.map((batch) => <option key={batch.id} value={batch.id}>{batch.label} · {batch.targetMonth}</option>)}
+                <option value="all">全部批次</option>
               </Select>
             </label>
             <label className="interview-filter-field">
@@ -3370,7 +3576,7 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedMonth, onMon
         <div className="stage-filter-tabs">
           {interviewStages.map((stage) => (
             <Button key={stage} type="button" className={`stage-filter ${activeStage === stage ? "active" : ""}`} onClick={() => onStageChange(stage)}>
-              {formatInterviewStageLabel(stage)}<span>{candidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.interviewStage || "推荐") === stage).length}</span>
+              {formatInterviewStageLabel(stage)}<span>{periodScopedCandidates.filter((candidate) => (candidate.interviewStage || "推荐") === stage).length}</span>
             </Button>
           ))}
         </div>
@@ -3753,15 +3959,120 @@ function getCandidatePeriodValue(candidate: Candidate, granularity: AnalyticsGra
   return `${parsed.year}年`;
 }
 
-function getAnalyticsPeriodOptions(candidates: Candidate[], granularity: AnalyticsGranularity) {
-  return Array.from(new Set(candidates.map((candidate) => getCandidatePeriodValue(candidate, granularity))))
+function getRecruitmentBatchPeriodValue(batch: RecruitmentBatch, granularity: AnalyticsGranularity) {
+  const parsed = parseReportMonth(batch.targetMonth);
+  if (granularity === "month") return parsed.normalized;
+  if (granularity === "quarter") return parsed.quarter;
+  return `${parsed.year}年`;
+}
+
+function getAnalyticsPeriodOptions(candidates: Candidate[], granularity: AnalyticsGranularity, jobs: Job[] = []) {
+  const batchPeriods = jobs.flatMap((job) => job.recruitmentBatches.map((batch) => getRecruitmentBatchPeriodValue(batch, granularity)));
+  return Array.from(new Set([...candidates.map((candidate) => getCandidatePeriodValue(candidate, granularity)), ...batchPeriods]))
     .filter(Boolean)
     .sort((a, b) => b.localeCompare(a, "zh-Hans-CN"))
     .map((value) => ({ value, label: value }));
 }
 
-function getLatestPeriodValue(candidates: Candidate[], granularity: AnalyticsGranularity) {
-  return getAnalyticsPeriodOptions(candidates, granularity)[0]?.value || "";
+function getLatestPeriodValue(candidates: Candidate[], granularity: AnalyticsGranularity, jobs: Job[] = []) {
+  return getAnalyticsPeriodOptions(candidates, granularity, jobs)[0]?.value || "";
+}
+
+function buildHeadcountAnalytics(jobs: Job[], candidates: Candidate[], granularity: AnalyticsGranularity, selectedPeriod: string) {
+  const batches = jobs.flatMap((job) => job.recruitmentBatches.map((batch) => ({ job, batch })))
+    .filter(({ batch }) => getRecruitmentBatchPeriodValue(batch, granularity) === selectedPeriod);
+  const rows = batches.map(({ job, batch }) => ({
+    demandType: batch.demandType || "未分类",
+    ...getBatchHeadcountProgress(batch, candidates.filter((candidate) => candidate.jobId === job.id)),
+  }));
+  const totals = rows.reduce((result, row) => ({
+    planned: result.planned + row.planned,
+    completed: result.completed + row.completed,
+    pending: result.pending + row.pending,
+    remaining: result.remaining + row.remaining,
+  }), { planned: 0, completed: 0, pending: 0, remaining: 0 });
+  const demandTypes = [...recruitmentDemandTypeOptions, "未分类"];
+  const byDemandType = demandTypes.map((demandType) => {
+    const demandRows = rows.filter((row) => row.demandType === demandType);
+    return {
+      demandType,
+      planned: demandRows.reduce((sum, row) => sum + row.planned, 0),
+      completed: demandRows.reduce((sum, row) => sum + row.completed, 0),
+    };
+  }).filter((item) => item.planned > 0);
+  return { ...totals, batchCount: batches.length, byDemandType };
+}
+
+function buildDepartmentHeadcountAnalytics(jobs: Job[], candidates: Candidate[], granularity: AnalyticsGranularity, selectedPeriod: string) {
+  const demandTypes = [...recruitmentDemandTypeOptions, "未分类"];
+  const batches = jobs.flatMap((job) => job.recruitmentBatches.map((batch) => ({ job, batch })))
+    .filter(({ batch }) => getRecruitmentBatchPeriodValue(batch, granularity) === selectedPeriod);
+  const departmentRows = new Map<string, {
+    department: string;
+    planned: number;
+    demandTypeCounts: Record<string, number>;
+    finalInterviewPassed: number;
+    pending: number;
+    completed: number;
+    remaining: number;
+  }>();
+
+  batches.forEach(({ job, batch }) => {
+    const department = batch.profileSnapshot?.dept?.trim() || job.dept?.trim() || "未设置部门";
+    const demandType = batch.demandType || "未分类";
+    const batchCandidates = candidates.filter((candidate) => candidate.jobId === job.id && candidate.recruitmentBatchId === batch.id);
+    const progress = getBatchHeadcountProgress(batch, candidates.filter((candidate) => candidate.jobId === job.id));
+    const current = departmentRows.get(department) || {
+      department,
+      planned: 0,
+      demandTypeCounts: Object.fromEntries(demandTypes.map((item) => [item, 0])),
+      finalInterviewPassed: 0,
+      pending: 0,
+      completed: 0,
+      remaining: 0,
+    };
+
+    current.planned += progress.planned;
+    current.demandTypeCounts[demandType] = (current.demandTypeCounts[demandType] || 0) + progress.planned;
+    current.finalInterviewPassed += batchCandidates.filter((candidate) => candidate.interviewStage === "offer").length;
+    current.pending += progress.pending;
+    current.completed += progress.completed;
+    current.remaining += progress.remaining;
+    departmentRows.set(department, current);
+  });
+
+  const totalPlanned = batches.reduce((sum, { batch }) => sum + (batch.plannedHeadcount || 0), 0);
+  const rows = Array.from(departmentRows.values())
+    .sort((a, b) => b.planned - a.planned || a.department.localeCompare(b.department, "zh-Hans-CN"))
+    .map((row) => ({
+      ...row,
+      share: percentValue(row.planned, totalPlanned),
+      completionRate: percentValue(row.completed, row.planned),
+    }));
+  const total = rows.reduce((result, row) => {
+    result.planned += row.planned;
+    result.finalInterviewPassed += row.finalInterviewPassed;
+    result.pending += row.pending;
+    result.completed += row.completed;
+    result.remaining += row.remaining;
+    demandTypes.forEach((demandType) => {
+      result.demandTypeCounts[demandType] += row.demandTypeCounts[demandType] || 0;
+    });
+    return result;
+  }, {
+    department: "总计",
+    planned: 0,
+    share: totalPlanned ? 100 : 0,
+    demandTypeCounts: Object.fromEntries(demandTypes.map((item) => [item, 0])),
+    finalInterviewPassed: 0,
+    pending: 0,
+    completed: 0,
+    remaining: 0,
+    completionRate: 0,
+  });
+  total.completionRate = percentValue(total.completed, total.planned);
+
+  return { rows, total };
 }
 
 function getPreviousPeriodValue(period: string, granularity: AnalyticsGranularity) {
@@ -4058,6 +4369,7 @@ function buildChannelAnalytics(candidates: Candidate[]) {
       onboardedCount,
       inviteRate: formatPercent(invitedCount, resumeCount),
       firstPassRate: formatPercent(firstPassCount, invitedCount),
+      offerRate: formatPercent(offerCount, firstPassCount),
       onboardRate: formatPercent(onboardedCount, resumeCount),
       summary: resumeCount
         ? `${source} 当前入库 ${resumeCount} 份，推荐初试 ${invitedCount} 人，最终入职 ${onboardedCount} 人。`
@@ -5275,6 +5587,7 @@ function isInterviewCandidate(candidate: Candidate) {
 
 const salaryExperienceOptions = ["无经验", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"] as const;
 const salaryEducationOptions = ["大专", "本科", "硕士"] as const;
+const recruitmentDemandTypeOptions = ["离职替补", "计划内提前", "计划内新增", "计划外新增"] as const;
 const salaryRoleOptions = [
   "HRBP",
   "人力资源专员",
@@ -6032,7 +6345,66 @@ function uniqueKeywords(items: readonly string[]) {
   return Array.from(new Set(items.map((item) => item.trim()).filter(Boolean)));
 }
 
-function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; onSaved: (state: AppState) => void }) {
+function ReopenJobModal({ job, onClose, onSaved }: { job: Job; onClose: () => void; onSaved: (state: AppState) => void }) {
+  const [targetMonth, setTargetMonth] = useState(formatReportMonth());
+  const [demandType, setDemandType] = useState<Job["demandType"]>(job.demandType);
+  const [plannedHeadcount, setPlannedHeadcount] = useState(job.plannedHeadcount || 1);
+  const [submitting, setSubmitting] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const nextSequence = Math.max(0, ...job.recruitmentBatches.map((batch) => batch.sequence)) + 1;
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSubmitting(true);
+    setSaveError("");
+    try {
+      if (!demandType) return;
+      onSaved(await api.reopenJob(job.id, normalizeReportMonth(targetMonth), demandType, plannedHeadcount));
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "新招聘批次开启失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="重新招聘"
+      className="reopen-job-modal"
+      onClose={onClose}
+      actions={(
+        <>
+          <Button className="btn" type="button" onClick={onClose} disabled={submitting}>取消</Button>
+          <Button className="btn primary" type="submit" form="reopenJobForm" disabled={submitting || !demandType}>{submitting ? "开启中..." : "开启新批次"}</Button>
+        </>
+      )}
+    >
+      <form id="reopenJobForm" className="reopen-job-form" onSubmit={submit}>
+        <div className="reopen-job-summary">
+          <strong>{job.title}</strong>
+          <span>{job.dept} · {job.location}</span>
+          <p>将创建第{nextSequence}批招聘。历史批次的人选和面试记录继续保留，不会进入新批次列表。</p>
+        </div>
+        <label className="form-field">
+          <span>招聘月份</span>
+          <TextInput value={targetMonth} onChange={(event) => setTargetMonth(event.target.value)} onBlur={() => setTargetMonth((value) => normalizeReportMonth(value))} placeholder="2026年07月" />
+        </label>
+        <label className="form-field">
+          <span>需求类型</span>
+          <Select value={demandType} onChange={(event) => setDemandType(event.target.value as Job["demandType"])}>
+            <option value="" disabled>请选择需求类型</option>
+            {recruitmentDemandTypeOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+          </Select>
+        </label>
+        <HeadcountField value={plannedHeadcount} onChange={setPlannedHeadcount} />
+        {saveError ? <div className="form-validation-error">{saveError}</div> : null}
+        <div className="reopen-job-note">如本轮岗位画像有调整，可先取消并编辑职位的JD、关键词和评分权重，再重新开启。</div>
+      </form>
+    </Modal>
+  );
+}
+
+function JobModal({ job, minimumHeadcount, onClose, onSaved }: { job?: Job; minimumHeadcount: number; onClose: () => void; onSaved: (state: AppState) => void }) {
   const [form, setForm] = useState<JobPayload>({
     title: job?.title || "",
     dept: job?.dept || "",
@@ -6040,6 +6412,8 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
     experience: job?.experience || "",
     level: job?.level || "",
     salaryRange: normalizeSalaryRangeValue(job?.salaryRange || ""),
+    demandType: job?.demandType || "",
+    plannedHeadcount: job?.plannedHeadcount || 1,
     keywords: job?.keywords || "",
     scoreWeights: normalizeJobScoreWeights(job?.scoreWeights),
     description: job?.description || "",
@@ -6049,20 +6423,27 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
   const [generatedQuestions, setGeneratedQuestions] = useState<JobCopilotResult["interviewQuestions"]>(buildJobQuestions(form));
   const [copilotLoading, setCopilotLoading] = useState<null | "jd" | "questions">(null);
   const [copilotError, setCopilotError] = useState("");
+  const [saveError, setSaveError] = useState("");
   const [copied, setCopied] = useState(false);
   const [titlesCopied, setTitlesCopied] = useState(false);
   const interviewQuestions = generatedQuestions.length ? generatedQuestions : buildJobQuestions(form);
   const scoreWeightTotal = sumJobScoreWeights(form.scoreWeights);
   const scoreWeightValid = scoreWeightTotal === 100;
   const salaryRangeValid = isValidSalaryRangeValue(form.salaryRange);
+  const demandTypeValid = Boolean(form.demandType);
   const keywordsValid = splitKeywords(form.keywords).length > 0;
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!scoreWeightValid || !salaryRangeValid || !keywordsValid) return;
+    if (!scoreWeightValid || !salaryRangeValid || !demandTypeValid || !keywordsValid) return;
     const payload = { ...form, salaryRange: normalizeSalaryRangeValue(form.salaryRange) };
-    const next = job ? await api.updateJob(job.id, payload) : await api.createJob(payload);
-    onSaved(next);
+    setSaveError("");
+    try {
+      const next = job ? await api.updateJob(job.id, payload) : await api.createJob(payload);
+      onSaved(next);
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "职位保存失败");
+    }
   }
 
   async function optimize() {
@@ -6190,11 +6571,24 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
   };
 
   return (
-    <Modal title={job ? "编辑职位" : "新增职位"} className="modal-wide modal-job-editor" onClose={onClose} actions={<Button className="btn primary" type="submit" form="jobForm" disabled={!scoreWeightValid || !salaryRangeValid || !keywordsValid}>保存职位</Button>}>
+    <Modal title={job ? "编辑职位" : "新增职位"} className="modal-wide modal-job-editor" onClose={onClose} actions={<Button className="btn primary" type="submit" form="jobForm" disabled={!scoreWeightValid || !salaryRangeValid || !demandTypeValid || !keywordsValid}>保存职位</Button>}>
       <form id="jobForm" onSubmit={submit}>
         <div className="modal-body form-grid">
           <Input label="职位名称" value={form.title} onChange={(title) => setForm({ ...form, title })} />
           <Input label="所属部门" value={form.dept} onChange={(dept) => setForm({ ...form, dept })} />
+          <label className="form-field">
+            <span>需求类型</span>
+            <Select value={form.demandType} onChange={(event) => setForm((current) => ({ ...current, demandType: event.target.value as Job["demandType"] }))}>
+              <option value="" disabled>请选择需求类型</option>
+              {recruitmentDemandTypeOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+            </Select>
+          </label>
+          <HeadcountField
+            value={form.plannedHeadcount}
+            minimum={Math.max(1, minimumHeadcount)}
+            disabled={job?.status === "已关闭"}
+            onChange={(plannedHeadcount) => setForm((current) => ({ ...current, plannedHeadcount }))}
+          />
           <RegionCascaderField label="工作城市" value={form.location} onChange={(location) => setForm((current) => ({ ...current, location }))} />
           <label className="form-field">
             <span>经验要求</span>
@@ -6206,9 +6600,10 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
           <SalaryRangeField value={form.salaryRange} onChange={(salaryRange) => setForm((current) => ({ ...current, salaryRange }))} />
           <label className="form-field">
             <span>招聘状态</span>
-            <Select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as Job["status"] })}>
-              {["招聘中", "暂停", "已关闭"].map((status) => <option key={status}>{status}</option>)}
+            <Select disabled={job?.status === "已关闭"} value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as Job["status"] })}>
+              {(job?.status === "已关闭" ? ["已关闭"] : ["招聘中", "暂停"]).map((status) => <option key={status}>{status}</option>)}
             </Select>
+            {job?.status === "已关闭" ? <small>保存画像后，请在职位详情使用“重新招聘”开启新批次。</small> : null}
           </label>
           <JobKeywordField title={form.title} value={form.keywords} onChange={(keywords) => setForm((current) => ({ ...current, keywords }))} />
           <ScoreWeightPanel
@@ -6220,6 +6615,7 @@ function JobModal({ job, onClose, onSaved }: { job?: Job; onClose: () => void; o
             <span>职位描述</span>
             <TextArea required value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
           </label>
+          {saveError ? <div className="form-validation-error full">{saveError}</div> : null}
 
           <div className="job-tool-grid full">
             <section className="job-tool-card">
@@ -7140,6 +7536,20 @@ function TextArea({ className, value, onChange, placeholder, required, readOnly 
 }) {
   return <ArcoInput.TextArea className={className} value={value} onChange={(_, event) => onChange?.(event)} placeholder={placeholder} required={required} readOnly={readOnly} />;
 }
+function HeadcountField({ value, onChange, minimum = 1, disabled = false }: { value: number; onChange: (value: number) => void; minimum?: number; disabled?: boolean }) {
+  const update = (next: number) => onChange(Math.min(999, Math.max(minimum, Number.isFinite(next) ? Math.round(next) : minimum)));
+  return (
+    <label className="form-field headcount-field">
+      <span>计划 HC 人数</span>
+      <div className="headcount-stepper">
+        <Button type="button" aria-label="减少HC" title="减少HC" disabled={disabled || value <= minimum} onClick={() => update(value - 1)}><IconMinus /></Button>
+        <input aria-label="计划HC人数" type="number" min={minimum} max={999} required disabled={disabled} value={value} onChange={(event) => update(Number(event.target.value))} />
+        <Button type="button" aria-label="增加HC" title="增加HC" disabled={disabled || value >= 999} onClick={() => update(value + 1)}><IconPlus /></Button>
+      </div>
+      {disabled ? <small>已关闭批次的 HC 已冻结，重新招聘时可设置新 HC。</small> : minimum > 1 ? <small>当前已有 {minimum} 人入职，HC 不可低于该人数。</small> : <small>同一岗位多人需求直接调整 HC，无需重复建岗。</small>}
+    </label>
+  );
+}
 function Input({ label, value, onChange, full }: { label: string; value: string; onChange: (value: string) => void; full?: boolean }) { return <label className={`form-field ${full ? "full" : ""}`}><span>{label}</span><ArcoInput required value={value} onChange={onChange} /></label>; }
 function StatCard({ label, value, extra }: { label: string; value: React.ReactNode; extra: string }) { return <section className="card stat-card"><div className="stat-label">{label}</div><div className="stat-value">{value}</div><div className="stat-extra">{extra}</div></section>; }
 function Metric({ label, value }: { label: string; value: React.ReactNode }) { return <div className="salary-metric"><span>{label}</span><strong>{value}</strong></div>; }
@@ -7666,7 +8076,7 @@ function formatRealtimeVoiceCopy({
 function buildSalaryFilters(salaryData: SalaryData | null): SalaryFilters {
   return {
     role: salaryData?.filters.role || "前端开发工程师",
-    region: salaryData?.filters.region || "北京",
+    region: normalizeRegionToCity(salaryData?.filters.region || "北京"),
     experience: salaryData?.filters.experience || "3-5年",
     industry: normalizeBossIndustryName(salaryData?.filters.industry || "互联网"),
     education: salaryEducationOptions.includes((salaryData?.filters.education || "本科") as (typeof salaryEducationOptions)[number])
@@ -7684,6 +8094,10 @@ function downloadJobsExcel(jobs: Job[], statusFilter: Job["status"] | "全部") 
     "经验要求",
     "职位级别",
     "薪资范围",
+    "当前批次",
+    "招聘月份",
+    "需求类型",
+    "计划HC",
     "岗位关键词",
     "招聘状态",
     "简历数量",
@@ -7702,6 +8116,10 @@ function downloadJobsExcel(jobs: Job[], statusFilter: Job["status"] | "全部") 
     job.experience,
     job.level,
     job.salaryRange,
+    getCurrentRecruitmentBatch(job)?.label || "",
+    getCurrentRecruitmentBatch(job)?.targetMonth || "",
+    getCurrentRecruitmentBatch(job)?.demandType || "未分类",
+    String(getCurrentRecruitmentBatch(job)?.plannedHeadcount || job.plannedHeadcount),
     splitKeywords(job.keywords).join("、"),
     job.status,
     String(job.resumeCount),

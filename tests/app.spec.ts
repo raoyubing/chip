@@ -119,6 +119,20 @@ test("工作台时间筛选固定在右上角并作用于四个分区", async ({
   await expect(globalFilters).toContainText("统计月份");
   await expect(page.locator(".content-dashboard > .analytics-toolbar-card").filter({ hasText: "招聘周期复盘" })).toHaveCount(0);
 
+  await page.locator(".section-radio-tabs").getByText("流程复盘").click();
+  const channelFilter = page.locator(".analytics-channel-filter .arco-select");
+  await expect(channelFilter).toContainText("全部渠道");
+  const allChannelCards = page.locator(".analytics-channel-grid .analytics-channel-card");
+  const allChannelCount = await allChannelCards.count();
+  expect(allChannelCount).toBeGreaterThan(1);
+  const firstChannel = (await allChannelCards.first().locator(".analytics-channel-head > strong").textContent())?.trim() || "";
+  await selectArcoOption(page, channelFilter, firstChannel);
+  await expect(allChannelCards).toHaveCount(1);
+  await expect(allChannelCards.first().locator(".analytics-channel-head > strong")).toHaveText(firstChannel);
+  await expect(allChannelCards.first()).toContainText("offer");
+  await selectArcoOption(page, channelFilter, "全部渠道");
+  await expect(allChannelCards).toHaveCount(allChannelCount);
+
   for (const tabName of ["招聘概览", "职位分析", "流程复盘", "问题与行动"]) {
     await page.locator(".section-radio-tabs").getByText(tabName).click();
     await expect(globalFilters).toBeVisible();
@@ -148,6 +162,279 @@ test("职位池导出数据为 Excel 文件", async ({ page }) => {
   expect(content).toContain("职位池-招聘中");
   expect(content).toContain("职位名称");
   expect(content).toContain("薪资范围");
+  expect(content).toContain("需求类型");
+
+  await page.getByRole("button", { name: "新增职位" }).click();
+  const createJobDialog = page.getByRole("dialog", { name: "新增职位" });
+  await expect(createJobDialog).toBeVisible();
+  const demandTypeSelect = createJobDialog.locator(".form-field").filter({ hasText: "需求类型" }).locator(".arco-select");
+  await demandTypeSelect.locator(".arco-select-view").click();
+  const demandTypePopup = page.locator(".arco-select-popup:visible").last();
+  for (const demandType of ["离职替补", "计划内提前", "计划内新增", "计划外新增"]) {
+    await expect(demandTypePopup.locator(".arco-select-option").filter({ hasText: demandType })).toBeVisible();
+  }
+});
+
+test("关闭职位后重新招聘会创建新批次并隔离历史人选", async ({ page }) => {
+  test.setTimeout(120_000);
+  const initialState = await (await page.request.get("/api/state")).json();
+  const sourceCandidate = Object.values(initialState.candidates).flat()[0] as { id: string; name: string };
+  const title = `批次隔离测试岗位-${Date.now()}`;
+  const originalDescription = "用于验证同一职位重新招聘时，新旧候选人按招聘批次隔离。";
+  const nextBatchDescription = "第2批调整后的岗位画像，不应覆盖第1批的历史快照。";
+  const nextBatchKeywords = "战略升级、组织协同、经营分析";
+  const nextBatchScoreWeights = { experience: 20, professional: 25, stability: 10, education: 5, business: 40 };
+  let jobId: string | undefined;
+
+  try {
+    const createResponse = await page.request.post("/api/jobs", {
+      data: {
+        title,
+        dept: "批次测试部",
+        location: "北京市 / 北京市 / 朝阳区",
+        experience: "3-5年",
+        level: "经理",
+        salaryRange: "18k - 24k",
+        demandType: "离职替补",
+        plannedHeadcount: 3,
+        keywords: "批次管理、流程复盘",
+        scoreWeights: { experience: 30, professional: 30, stability: 15, education: 10, business: 15 },
+        description: originalDescription,
+        status: "招聘中",
+      },
+    });
+    expect(createResponse.ok(), await createResponse.text()).toBeTruthy();
+    const createdState = await createResponse.json();
+    const job = createdState.jobs.find((item: { title: string }) => item.title === title);
+    expect(job).toBeTruthy();
+    jobId = job.id;
+    expect(job.recruitmentBatches).toHaveLength(1);
+
+    const firstRecommendation = await page.request.post(`/api/candidates/${sourceCandidate.id}/recommend-to-job`, {
+      data: { jobId: job.id },
+    });
+    expect(firstRecommendation.ok(), await firstRecommendation.text()).toBeTruthy();
+    const firstState = await firstRecommendation.json();
+    const firstBatchCandidate = firstState.candidates[job.id][0];
+    expect(firstBatchCandidate.recruitmentBatchId).toBe(job.currentBatchId);
+    await page.request.post(`/api/candidates/${firstBatchCandidate.id}/mark-interview`, { data: {} });
+
+    const closeResponse = await page.request.post(`/api/jobs/${job.id}/close`, { data: {} });
+    expect(closeResponse.ok(), await closeResponse.text()).toBeTruthy();
+    const closedState = await closeResponse.json();
+    const closedJob = closedState.jobs.find((item: { id: string }) => item.id === job.id);
+    const updateResponse = await page.request.put(`/api/jobs/${job.id}`, {
+      data: {
+        title: closedJob.title,
+        dept: closedJob.dept,
+        location: closedJob.location,
+        experience: closedJob.experience,
+        level: closedJob.level,
+        salaryRange: closedJob.salaryRange,
+        demandType: closedJob.demandType,
+        plannedHeadcount: closedJob.plannedHeadcount,
+        keywords: nextBatchKeywords,
+        scoreWeights: nextBatchScoreWeights,
+        description: nextBatchDescription,
+        status: "已关闭",
+      },
+    });
+    expect(updateResponse.ok(), await updateResponse.text()).toBeTruthy();
+
+    await page.goto("/");
+    await page.getByRole("button", { name: /职位管理/ }).click();
+    await page.locator(".filter-tab").filter({ hasText: "已关闭" }).click();
+    await page.locator(".job-card").filter({ hasText: title }).click();
+    await page.getByRole("button", { name: "重新招聘" }).click();
+
+    const reopenModal = page.getByRole("dialog", { name: "重新招聘" });
+    await expect(reopenModal).toBeVisible();
+    await reopenModal.getByPlaceholder("2026年07月").fill("2026年08月");
+    await selectArcoOption(page, reopenModal.locator(".form-field").filter({ hasText: "需求类型" }).locator(".arco-select"), "计划外新增");
+    await reopenModal.getByLabel("计划HC人数").fill("2");
+    await reopenModal.getByRole("button", { name: "开启新批次" }).click();
+    await expect(reopenModal).toBeHidden();
+    await page.locator(".filter-tab").filter({ hasText: "招聘中" }).click();
+    const reopenedJobCard = page.locator(".job-card").filter({ hasText: title });
+    await expect(reopenedJobCard).toContainText("第2批");
+    await expect(reopenedJobCard).toContainText("2026年08月");
+
+    const secondRecommendation = await page.request.post(`/api/candidates/${sourceCandidate.id}/recommend-to-job`, {
+      data: { jobId: job.id },
+    });
+    expect(secondRecommendation.ok(), await secondRecommendation.text()).toBeTruthy();
+    const secondState = await secondRecommendation.json();
+    const reopenedJob = secondState.jobs.find((item: { id: string }) => item.id === job.id);
+    const jobCandidates = secondState.candidates[job.id];
+    expect(reopenedJob.recruitmentBatches).toHaveLength(2);
+    expect(reopenedJob.recruitmentBatches[0].demandType).toBe("离职替补");
+    expect(reopenedJob.recruitmentBatches[1].demandType).toBe("计划外新增");
+    expect(reopenedJob.recruitmentBatches[0].plannedHeadcount).toBe(3);
+    expect(reopenedJob.recruitmentBatches[1].plannedHeadcount).toBe(2);
+    expect(reopenedJob.plannedHeadcount).toBe(2);
+    expect(reopenedJob.demandType).toBe("计划外新增");
+    expect(reopenedJob.recruitmentBatches[0].profileSnapshot.description).toBe(originalDescription);
+    expect(reopenedJob.recruitmentBatches[1].profileSnapshot.description).toBe(nextBatchDescription);
+    expect(reopenedJob.recruitmentBatches[1].profileSnapshot.keywords).toBe(nextBatchKeywords);
+    expect(jobCandidates).toHaveLength(2);
+    const historicalCandidate = jobCandidates.find((candidate: { recruitmentBatchId: string }) => candidate.recruitmentBatchId === reopenedJob.recruitmentBatches[0].id);
+    const currentBatchCandidates = jobCandidates.filter((candidate: { recruitmentBatchId: string }) => candidate.recruitmentBatchId === reopenedJob.currentBatchId);
+    const currentBatchCandidate = currentBatchCandidates[0];
+    expect(currentBatchCandidates).toHaveLength(1);
+    expect(currentBatchCandidate.id).not.toBe(historicalCandidate.id);
+    expect(currentBatchCandidate.reportMonth).toBe("2026年08月");
+    expect(currentBatchCandidate.conclusion).toBe("待筛选");
+    expect(currentBatchCandidate.keyPointAnalysis.some((item: { keyword: string }) => item.keyword === "战略升级")).toBeTruthy();
+    expect(Object.fromEntries(currentBatchCandidate.evaluation.scoreDimensions.map((item: { key: string; weight: number }) => [item.key, item.weight]))).toEqual(nextBatchScoreWeights);
+
+    const duplicateRecommendation = await page.request.post(`/api/candidates/${sourceCandidate.id}/recommend-to-job`, {
+      data: { jobId: job.id },
+    });
+    expect(duplicateRecommendation.ok(), await duplicateRecommendation.text()).toBeTruthy();
+    const duplicateState = await duplicateRecommendation.json();
+    expect(duplicateState.candidates[job.id]).toHaveLength(2);
+
+    await page.request.post("/api/current-job", { data: { jobId: job.id } });
+    await page.reload();
+    await page.getByRole("button", { name: /简历甄选/ }).click();
+    await expect(page.locator(".candidate-list .candidate-card")).toHaveCount(1);
+    await expect(page.locator(".candidate-list .candidate-card")).toContainText(sourceCandidate.name);
+
+    await page.getByRole("button", { name: /面试管理/ }).click();
+    await selectArcoOption(page, page.locator(".interview-filter-field .arco-select").nth(0), title);
+    await expect(page.locator(".interview-table tbody tr")).toHaveCount(0);
+    await selectArcoOption(page, page.locator(".interview-filter-field .arco-select").nth(1), "第1批");
+    await expect(page.locator(".interview-table tbody tr").filter({ hasText: sourceCandidate.name })).toBeVisible();
+  } finally {
+    await page.request.post("/api/current-job", { data: { jobId: "job_001" } });
+    if (jobId) await page.request.delete(`/api/jobs/${jobId}`);
+  }
+});
+
+test("同一招聘批次支持多HC并限制超额入职，工作台按批次月份汇总", async ({ page }) => {
+  test.setTimeout(60_000);
+  const initialState = await (await page.request.get("/api/state")).json();
+  const sourceCandidates = Object.values(initialState.candidates).flat().slice(0, 3) as Array<{ id: string }>;
+  const title = `多HC测试岗位-${Date.now()}`;
+  let jobId = "";
+
+  try {
+    const createResponse = await page.request.post("/api/jobs", {
+      data: {
+        title,
+        dept: "HC测试部",
+        location: "北京市 / 北京市 / 朝阳区",
+        experience: "3-5年",
+        level: "经理",
+        salaryRange: "20k - 30k",
+        demandType: "计划内新增",
+        plannedHeadcount: 2,
+        keywords: "HC管理、招聘交付",
+        scoreWeights: { experience: 30, professional: 30, stability: 15, education: 10, business: 15 },
+        description: "用于验证同一招聘批次的多HC完成、增减与月度汇总。",
+        status: "招聘中",
+      },
+    });
+    expect(createResponse.ok(), await createResponse.text()).toBeTruthy();
+    const createdState = await createResponse.json();
+    const job = createdState.jobs.find((item: { title: string }) => item.title === title);
+    jobId = job.id;
+    expect(job.location).toBe("北京市");
+    expect(job.plannedHeadcount).toBe(2);
+    expect(job.recruitmentBatches[0].plannedHeadcount).toBe(2);
+
+    for (const sourceCandidate of sourceCandidates) {
+      const response = await page.request.post(`/api/candidates/${sourceCandidate.id}/recommend-to-job`, { data: { jobId } });
+      expect(response.ok(), await response.text()).toBeTruthy();
+    }
+    const targetCandidates = (await (await page.request.get("/api/state")).json()).candidates[jobId] as Array<{ id: string }>;
+    expect(targetCandidates).toHaveLength(3);
+
+    const onboard = (candidateId: string) => page.request.patch(`/api/candidates/${candidateId}/interview-stage`, {
+      data: {
+        interviewStage: "offer",
+        stageRecommendation: "是",
+        interviewResult: "通过",
+        onboarded: "是",
+        reportMonth: job.recruitmentBatches[0].targetMonth,
+        interviewReason: "HC自动化验证",
+        reasonTags: [],
+        interviewTimeline: { onboardedAt: "2026-07-31" },
+      },
+    });
+
+    expect((await onboard(targetCandidates[0].id)).ok()).toBeTruthy();
+    expect((await onboard(targetCandidates[1].id)).ok()).toBeTruthy();
+    const overCapacityResponse = await onboard(targetCandidates[2].id);
+    expect(overCapacityResponse.status()).toBe(400);
+    expect(await overCapacityResponse.text()).toContain("已全部完成");
+
+    const currentState = await (await page.request.get("/api/state")).json();
+    const currentJob = currentState.jobs.find((item: { id: string }) => item.id === jobId);
+    const reduceResponse = await page.request.put(`/api/jobs/${jobId}`, {
+      data: {
+        title: currentJob.title,
+        dept: currentJob.dept,
+        location: currentJob.location,
+        experience: currentJob.experience,
+        level: currentJob.level,
+        salaryRange: currentJob.salaryRange,
+        demandType: currentJob.demandType,
+        plannedHeadcount: 1,
+        keywords: currentJob.keywords,
+        scoreWeights: currentJob.scoreWeights,
+        description: currentJob.description,
+        status: currentJob.status,
+      },
+    });
+    expect(reduceResponse.status()).toBe(400);
+    expect(await reduceResponse.text()).toContain("不能低于已完成人数");
+
+    const increaseResponse = await page.request.put(`/api/jobs/${jobId}`, {
+      data: {
+        title: currentJob.title,
+        dept: currentJob.dept,
+        location: currentJob.location,
+        experience: currentJob.experience,
+        level: currentJob.level,
+        salaryRange: currentJob.salaryRange,
+        demandType: currentJob.demandType,
+        plannedHeadcount: 3,
+        keywords: currentJob.keywords,
+        scoreWeights: currentJob.scoreWeights,
+        description: currentJob.description,
+        status: currentJob.status,
+      },
+    });
+    expect(increaseResponse.ok(), await increaseResponse.text()).toBeTruthy();
+    expect((await onboard(targetCandidates[2].id)).ok()).toBeTruthy();
+
+    const finalState = await (await page.request.get("/api/state")).json();
+    const targetMonth = job.recruitmentBatches[0].targetMonth;
+    const matchingBatches = finalState.jobs.flatMap((item: { id: string; recruitmentBatches: Array<{ id: string; targetMonth: string; plannedHeadcount: number }> }) =>
+      item.recruitmentBatches.filter((batch) => batch.targetMonth === targetMonth).map((batch) => ({ ...batch, jobId: item.id })),
+    );
+    const expectedPlanned = matchingBatches.reduce((sum: number, batch: { plannedHeadcount: number }) => sum + batch.plannedHeadcount, 0);
+    const expectedCompleted = matchingBatches.reduce((sum: number, batch: { id: string; jobId: string }) => sum + (finalState.candidates[batch.jobId] || []).filter((candidate: { recruitmentBatchId: string; onboarded: string }) => candidate.recruitmentBatchId === batch.id && candidate.onboarded === "是").length, 0);
+
+    await page.goto("/");
+    await selectArcoOption(page, page.locator(".dashboard-global-filters .arco-select"), targetMonth);
+    await expect(page.locator(".dashboard-summary-card").filter({ hasText: "计划 HC" }).locator(".dashboard-summary-value")).toHaveText(String(expectedPlanned));
+    await expect(page.locator(".dashboard-summary-card").filter({ hasText: "已完成 HC" }).locator(".dashboard-summary-value")).toHaveText(String(expectedCompleted));
+
+    await page.locator(".section-radio-tabs").getByText("流程复盘").click();
+    const departmentRow = page.locator('.department-hc-table tbody tr[data-department="HC测试部"]');
+    await expect(departmentRow).toBeVisible();
+    await expect(departmentRow.locator('td[data-column="计划 HC"]')).toHaveText("3");
+    await expect(departmentRow.locator('td[data-column="计划内新增"]')).toHaveText("3");
+    await expect(departmentRow.locator('td[data-column="复试通过"]')).toHaveText("3");
+    await expect(departmentRow.locator('td[data-column="已入职"]')).toHaveText("3");
+    await expect(departmentRow.locator('td[data-column="剩余 HC"]')).toHaveText("0");
+    await expect(departmentRow.locator('td[data-column="完成率"]')).toContainText("100%");
+  } finally {
+    await page.request.post("/api/current-job", { data: { jobId: "job_001" } });
+    if (jobId) await page.request.delete(`/api/jobs/${jobId}`);
+  }
 });
 
 test("小松鼠主流程无控制台错误，并可标记面试进入初试", async ({ page }) => {
@@ -183,7 +470,7 @@ test("小松鼠主流程无控制台错误，并可标记面试进入初试", as
   await expect(page.locator(".stage-filter.active").filter({ hasText: "复试" })).toBeVisible();
   await selectArcoOption(page, page.locator(".interview-filter-field .arco-select").nth(0), "全部");
   await expect(page.getByRole("columnheader", { name: "岗位" })).toBeVisible();
-  await selectArcoOption(page, page.locator(".interview-filter-field .arco-select").nth(1), "2026年07月");
+  await selectArcoOption(page, page.locator(".interview-filter-field .arco-select").nth(2), "2026年07月");
   await expect(page.locator(".month-input").first()).toHaveValue("2026年07月");
 
   await selectArcoOption(page, page.locator(".recommendation-select").first(), "通过");
@@ -801,8 +1088,8 @@ test("批量简历上传仅允许 PDF、DOC、DOCX，并用解析结果生成多
   await expect(page.locator(".candidate-list .candidate-card")).toHaveCount(2);
 });
 
-test("薪酬调研和职位管理支持省市区列式级联选择与任意层级搜索，职位薪资经验和关键词使用标准选项", async ({ page }) => {
-  test.setTimeout(45_000);
+test("薪酬调研和职位管理统一使用省市两级地区，职位薪资经验和关键词使用标准选项", async ({ page }) => {
+  test.setTimeout(75_000);
   const consoleErrors: string[] = [];
   const failedRequests: string[] = [];
   const experienceOptions = ["无经验", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"];
@@ -879,24 +1166,31 @@ test("薪酬调研和职位管理支持省市区列式级联选择与任意层�
   });
 
   await page.goto("/");
+  const regionDirectoryResponse = await page.request.get("/api/regions");
+  expect(regionDirectoryResponse.ok(), await regionDirectoryResponse.text()).toBeTruthy();
+  const regionDirectory = await regionDirectoryResponse.json() as { regions: Array<{ level: string; children: Array<{ level: string; children: unknown[] }> }> };
+  expect(regionDirectory.regions.every((province) => province.level === "province" && province.children.every((city) => city.level === "city" && city.children.length === 0))).toBeTruthy();
+
   await page.getByRole("button", { name: /薪酬调研/ }).click();
   await expect(page.getByRole("heading", { name: "薪酬调研", exact: true, level: 2 })).toBeVisible();
 
   const salaryRegion = page.locator(".salary-region-switcher .region-cascader");
   await expectArcoCascaderSearchCanFind(page, salaryRegion, "广东", /广东省/);
   await expectArcoCascaderSearchCanFind(page, salaryRegion, "深圳", /广东省.*深圳市/);
-  await expectArcoCascaderSearchCanFind(page, salaryRegion, "南山", /广东省.*深圳市.*南山区/);
-  await selectArcoCascaderByPath(page, salaryRegion, ["广东省", "深圳市", "南山区"]);
-  await expect(salaryRegion).toContainText("南山区");
+  await selectArcoCascaderByPath(page, salaryRegion, ["广东省", "深圳市"]);
+  await expect(salaryRegion).toContainText("广东省 / 深圳市");
+  await expect(salaryRegion).not.toContainText("南山区");
   const salaryResearchResponse = page.waitForResponse((response) =>
     response.url().includes("/api/salary/research") && response.request().method() === "POST",
   );
   await page.getByRole("button", { name: /生成薪酬大盘|刷新薪酬大盘/ }).click();
   await expect(page.getByRole("button", { name: "刷新中..." })).toBeVisible();
-  await expect(salaryRegion).toContainText("南山区");
+  await expect(salaryRegion).toContainText("深圳市");
   finishSalaryResearch();
-  await expect((await salaryResearchResponse).ok()).toBeTruthy();
-  await expect(salaryRegion).toContainText("南山区");
+  const completedSalaryResearchResponse = await salaryResearchResponse;
+  await expect(completedSalaryResearchResponse.ok()).toBeTruthy();
+  expect((completedSalaryResearchResponse.request().postDataJSON() as { region: string }).region).toBe("广东省 / 深圳市");
+  await expect(salaryRegion).toContainText("深圳市");
 
   await page.getByRole("button", { name: /职位管理/ }).click();
   await expect(page.getByRole("heading", { name: "职位管理", exact: true, level: 2 })).toBeVisible();
@@ -906,8 +1200,8 @@ test("薪酬调研和职位管理支持省市区列式级联选择与任意层�
   await expect(modal).toBeVisible();
   await modal.getByRole("textbox", { name: "职位名称" }).fill("前端薪资测试岗位");
   const jobRegion = modal.locator(".region-cascader-field .region-cascader");
-  await selectArcoCascaderByPath(page, jobRegion, ["广东省", "深圳市", "南山区"]);
-  await expect(jobRegion).toContainText("南山区");
+  await selectArcoCascaderByPath(page, jobRegion, ["广东省", "深圳市"]);
+  await expect(jobRegion).toContainText("广东省 / 深圳市");
 
   const salaryField = modal.locator(".form-field").filter({ hasText: "薪资范围" });
   await salaryField.locator(".arco-select-view").click();
@@ -954,11 +1248,13 @@ test("薪酬调研和职位管理支持省市区列式级联选择与任意层�
   await modal.getByRole("textbox", { name: "所属部门" }).fill("测试部门");
   await modal.getByRole("textbox", { name: "职位级别" }).fill("P6");
   await modal.getByRole("textbox", { name: "职位描述" }).fill("负责薪资范围控件测试，验证常规选项与自定义数字区间。");
+  await selectArcoOption(page, modal.locator(".form-field").filter({ hasText: "需求类型" }).locator(".arco-select"), "计划内新增");
   await expect(page.getByRole("button", { name: "保存职位" })).toBeEnabled();
   await page.getByRole("button", { name: "保存职位" }).click();
   const createdJobCard = page.locator(".job-card").filter({ hasText: "前端薪资测试岗位" });
   await expect(createdJobCard).toBeVisible();
   await expect(createdJobCard).toContainText("18k - 26k");
+  await expect(createdJobCard).toContainText("计划内新增");
 
   expect(failedRequests, failedRequests.join("\n")).toEqual([]);
   expect(consoleErrors, consoleErrors.join("\n")).toEqual([]);

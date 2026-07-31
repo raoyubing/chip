@@ -6,6 +6,8 @@ export declare namespace SchemaDTO {
   export type RegionNode = Shared.RegionNode;
   export type SalaryData = Shared.SalaryData;
   export type Job = Shared.Job;
+  export type RecruitmentDemandType = Shared.RecruitmentDemandType;
+  export type RecruitmentBatch = Shared.RecruitmentBatch;
   export type CandidateTimeline = Shared.CandidateTimeline;
   export type CandidateEvaluation = Shared.CandidateEvaluation;
   export type InterviewMethodKey = Shared.InterviewMethodKey;

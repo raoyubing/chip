@@ -1,7 +1,7 @@
 import type { AppState, Candidate, Job } from "./types.js";
 
 const jobs: Job[] = [
-  {
+  demoJob({
     id: "job_001",
     title: "HRBP",
     dept: "人力行政中心",
@@ -9,6 +9,8 @@ const jobs: Job[] = [
     experience: "3-5年",
     level: "经理",
     salaryRange: "25-35k",
+    demandType: "离职替补",
+    plannedHeadcount: 2,
     keywords: "绩效、团队搭建、人才发展",
     scoreWeights: { experience: 25, professional: 25, stability: 15, education: 10, business: 25 },
     description: "深入理解公司业务，作为业务团队战略伙伴提供组织诊断、人才盘点、绩效推动与管理者赋能支持，牵引关键岗位招聘与团队搭建。",
@@ -16,8 +18,8 @@ const jobs: Job[] = [
     resumeCount: 5,
     salaryData: null,
     sortOrder: 1,
-  },
-  {
+  }),
+  demoJob({
     id: "job_002",
     title: "前端开发工程师",
     dept: "数字化产品部",
@@ -25,6 +27,8 @@ const jobs: Job[] = [
     experience: "3-5年",
     level: "高级专员",
     salaryRange: "28-45k",
+    demandType: "计划内新增",
+    plannedHeadcount: 3,
     keywords: "Vue、数据可视化、工程化、组件库",
     scoreWeights: { experience: 30, professional: 40, stability: 10, education: 10, business: 10 },
     description: "负责企业级后台产品前端架构与核心页面开发，沉淀通用组件与可视化能力，持续优化性能、可维护性与用户体验。",
@@ -32,8 +36,8 @@ const jobs: Job[] = [
     resumeCount: 4,
     salaryData: null,
     sortOrder: 2,
-  },
-  {
+  }),
+  demoJob({
     id: "job_003",
     title: "招聘运营专员",
     dept: "人力行政中心",
@@ -41,6 +45,8 @@ const jobs: Job[] = [
     experience: "1-3年",
     level: "专员",
     salaryRange: "12-18k",
+    demandType: "计划内提前",
+    plannedHeadcount: 1,
     keywords: "渠道运营、候选人体验、数据分析",
     scoreWeights: { experience: 20, professional: 30, stability: 15, education: 15, business: 20 },
     description: "负责招聘渠道维护、候选人流程跟进与招聘数据看板更新，协助提升交付效率和候选人体验。",
@@ -48,8 +54,37 @@ const jobs: Job[] = [
     resumeCount: 3,
     salaryData: null,
     sortOrder: 3,
-  },
+  }),
 ];
+
+function demoJob(job: Omit<Job, "currentBatchId" | "recruitmentBatches">): Job {
+  const currentBatchId = `${job.id}_batch_1`;
+  return {
+    ...job,
+    currentBatchId,
+    recruitmentBatches: [{
+      id: currentBatchId,
+      sequence: 1,
+      label: "第1批",
+      targetMonth: "2026年06月",
+      demandType: job.demandType,
+      plannedHeadcount: job.plannedHeadcount,
+      status: job.status,
+      startedAt: "2026-06-01T00:00:00.000Z",
+      profileSnapshot: {
+        title: job.title,
+        dept: job.dept,
+        location: job.location,
+        experience: job.experience,
+        level: job.level,
+        salaryRange: job.salaryRange,
+        keywords: job.keywords,
+        scoreWeights: job.scoreWeights,
+        description: job.description,
+      },
+    }],
+  };
+}
 
 const candidates: Record<string, Candidate[]> = {
   job_001: [
@@ -95,6 +130,7 @@ function candidate(
   return {
     id,
     jobId,
+    recruitmentBatchId: `${jobId}_batch_1`,
     name,
     source,
     score,

@@ -42,6 +42,7 @@ export function createCandidate(input: {
   return {
     id: input.id,
     jobId: input.job.id,
+    recruitmentBatchId: input.job.currentBatchId,
     name: input.name,
     source: input.source,
     score: result.score,

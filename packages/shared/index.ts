@@ -17,6 +17,13 @@ export interface RegionNode {
   children: RegionNode[];
 }
 
+export function normalizeRegionToCity(value: string) {
+  const segments = value.split(/\s*[\/／,，、]\s*/).map((item) => item.trim()).filter(Boolean).slice(0, 2);
+  if (segments.length < 2) return segments[0] || value.trim();
+  const normalizeName = (name: string) => name.replace(/特别行政区$|维吾尔自治区$|壮族自治区$|回族自治区$|自治区$|省$|市$/g, "");
+  return normalizeName(segments[0]) === normalizeName(segments[1]) ? segments[1] : segments.join(" / ");
+}
+
 // BOSS 直聘「公司行业」筛选，2026-07-12 从已登录职位搜索页读取。
 // 页面只允许选择二级行业，因此前端也只提交这些可被 BOSS 识别的名称。
 export const bossIndustryGroups = [
@@ -173,8 +180,9 @@ export interface JobScoreWeights {
   business: number;
 }
 
-export interface Job {
-  id: string;
+export type RecruitmentDemandType = "离职替补" | "计划内提前" | "计划内新增" | "计划外新增";
+
+export interface JobProfileSnapshot {
   title: string;
   dept: string;
   location: string;
@@ -184,7 +192,37 @@ export interface Job {
   keywords: string;
   scoreWeights: JobScoreWeights;
   description: string;
+}
+
+export interface RecruitmentBatch {
+  id: string;
+  sequence: number;
+  label: string;
+  targetMonth: string;
+  demandType: RecruitmentDemandType | "";
+  plannedHeadcount: number;
   status: JobStatus;
+  startedAt: string;
+  closedAt?: string;
+  profileSnapshot: JobProfileSnapshot;
+}
+
+export interface Job {
+  id: string;
+  title: string;
+  dept: string;
+  location: string;
+  experience: string;
+  level: string;
+  salaryRange: string;
+  demandType: RecruitmentDemandType | "";
+  plannedHeadcount: number;
+  keywords: string;
+  scoreWeights: JobScoreWeights;
+  description: string;
+  status: JobStatus;
+  currentBatchId: string;
+  recruitmentBatches: RecruitmentBatch[];
   resumeCount: number;
   salaryData: SalaryData | null;
   sortOrder: number;
@@ -261,6 +299,7 @@ export interface CandidateInterviewPlan {
 export interface Candidate {
   id: string;
   jobId: string;
+  recruitmentBatchId?: string;
   name: string;
   source: string;
   score: number;

@@ -18,6 +18,7 @@ export const jobApi = {
   generateJobCopilot: (payload: JobCopilotPayload) =>
     request<ResponseDTO.JobCopilot>("/api/job-copilot", { method: "POST", body: JSON.stringify(payload) }),
   closeJob: (id: string) => request<ResponseDTO.MutateState>(`/api/jobs/${id}/close`, { method: "POST" }),
+  reopenJob: (id: string, targetMonth: string, demandType: RequestDTO.ReopenJob["demandType"], plannedHeadcount: number) => request<ResponseDTO.MutateState>(`/api/jobs/${id}/reopen`, { method: "POST", body: JSON.stringify({ targetMonth, demandType, plannedHeadcount } satisfies RequestDTO.ReopenJob) }),
   deleteJob: (id: string) => request<ResponseDTO.MutateState>(`/api/jobs/${id}`, { method: "DELETE" }),
   parseResumes: (payload: ResumeParsePayload) =>
     request<ResponseDTO.ParseResumes>("/api/resumes/parse", { method: "POST", body: JSON.stringify(payload) }),
