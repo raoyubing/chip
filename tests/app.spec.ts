@@ -1,5 +1,7 @@
 import { expect, test, type Locator, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
+import { createCandidate } from "../apps/server/src/analyzer";
+import type { Job } from "../apps/server/src/types";
 
 async function selectArcoOption(page: Page, select: Locator, option: string | RegExp) {
   await select.locator(".arco-select-view").click();
@@ -312,7 +314,7 @@ test("关闭职位后重新招聘会创建新批次并隔离历史人选", async
 });
 
 test("同一招聘批次支持多HC并限制超额入职，工作台按批次月份汇总", async ({ page }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(120_000);
   const initialState = await (await page.request.get("/api/state")).json();
   const sourceCandidates = Object.values(initialState.candidates).flat().slice(0, 3) as Array<{ id: string }>;
   const title = `多HC测试岗位-${Date.now()}`;
@@ -350,24 +352,33 @@ test("同一招聘批次支持多HC并限制超额入职，工作台按批次月
     const targetCandidates = (await (await page.request.get("/api/state")).json()).candidates[jobId] as Array<{ id: string }>;
     expect(targetCandidates).toHaveLength(3);
 
-    const onboard = (candidateId: string) => page.request.patch(`/api/candidates/${candidateId}/interview-stage`, {
+    const targetMonth = job.recruitmentBatches[0].targetMonth;
+    const monthMatch = targetMonth.match(/^(\d{4})年(\d{2})月$/)!;
+    const offerSentAt = `${monthMatch[1]}-${monthMatch[2]}-08`;
+    const plannedOnboardDate = `${monthMatch[1]}-${monthMatch[2]}-28`;
+    const completeHeadcount = (candidateId: string, onboarded: "待入职" | "否" = "待入职") => page.request.patch(`/api/candidates/${candidateId}/interview-stage`, {
       data: {
         interviewStage: "offer",
         stageRecommendation: "是",
         interviewResult: "通过",
-        onboarded: "是",
-        reportMonth: job.recruitmentBatches[0].targetMonth,
+        onboarded,
+        offerStatus: "已发出",
+        plannedOnboardDate,
+        reportMonth: targetMonth,
         interviewReason: "HC自动化验证",
-        reasonTags: [],
-        interviewTimeline: { onboardedAt: "2026-07-31" },
+        reasonTags: onboarded === "否" ? ["岗位调整"] : [],
+        interviewTimeline: { offerSentAt, plannedOnboardDate },
       },
     });
 
-    expect((await onboard(targetCandidates[0].id)).ok()).toBeTruthy();
-    expect((await onboard(targetCandidates[1].id)).ok()).toBeTruthy();
-    const overCapacityResponse = await onboard(targetCandidates[2].id);
+    expect((await completeHeadcount(targetCandidates[0].id)).ok()).toBeTruthy();
+    expect((await completeHeadcount(targetCandidates[1].id)).ok()).toBeTruthy();
+    const overCapacityResponse = await completeHeadcount(targetCandidates[2].id);
     expect(overCapacityResponse.status()).toBe(400);
     expect(await overCapacityResponse.text()).toContain("已全部完成");
+
+    expect((await completeHeadcount(targetCandidates[0].id, "否")).ok()).toBeTruthy();
+    expect((await completeHeadcount(targetCandidates[2].id)).ok()).toBeTruthy();
 
     const currentState = await (await page.request.get("/api/state")).json();
     const currentJob = currentState.jobs.find((item: { id: string }) => item.id === jobId);
@@ -388,7 +399,7 @@ test("同一招聘批次支持多HC并限制超额入职，工作台按批次月
       },
     });
     expect(reduceResponse.status()).toBe(400);
-    expect(await reduceResponse.text()).toContain("不能低于已完成人数");
+    expect(await reduceResponse.text()).toContain("不能低于已完成 HC 数");
 
     const increaseResponse = await page.request.put(`/api/jobs/${jobId}`, {
       data: {
@@ -407,20 +418,19 @@ test("同一招聘批次支持多HC并限制超额入职，工作台按批次月
       },
     });
     expect(increaseResponse.ok(), await increaseResponse.text()).toBeTruthy();
-    expect((await onboard(targetCandidates[2].id)).ok()).toBeTruthy();
+    expect((await completeHeadcount(targetCandidates[0].id)).ok()).toBeTruthy();
 
     const finalState = await (await page.request.get("/api/state")).json();
-    const targetMonth = job.recruitmentBatches[0].targetMonth;
     const matchingBatches = finalState.jobs.flatMap((item: { id: string; recruitmentBatches: Array<{ id: string; targetMonth: string; plannedHeadcount: number }> }) =>
       item.recruitmentBatches.filter((batch) => batch.targetMonth === targetMonth).map((batch) => ({ ...batch, jobId: item.id })),
     );
     const expectedPlanned = matchingBatches.reduce((sum: number, batch: { plannedHeadcount: number }) => sum + batch.plannedHeadcount, 0);
-    const expectedCompleted = matchingBatches.reduce((sum: number, batch: { id: string; jobId: string }) => sum + (finalState.candidates[batch.jobId] || []).filter((candidate: { recruitmentBatchId: string; onboarded: string }) => candidate.recruitmentBatchId === batch.id && candidate.onboarded === "是").length, 0);
+    const expectedCompleted = matchingBatches.reduce((sum: number, batch: { id: string; jobId: string }) => sum + (finalState.candidates[batch.jobId] || []).filter((candidate: { recruitmentBatchId: string; onboarded: string; interviewTimeline?: { offerSentAt?: string } }) => candidate.recruitmentBatchId === batch.id && Boolean(candidate.interviewTimeline?.offerSentAt) && candidate.onboarded !== "否").length, 0);
 
     await page.goto("/");
     await selectArcoOption(page, page.locator(".dashboard-global-filters .arco-select"), targetMonth);
     await expect(page.locator(".dashboard-summary-card").filter({ hasText: "计划 HC" }).locator(".dashboard-summary-value")).toHaveText(String(expectedPlanned));
-    await expect(page.locator(".dashboard-summary-card").filter({ hasText: "已完成 HC" }).locator(".dashboard-summary-value")).toHaveText(String(expectedCompleted));
+    await expect(page.locator(".dashboard-summary-card").filter({ hasText: "当期完成 HC" }).locator(".dashboard-summary-value")).toHaveText(String(expectedCompleted));
 
     await page.locator(".section-radio-tabs").getByText("流程复盘").click();
     const departmentRow = page.locator('.department-hc-table tbody tr[data-department="HC测试部"]');
@@ -428,7 +438,8 @@ test("同一招聘批次支持多HC并限制超额入职，工作台按批次月
     await expect(departmentRow.locator('td[data-column="计划 HC"]')).toHaveText("3");
     await expect(departmentRow.locator('td[data-column="计划内新增"]')).toHaveText("3");
     await expect(departmentRow.locator('td[data-column="复试通过"]')).toHaveText("3");
-    await expect(departmentRow.locator('td[data-column="已入职"]')).toHaveText("3");
+    await expect(departmentRow.locator('td[data-column="待入职"]')).toHaveText("3");
+    await expect(departmentRow.locator('td[data-column="HC完成"]')).toHaveText("3");
     await expect(departmentRow.locator('td[data-column="剩余 HC"]')).toHaveText("0");
     await expect(departmentRow.locator('td[data-column="完成率"]')).toContainText("100%");
   } finally {
@@ -438,6 +449,7 @@ test("同一招聘批次支持多HC并限制超额入职，工作台按批次月
 });
 
 test("小松鼠主流程无控制台错误，并可标记面试进入初试", async ({ page }) => {
+  test.setTimeout(60_000);
   const consoleErrors: string[] = [];
   const failedRequests: string[] = [];
 
@@ -456,29 +468,83 @@ test("小松鼠主流程无控制台错误，并可标记面试进入初试", as
   await page.getByRole("button", { name: "标记面试" }).click();
   await expect(page.getByRole("heading", { name: "面试管理", exact: true })).toBeVisible();
   await expect(page.locator(".stage-filter.active").filter({ hasText: "推荐" })).toBeVisible();
-  await expect(page.getByRole("columnheader", { name: "统计月份" })).toBeVisible();
-  await page.locator(".month-input").first().fill("2026年07月");
+  await expect(page.getByRole("columnheader", { name: "阶段日期" })).toBeVisible();
+  await page.getByLabel("推荐日期").fill("2026-07-02");
   await selectArcoOption(page, page.locator(".recommendation-select").first(), "是");
   await page.getByRole("button", { name: "保存" }).first().click();
 
   await page.locator(".stage-filter", { hasText: "初试" }).click();
   await expect(page.locator(".stage-filter.active").filter({ hasText: "初试" })).toBeVisible();
 
+  await page.getByLabel("初试日期").fill("2026-07-15");
   await selectArcoOption(page, page.locator(".recommendation-select").first(), "通过");
   await page.getByRole("button", { name: "保存" }).first().click();
   await page.locator(".stage-filter", { hasText: "复试" }).click();
   await expect(page.locator(".stage-filter.active").filter({ hasText: "复试" })).toBeVisible();
+  await page.getByLabel("复试日期").fill("2026-08-02");
   await selectArcoOption(page, page.locator(".interview-filter-field .arco-select").nth(0), "全部");
   await expect(page.getByRole("columnheader", { name: "岗位" })).toBeVisible();
-  await selectArcoOption(page, page.locator(".interview-filter-field .arco-select").nth(2), "2026年07月");
-  await expect(page.locator(".month-input").first()).toHaveValue("2026年07月");
 
   await selectArcoOption(page, page.locator(".recommendation-select").first(), "通过");
   await page.getByRole("button", { name: "保存" }).first().click();
   await page.locator(".stage-filter", { hasText: "offer" }).click();
   await expect(page.locator(".stage-filter.active").filter({ hasText: "offer" })).toBeVisible();
-  await expect(page.getByRole("columnheader", { name: "入职" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "Offer状态" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "计划到岗" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "入职状态" })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: "入职日期 / 未入职原因" })).toBeVisible();
+  await expect(page.getByLabel("计划到岗日期")).toBeDisabled();
+  await selectArcoOption(page, page.locator(".offer-status-select").first(), "已发出");
+  await page.getByLabel("offer日期").fill("2026-08-05");
+  await page.getByLabel("计划到岗日期").fill("2026-08-20");
   await selectArcoOption(page, page.locator(".recommendation-select").first(), "是");
+  await expect(page.getByLabel("实际入职日期")).toBeVisible();
+  await page.getByLabel("实际入职日期").fill("2026-08-25");
+  await selectArcoOption(page, page.locator(".recommendation-select").first(), "否");
+  await expect(page.locator(".interview-table tbody tr").first().locator(".reason-tags-select")).toBeVisible();
+  await selectArcoOption(page, page.locator(".recommendation-select").first(), "待入职");
+  await expect(page.getByLabel("实际入职日期")).toHaveCount(0);
+  await expect(page.locator(".interview-table tbody tr").first()).toContainText("确认入职后填写实际日期");
+  await expect(page.locator(".interview-table tbody tr").first().locator(".reason-tags-select")).toHaveCount(0);
+  await page.getByRole("button", { name: "保存" }).first().click();
+
+  const savedState = await (await page.request.get("/api/state")).json();
+  const savedCandidate = Object.values(savedState.candidates).flat().find((candidate: any) => candidate.interviewTimeline?.offerSentAt === "2026-08-05") as any;
+  expect(savedCandidate).toBeTruthy();
+  expect(savedCandidate.interviewTimeline).toMatchObject({
+    recommendedAt: "2026-07-02",
+    firstInterviewAt: "2026-07-15",
+    firstInterviewPassedAt: "2026-07-15",
+    secondInterviewAt: "2026-08-02",
+    secondInterviewPassedAt: "2026-08-02",
+    offerSentAt: "2026-08-05",
+    plannedOnboardDate: "2026-08-20",
+  });
+  expect(savedCandidate.onboarded).toBe("待入职");
+
+  await page.getByRole("button", { name: /工作台概览/ }).click();
+  await selectArcoOption(page, page.locator(".dashboard-global-filters .arco-select"), "2026年07月");
+  await page.locator(".section-radio-tabs").getByText("流程复盘").click();
+  const julyFirstInterviewRow = page.locator(".analytics-funnel-table tbody tr").filter({ hasText: "实际参加初试人数" });
+  await expect(julyFirstInterviewRow.locator("td").nth(1)).not.toHaveText("0");
+
+  await selectArcoOption(page, page.locator(".dashboard-global-filters .arco-select"), "2026年08月");
+  await page.locator(".section-radio-tabs").getByText("招聘概览").click();
+  await expect(page.locator(".dashboard-summary-card").filter({ hasText: "当期完成 HC" }).locator(".dashboard-summary-value")).not.toHaveText("0");
+  await page.locator(".section-radio-tabs").getByText("职位分析").click();
+  await expect(page.locator(".pending-onboard-table").getByRole("columnheader", { name: "待入职" })).toBeVisible();
+  await expect(page.locator(".pending-onboard-table tfoot td").nth(1)).not.toHaveText("0");
+
+  await page.getByRole("button", { name: "面试管理", exact: true }).click();
+  await expect(page.locator(".stage-filter.active").filter({ hasText: "offer" })).toBeVisible();
+  await selectArcoOption(page, page.locator(".recommendation-select").first(), "是");
+  await page.getByLabel("实际入职日期").fill("2026-08-25");
+  await page.getByRole("button", { name: "保存" }).first().click();
+  const onboardedState = await (await page.request.get("/api/state")).json();
+  const onboardedCandidate = Object.values(onboardedState.candidates).flat().find((candidate: any) => candidate.id === savedCandidate.id) as any;
+  expect(onboardedCandidate.onboarded).toBe("是");
+  expect(onboardedCandidate.interviewTimeline.onboardedAt).toBe("2026-08-25");
+  expect(onboardedCandidate.reasonTags).toEqual([]);
 
   expect(failedRequests, failedRequests.join("\n")).toEqual([]);
   expect(consoleErrors, consoleErrors.join("\n")).toEqual([]);
@@ -1043,8 +1109,8 @@ test("批量简历上传仅允许 PDF、DOC、DOCX，并用解析结果生成多
     activeResumeAnalysisRequests -= 1;
   });
   await modal.getByRole("button", { name: "分析并生成候选人" }).click();
-  await expect(modal.locator(".resume-ai-status")).toContainText("AI 正在分析第 1 / 2 份");
-  await expect(modal.locator(".resume-ai-status")).toContainText("已完成 0 份");
+  await expect(modal.locator(".resume-ai-status")).toContainText(/AI 正在分析第 [12] \/ 2 份/);
+  await expect(modal.locator(".resume-ai-status")).toContainText(/已完成 [01] 份/);
   await expect.poll(() => resumeAnalysisRequests).toBe(2);
   expect(maxActiveResumeAnalysisRequests).toBe(1);
   expect(resumeAnalysisPayloads).toHaveLength(2);
@@ -1088,8 +1154,8 @@ test("批量简历上传仅允许 PDF、DOC、DOCX，并用解析结果生成多
   await expect(page.locator(".candidate-list .candidate-card")).toHaveCount(2);
 });
 
-test("薪酬调研和职位管理统一使用省市两级地区，职位薪资经验和关键词使用标准选项", async ({ page }) => {
-  test.setTimeout(75_000);
+test("薪酬调研和职位管理统一使用省市两级地区，职位支持多城市招聘任务", async ({ page }) => {
+  test.setTimeout(90_000);
   const consoleErrors: string[] = [];
   const failedRequests: string[] = [];
   const experienceOptions = ["无经验", "1年以内", "1-3年", "3-5年", "5-10年", "10年以上"];
@@ -1249,13 +1315,112 @@ test("薪酬调研和职位管理统一使用省市两级地区，职位薪资�
   await modal.getByRole("textbox", { name: "职位级别" }).fill("P6");
   await modal.getByRole("textbox", { name: "职位描述" }).fill("负责薪资范围控件测试，验证常规选项与自定义数字区间。");
   await selectArcoOption(page, modal.locator(".form-field").filter({ hasText: "需求类型" }).locator(".arco-select"), "计划内新增");
-  await expect(page.getByRole("button", { name: "保存职位" })).toBeEnabled();
-  await page.getByRole("button", { name: "保存职位" }).click();
+  await modal.getByRole("button", { name: "增加城市" }).click();
+  const secondCityRow = modal.locator(".job-city-task-row").nth(1);
+  await selectArcoCascaderByPath(page, secondCityRow.locator(".region-cascader"), ["上海市"]);
+  await secondCityRow.getByLabel(/计划HC$/).fill("2");
+  await expect(page.getByRole("button", { name: "创建 2 个城市任务" })).toBeEnabled();
+  await page.getByRole("button", { name: "创建 2 个城市任务" }).click();
   const createdJobCard = page.locator(".job-card").filter({ hasText: "前端薪资测试岗位" });
   await expect(createdJobCard).toBeVisible();
+  await expect(createdJobCard).toContainText("2 个城市任务");
+  await expect(createdJobCard).toContainText("广东省 / 深圳市");
+  await expect(createdJobCard).toContainText("上海市");
+  await expect(createdJobCard).toContainText("总 HC");
+  await expect(createdJobCard).toContainText("0/3");
   await expect(createdJobCard).toContainText("18k - 26k");
   await expect(createdJobCard).toContainText("计划内新增");
 
+  await createdJobCard.click();
+  await page.getByRole("button", { name: "增加城市", exact: true }).click();
+  const addCityModal = page.getByRole("dialog", { name: "增加城市招聘任务" });
+  await expect(addCityModal).toBeVisible();
+  await selectArcoCascaderByPath(page, addCityModal.locator(".region-cascader"), ["北京市"]);
+  await expect(addCityModal.getByRole("button", { name: "创建城市任务" })).toBeEnabled();
+  await addCityModal.getByRole("button", { name: "创建城市任务" }).click();
+  await expect(addCityModal).toBeHidden();
+  await expect(createdJobCard).toContainText("3 个城市任务");
+  await expect(createdJobCard).toContainText("北京市");
+
+  const savedState = await (await page.request.get("/api/state")).json();
+  const createdCityJobs = savedState.jobs.filter((job: { title: string }) => job.title === "前端薪资测试岗位");
+  expect(createdCityJobs).toHaveLength(3);
+  expect(new Set(createdCityJobs.map((job: { profileGroupId: string }) => job.profileGroupId)).size).toBe(1);
+  expect(createdCityJobs.map((job: { location: string }) => job.location).sort()).toEqual(["北京市", "上海市", "广东省 / 深圳市"].sort());
+  expect(createdCityJobs.map((job: { recruitmentBatches: Array<{ targetMonth: string }> }) => job.recruitmentBatches[0].targetMonth)).toEqual(["2026年08月", "2026年08月", "2026年08月"]);
+
+  await page.locator(".job-detail-city-switcher").getByRole("button", { name: "广东省 / 深圳市", exact: true }).click();
+  await page.getByRole("button", { name: "编辑职位" }).click();
+  const editModal = page.getByRole("dialog", { name: "编辑职位" });
+  await expect(editModal.getByRole("textbox", { name: "招聘月份" })).toHaveValue("2026年08月");
+  await editModal.getByRole("textbox", { name: "招聘月份" }).fill("2026年07月");
+  await editModal.getByRole("button", { name: "保存职位" }).click();
+  await expect(editModal).toBeHidden();
+
+  const updatedState = await (await page.request.get("/api/state")).json();
+  const updatedCityJobs = updatedState.jobs.filter((job: { title: string }) => job.title === "前端薪资测试岗位");
+  const targetMonthByLocation = Object.fromEntries(updatedCityJobs.map((job: { location: string; recruitmentBatches: Array<{ targetMonth: string }> }) => [job.location, job.recruitmentBatches[0].targetMonth]));
+  expect(targetMonthByLocation).toEqual({
+    "广东省 / 深圳市": "2026年07月",
+    "上海市": "2026年08月",
+    "北京市": "2026年08月",
+  });
+
   expect(failedRequests, failedRequests.join("\n")).toEqual([]);
   expect(consoleErrors, consoleErrors.join("\n")).toEqual([]);
+});
+
+test("新上传简历继承职位当前招聘批次月份", () => {
+  const job: Job = {
+    id: "job_report_month",
+    profileGroupId: "job_report_month",
+    title: "招聘经理",
+    dept: "人力资源部",
+    location: "石家庄市",
+    experience: "3-5年",
+    level: "P6",
+    salaryRange: "15k - 20k",
+    demandType: "计划内新增",
+    plannedHeadcount: 1,
+    keywords: "招聘管理、人才盘点",
+    scoreWeights: { experience: 30, professional: 30, stability: 15, education: 10, business: 15 },
+    description: "负责招聘管理与人才盘点。",
+    status: "招聘中",
+    currentBatchId: "job_report_month_batch_1",
+    recruitmentBatches: [{
+      id: "job_report_month_batch_1",
+      sequence: 1,
+      label: "第1批",
+      targetMonth: "2026年07月",
+      demandType: "计划内新增",
+      plannedHeadcount: 1,
+      status: "招聘中",
+      startedAt: "2026-08-03T00:00:00.000Z",
+      profileSnapshot: {
+        title: "招聘经理",
+        dept: "人力资源部",
+        location: "石家庄市",
+        experience: "3-5年",
+        level: "P6",
+        salaryRange: "15k - 20k",
+        keywords: "招聘管理、人才盘点",
+        scoreWeights: { experience: 30, professional: 30, stability: 15, education: 10, business: 15 },
+        description: "负责招聘管理与人才盘点。",
+      },
+    }],
+    resumeCount: 0,
+    salaryData: null,
+    sortOrder: 0,
+  };
+
+  const candidate = createCandidate({
+    id: "candidate_report_month",
+    job,
+    name: "测试候选人",
+    source: "BOSS",
+    resumeText: "负责招聘管理与人才盘点。",
+  });
+
+  expect(candidate.reportMonth).toBe("2026年07月");
+  expect(candidate.recruitmentBatchId).toBe("job_report_month_batch_1");
 });

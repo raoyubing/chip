@@ -6,7 +6,21 @@ export declare namespace RequestDTO {
   }
 
   export type CreateJob = Pick<SchemaDTO.Job, "title" | "dept" | "location" | "experience" | "level" | "salaryRange" | "demandType" | "plannedHeadcount" | "keywords" | "scoreWeights" | "description" | "status">;
-  export type UpdateJob = CreateJob;
+  export type UpdateJob = CreateJob & { targetMonth: string };
+
+  export interface JobCityTask {
+    location: string;
+    targetMonth: string;
+    salaryRange: string;
+    demandType: SchemaDTO.RecruitmentDemandType;
+    plannedHeadcount: number;
+  }
+
+  export interface CreateMultiCityJob extends Omit<CreateJob, "location" | "salaryRange" | "demandType" | "plannedHeadcount"> {
+    cityTasks: JobCityTask[];
+  }
+
+  export type AddJobCityTask = JobCityTask;
 
   export interface ReopenJob {
     targetMonth: string;
@@ -64,6 +78,8 @@ export declare namespace RequestDTO {
     stageRecommendation: "待定" | "是" | "否";
     interviewResult: "通过" | "淘汰" | "待定" | "未到面";
     onboarded: "待入职" | "是" | "否";
+    offerStatus?: "待发出" | "已发出";
+    plannedOnboardDate?: string;
     reportMonth: string;
     interviewReason: string;
     reasonTags: string[];

@@ -57,7 +57,7 @@ import {
   updateVoiceTranscriptSegmentAnalysis,
   upsertJob,
 } from "./db.js";
-import type { AppState, AuthUser, Candidate, CandidateEvaluation, CandidateInterviewPlan, InterviewMethodKey, Job, SalaryData, SalaryFilters, VoiceAnalysis, VoiceFinalEvaluation, VoiceRecruiterCoachReport, VoiceTranscriptResult, VoiceTranscriptSegment } from "./types.js";
+import type { AppState, AuthUser, Candidate, CandidateEvaluation, CandidateInterviewPlan, InterviewMethodKey, Job, RecruitmentBatch, SalaryData, SalaryFilters, VoiceAnalysis, VoiceFinalEvaluation, VoiceRecruiterCoachReport, VoiceTranscriptResult, VoiceTranscriptSegment } from "./types.js";
 
 loadLocalEnv();
 
@@ -211,6 +211,28 @@ const jobSchema = z.object({
   description: z.string().min(1),
   status: z.enum(["招聘中", "暂停", "已关闭"]),
 });
+
+const jobCityTaskSchema = z.object({
+  location: z.string().min(1).transform(normalizeRegionToCity),
+  targetMonth: z.string().regex(/^\d{4}年(?:0[1-9]|1[0-2])月$/, "招聘月份格式应为2026年08月"),
+  salaryRange: jobSchema.shape.salaryRange,
+  demandType: jobSchema.shape.demandType,
+  plannedHeadcount: jobSchema.shape.plannedHeadcount,
+});
+
+const updateJobSchema = jobSchema.extend({
+  targetMonth: jobCityTaskSchema.shape.targetMonth.optional(),
+});
+
+const multiCityJobSchema = jobSchema
+  .omit({ location: true, salaryRange: true, demandType: true, plannedHeadcount: true })
+  .extend({ cityTasks: z.array(jobCityTaskSchema).min(1).max(20) })
+  .superRefine((value, context) => {
+    const locations = value.cityTasks.map((task) => task.location);
+    if (new Set(locations).size !== locations.length) {
+      context.addIssue({ code: "custom", path: ["cityTasks"], message: "同一岗位画像下不能重复添加相同城市" });
+    }
+  });
 
 function normalizeJobSalaryRangeInput(value: string) {
   const matched = value.match(/^(\d+)\s*k?\s*[-~—]\s*(\d+)\s*k?$/i);
@@ -520,8 +542,119 @@ server.post("/api/current-job", async (request) => {
 server.post("/api/jobs", async (request) => {
   const body = jobSchema.parse(request.body);
   const id = `job_${Date.now()}`;
-  upsertJob({ id, ...body, salaryData: null });
+  upsertJob({ id, profileGroupId: id, ...body, salaryData: null });
   setSetting("currentJobId", id);
+  prioritizeJob(id);
+  return getState();
+});
+
+server.post("/api/jobs/multi-city", async (request) => {
+  const body = multiCityJobSchema.parse(request.body);
+  const { cityTasks, ...profile } = body;
+  const profileGroupId = `job_group_${Date.now()}_${nanoid(6)}`;
+  const startedAt = new Date().toISOString();
+  const createdJobIds: string[] = [];
+
+  cityTasks.forEach((task, index) => {
+    const id = `job_${Date.now()}_${index}_${nanoid(5)}`;
+    const batch: RecruitmentBatch = {
+      id: `${id}_batch_1_${nanoid(6)}`,
+      sequence: 1,
+      label: "第1批",
+      targetMonth: task.targetMonth,
+      demandType: task.demandType,
+      plannedHeadcount: task.plannedHeadcount,
+      status: profile.status,
+      startedAt,
+      closedAt: profile.status === "已关闭" ? startedAt : undefined,
+      profileSnapshot: {
+        title: profile.title,
+        dept: profile.dept,
+        location: task.location,
+        experience: profile.experience,
+        level: profile.level,
+        salaryRange: task.salaryRange,
+        keywords: profile.keywords,
+        scoreWeights: profile.scoreWeights,
+        description: profile.description,
+      },
+    };
+    upsertJob({
+      id,
+      profileGroupId,
+      ...profile,
+      location: task.location,
+      salaryRange: task.salaryRange,
+      demandType: task.demandType,
+      plannedHeadcount: task.plannedHeadcount,
+      currentBatchId: batch.id,
+      recruitmentBatches: [batch],
+      salaryData: null,
+    });
+    createdJobIds.push(id);
+  });
+
+  const primaryJobId = createdJobIds[0];
+  if (primaryJobId) {
+    setSetting("currentJobId", primaryJobId);
+    prioritizeJob(primaryJobId);
+  }
+  return getState();
+});
+
+server.post("/api/jobs/:id/cities", async (request) => {
+  const params = z.object({ id: z.string().min(1) }).parse(request.params);
+  const task = jobCityTaskSchema.parse(request.body);
+  const sourceJob = getJob(params.id);
+  if (!sourceJob) throw server.httpErrors.notFound("职位不存在");
+  const profileGroupId = sourceJob.profileGroupId || sourceJob.id;
+  const siblingJobs = getJobs().filter((job) => (job.profileGroupId || job.id) === profileGroupId);
+  if (siblingJobs.some((job) => normalizeRegionToCity(job.location) === task.location)) {
+    throw server.httpErrors.badRequest("该岗位画像下已经存在这个城市的招聘任务");
+  }
+
+  const id = `job_${Date.now()}_${nanoid(6)}`;
+  const startedAt = new Date().toISOString();
+  const batch: RecruitmentBatch = {
+    id: `${id}_batch_1_${nanoid(6)}`,
+    sequence: 1,
+    label: "第1批",
+    targetMonth: task.targetMonth,
+    demandType: task.demandType,
+    plannedHeadcount: task.plannedHeadcount,
+    status: "招聘中",
+    startedAt,
+    profileSnapshot: {
+      title: sourceJob.title,
+      dept: sourceJob.dept,
+      location: task.location,
+      experience: sourceJob.experience,
+      level: sourceJob.level,
+      salaryRange: task.salaryRange,
+      keywords: sourceJob.keywords,
+      scoreWeights: sourceJob.scoreWeights,
+      description: sourceJob.description,
+    },
+  };
+  upsertJob({
+    id,
+    profileGroupId,
+    title: sourceJob.title,
+    dept: sourceJob.dept,
+    location: task.location,
+    experience: sourceJob.experience,
+    level: sourceJob.level,
+    salaryRange: task.salaryRange,
+    demandType: task.demandType,
+    plannedHeadcount: task.plannedHeadcount,
+    keywords: sourceJob.keywords,
+    scoreWeights: sourceJob.scoreWeights,
+    description: sourceJob.description,
+    status: "招聘中",
+    currentBatchId: batch.id,
+    recruitmentBatches: [batch],
+    salaryData: null,
+  });
   prioritizeJob(id);
   return getState();
 });
@@ -530,15 +663,39 @@ server.put("/api/jobs/:id", async (request) => {
   const params = z.object({ id: z.string() }).parse(request.params);
   const existing = getJob(params.id);
   if (!existing) throw server.httpErrors.notFound("职位不存在");
-  const body = jobSchema.parse(request.body);
-  if (existing.status === "已关闭" && body.status !== "已关闭") {
+  const body = updateJobSchema.parse(request.body);
+  const { targetMonth: requestedTargetMonth, ...jobFields } = body;
+  const currentBatch = existing.recruitmentBatches.find((batch) => batch.id === existing.currentBatchId);
+  const targetMonth = requestedTargetMonth || currentBatch?.targetMonth || formatReportMonth();
+  if (existing.status === "已关闭" && jobFields.status !== "已关闭") {
     throw server.httpErrors.badRequest("已关闭职位请使用“重新招聘”，系统会新建招聘批次并保留历史人选。");
   }
-  const completedHeadcount = getCandidates(existing.id).filter((candidate) => candidate.recruitmentBatchId === existing.currentBatchId && candidate.onboarded === "是").length;
-  if (existing.status !== "已关闭" && body.plannedHeadcount < completedHeadcount) {
-    throw server.httpErrors.badRequest(`当前批次已有 ${completedHeadcount} 人入职，计划 HC 不能低于已完成人数。`);
+  const completedHeadcount = getCandidates(existing.id).filter((candidate) => candidate.recruitmentBatchId === existing.currentBatchId && isActiveHeadcountCompletion(candidate)).length;
+  if (existing.status !== "已关闭" && jobFields.plannedHeadcount < completedHeadcount) {
+    throw server.httpErrors.badRequest(`当前批次已有 ${completedHeadcount} 个 HC 完成，计划 HC 不能低于已完成 HC 数。`);
   }
-  upsertJob({ ...existing, ...body, plannedHeadcount: existing.status === "已关闭" ? existing.plannedHeadcount : body.plannedHeadcount, salaryData: null });
+  const recruitmentBatches = existing.recruitmentBatches.map((batch) => batch.id === existing.currentBatchId
+    ? { ...batch, targetMonth }
+    : batch);
+  upsertJob({
+    ...existing,
+    ...jobFields,
+    plannedHeadcount: existing.status === "已关闭" ? existing.plannedHeadcount : jobFields.plannedHeadcount,
+    recruitmentBatches,
+    salaryData: null,
+  });
+  const sharedProfile = {
+    title: jobFields.title,
+    dept: jobFields.dept,
+    experience: jobFields.experience,
+    level: jobFields.level,
+    keywords: jobFields.keywords,
+    scoreWeights: jobFields.scoreWeights,
+    description: jobFields.description,
+  };
+  getJobs()
+    .filter((job) => job.id !== existing.id && job.profileGroupId === existing.profileGroupId)
+    .forEach((job) => upsertJob({ ...job, ...sharedProfile }));
   return getState();
 });
 
@@ -601,7 +758,10 @@ server.post("/api/candidates/:id/mark-interview", async (request) => {
     stageRecommendation: "待定",
     interviewResult: "待定",
     reportMonth: candidate.reportMonth || formatReportMonth(),
-    interviewTimeline: candidate.interviewTimeline || {},
+    interviewTimeline: {
+      ...(candidate.interviewTimeline || {}),
+      recommendedAt: candidate.interviewTimeline?.recommendedAt || formatDateStamp(),
+    },
   });
   return getState();
 });
@@ -713,33 +873,52 @@ server.patch("/api/candidates/:id/interview-stage", async (request) => {
     stageRecommendation: z.enum(["待定", "是", "否"]).default("待定"),
     interviewResult: z.enum(["通过", "淘汰", "待定", "未到面"]).default("待定"),
     onboarded: z.enum(["待入职", "是", "否"]).default("待入职"),
+    offerStatus: z.enum(["待发出", "已发出"]).optional(),
+    plannedOnboardDate: z.string().trim().optional(),
     reportMonth: z.string().trim().min(1).default(formatReportMonth()),
     interviewReason: z.string().default(""),
     reasonTags: z.array(z.string()).default([]),
     interviewTimeline: z.object({
       recommendedAt: z.string().optional(),
+      firstInterviewAt: z.string().optional(),
       firstInterviewPassedAt: z.string().optional(),
+      secondInterviewAt: z.string().optional(),
       secondInterviewPassedAt: z.string().optional(),
       offerAt: z.string().optional(),
+      offerSentAt: z.string().optional(),
+      plannedOnboardDate: z.string().optional(),
       onboardedAt: z.string().optional(),
     }).default({}),
   }).parse(request.body);
   const candidate = getCandidateById(params.id);
   if (!candidate) throw server.httpErrors.notFound("候选人不存在");
-  if (body.onboarded === "是" && candidate.onboarded !== "是") {
+  const offerStatus = resolveOfferStatus(candidate, body);
+  const plannedOnboardDate = body.plannedOnboardDate ?? body.interviewTimeline.plannedOnboardDate ?? candidate.interviewTimeline?.plannedOnboardDate ?? "";
+  const actualOnboardDate = body.interviewTimeline.onboardedAt ?? candidate.interviewTimeline?.onboardedAt ?? "";
+  if (body.offerStatus === "已发出" && !/^\d{4}-\d{2}-\d{2}$/.test(plannedOnboardDate)) {
+    throw server.httpErrors.badRequest("Offer标记为已发出时，请填写计划到岗日期。");
+  }
+  if (body.offerStatus === "待发出" && body.onboarded !== "待入职") {
+    throw server.httpErrors.badRequest("Offer尚未发出，入职状态只能为待入职。");
+  }
+  if (body.onboarded === "是" && !/^\d{4}-\d{2}-\d{2}$/.test(actualOnboardDate)) {
+    throw server.httpErrors.badRequest("确认入职时，请填写实际入职日期。");
+  }
+  const willCompleteHeadcount = body.interviewStage === "offer" && offerStatus === "已发出" && body.onboarded !== "否";
+  if (willCompleteHeadcount && !isActiveHeadcountCompletion(candidate)) {
     const job = getJob(candidate.jobId);
     const batch = job?.recruitmentBatches.find((item) => item.id === candidate.recruitmentBatchId);
     if (!job || !batch) throw server.httpErrors.badRequest("候选人关联的招聘批次不存在，请刷新后重试。");
-    const completedHeadcount = getCandidates(candidate.jobId).filter((item) => item.recruitmentBatchId === batch.id && item.id !== candidate.id && item.onboarded === "是").length;
+    const completedHeadcount = getCandidates(candidate.jobId).filter((item) => item.recruitmentBatchId === batch.id && item.id !== candidate.id && isActiveHeadcountCompletion(item)).length;
     if (completedHeadcount >= batch.plannedHeadcount) {
-      throw server.httpErrors.badRequest(`该批次计划 HC 为 ${batch.plannedHeadcount}，已全部完成。如需继续入职，请先在职位管理中增加 HC。`);
+      throw server.httpErrors.badRequest(`该批次计划 HC 为 ${batch.plannedHeadcount}，已全部完成。如需继续发出Offer，请先在职位管理中增加 HC。`);
     }
   }
   const stageRecommendation = resolveStageRecommendation(body.interviewStage, body.stageRecommendation);
   const reasonTags = shouldManageReasonTags(body.interviewStage, body.interviewResult, body.onboarded)
     ? normalizeReasonTags(body.reasonTags.length ? body.reasonTags : inferReasonTags(body.interviewReason, body.interviewStage, body.onboarded), body.interviewStage, body.onboarded)
     : [];
-  const timeline = mergeInterviewTimeline(candidate, { ...body, stageRecommendation });
+  const timeline = mergeInterviewTimeline(candidate, { ...body, stageRecommendation, offerStatus, plannedOnboardDate });
   updateCandidate({
     ...candidate,
     interviewStage: body.interviewStage,
@@ -3013,38 +3192,100 @@ function mergeInterviewTimeline(
     stageRecommendation: NonNullable<Candidate["stageRecommendation"]>;
     interviewResult: NonNullable<Candidate["interviewResult"]>;
     onboarded: NonNullable<Candidate["onboarded"]>;
+    offerStatus: "待发出" | "已发出";
+    plannedOnboardDate: string;
+    reportMonth: string;
     interviewTimeline: Candidate["interviewTimeline"];
   },
 ) {
-  const stamp = formatDateStamp();
+  const stamp = reportMonthToDate(body.reportMonth) || formatDateStamp();
   const current = candidate.interviewTimeline || {};
   const next = { ...current, ...(body.interviewTimeline || {}) };
 
   if (body.interviewStage !== "推荐" && !next.recommendedAt) {
     next.recommendedAt = candidate.interviewTimeline?.recommendedAt || stamp;
   }
-  if (body.interviewStage === "推荐" && body.stageRecommendation !== "是") {
-    delete next.recommendedAt;
-  }
   if (body.interviewStage === "复试" && body.interviewResult !== "未到面") {
+    next.firstInterviewAt = next.firstInterviewAt || next.firstInterviewPassedAt || stamp;
     next.firstInterviewPassedAt = next.firstInterviewPassedAt || stamp;
   }
   if (body.interviewStage === "offer") {
+    next.firstInterviewAt = next.firstInterviewAt || next.firstInterviewPassedAt || stamp;
+    next.firstInterviewPassedAt = next.firstInterviewPassedAt || stamp;
+    next.secondInterviewAt = next.secondInterviewAt || next.secondInterviewPassedAt || stamp;
     next.secondInterviewPassedAt = next.secondInterviewPassedAt || stamp;
-    next.offerAt = next.offerAt || stamp;
+    if (body.offerStatus === "已发出") {
+      const offerSentAt = next.offerSentAt || next.offerAt || stamp;
+      next.offerSentAt = offerSentAt;
+      next.offerAt = offerSentAt;
+      next.plannedOnboardDate = body.plannedOnboardDate;
+    } else {
+      next.offerSentAt = "";
+      delete next.offerAt;
+      delete next.plannedOnboardDate;
+    }
   }
   if (body.onboarded === "是") {
     next.onboardedAt = next.onboardedAt || stamp;
   }
   if (body.interviewStage === "推荐") {
+    delete next.firstInterviewAt;
     delete next.firstInterviewPassedAt;
+    delete next.secondInterviewAt;
     delete next.secondInterviewPassedAt;
     delete next.offerAt;
+    delete next.offerSentAt;
+    delete next.plannedOnboardDate;
   }
-  if (body.onboarded !== "是" && next.onboardedAt && body.interviewStage !== "offer") {
-    delete next.onboardedAt;
+  if (body.interviewStage === "初试") {
+    delete next.secondInterviewAt;
+    delete next.secondInterviewPassedAt;
+    delete next.offerAt;
+    delete next.offerSentAt;
+    delete next.plannedOnboardDate;
   }
+  if (body.interviewStage === "复试") {
+    delete next.offerAt;
+    delete next.offerSentAt;
+    delete next.plannedOnboardDate;
+  }
+  if (body.onboarded !== "是") delete next.onboardedAt;
   return next;
+}
+
+function resolveOfferStatus(
+  candidate: Candidate,
+  body: {
+    interviewStage: NonNullable<Candidate["interviewStage"]>;
+    onboarded: NonNullable<Candidate["onboarded"]>;
+    offerStatus?: "待发出" | "已发出";
+    interviewTimeline: Candidate["interviewTimeline"];
+  },
+) {
+  if (body.interviewStage !== "offer") return "待发出" as const;
+  if (body.offerStatus) return body.offerStatus;
+  if (Object.prototype.hasOwnProperty.call(body.interviewTimeline || {}, "offerSentAt")) {
+    return body.interviewTimeline?.offerSentAt ? "已发出" as const : "待发出" as const;
+  }
+  if (body.interviewTimeline?.offerAt || body.onboarded === "是") return "已发出" as const;
+  if ((candidate.interviewStage || "推荐") === "offer") return getCandidateOfferSentAt(candidate) ? "已发出" as const : "待发出" as const;
+  return "已发出" as const;
+}
+
+function getCandidateOfferSentAt(candidate: Candidate) {
+  const timeline = candidate.interviewTimeline || {};
+  if (Object.prototype.hasOwnProperty.call(timeline, "offerSentAt")) return timeline.offerSentAt || "";
+  if (timeline.offerAt) return timeline.offerAt;
+  return candidate.interviewStage === "offer" ? reportMonthToDate(candidate.reportMonth) : "";
+}
+
+function isActiveHeadcountCompletion(candidate: Candidate) {
+  return candidate.interviewStage === "offer" && Boolean(getCandidateOfferSentAt(candidate)) && candidate.onboarded !== "否";
+}
+
+function reportMonthToDate(value?: string) {
+  const matched = String(value || "").match(/^(\d{4})年(\d{2})月$/);
+  return matched ? `${matched[1]}-${matched[2]}-01` : "";
 }
 
 function resolveStageRecommendation(
@@ -3069,7 +3310,7 @@ function shouldManageReasonTags(
   interviewResult: NonNullable<Candidate["interviewResult"]>,
   onboarded?: Candidate["onboarded"],
 ) {
-  if (stage === "offer") return onboarded !== "是";
+  if (stage === "offer") return onboarded === "否";
   return interviewResult === "淘汰" || interviewResult === "未到面";
 }
 
@@ -4254,6 +4495,7 @@ function buildVirtualSalaryResearchJob(filters: SalaryFilters): Job {
   };
   return {
     id,
+    profileGroupId: id,
     ...profile,
     status: "招聘中",
     currentBatchId,

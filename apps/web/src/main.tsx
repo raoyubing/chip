@@ -36,7 +36,7 @@ import {
 } from "@arco-design/web-react/icon";
 import zhCN from "@arco-design/web-react/es/locale/zh-CN";
 import { bossIndustryGroups, normalizeBossIndustryName, normalizeRegionToCity, type RegionNode } from "@xiaosongshu/shared";
-import { api, type AuthAccountSummary, type JobCopilotResult, type JobPayload, type ResumeUploadPayload } from "./api";
+import { api, type AuthAccountSummary, type JobCopilotResult, type JobPayload, type MultiCityJobPayload, type ResumeUploadPayload } from "./api";
 import type { AppState, AuthStatus, Candidate, CandidateInterviewPlan, CandidateInterviewPlanQuestion, InterviewMethodKey, Job, JobScoreWeights, RecruitmentBatch, ResumeFilePayload, SalaryData, SalaryFilters, UploadedFile, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceRecruiterCoachReport, VoiceSegmentInsight } from "./types";
 import "@arco-design/web-react/dist/css/arco.css";
 import "./styles.css";
@@ -84,6 +84,7 @@ interface VoiceAiLiveState {
 
 type Modal =
   | { type: "job"; job?: Job }
+  | { type: "city-task"; job: Job }
   | { type: "reopen-job"; job: Job }
   | { type: "resume" }
   | { type: "accounts" }
@@ -364,9 +365,11 @@ function App() {
     interviewReason: string,
     reasonTags: string[],
     interviewTimeline: NonNullable<Candidate["interviewTimeline"]>,
+    offerStatus?: OfferStatus,
+    plannedOnboardDate?: string,
   ) {
     try {
-      const next = await api.updateInterviewStage(candidateId, { interviewStage, stageRecommendation, interviewResult, onboarded, reportMonth, interviewReason, reasonTags, interviewTimeline });
+      const next = await api.updateInterviewStage(candidateId, { interviewStage, stageRecommendation, interviewResult, onboarded, offerStatus, plannedOnboardDate, reportMonth, interviewReason, reasonTags, interviewTimeline });
       setRemoteState(next);
       showToast("面试阶段已保存");
     } catch (error) {
@@ -549,7 +552,7 @@ function App() {
               selectedPeriod={dashboardSelectedPeriod}
             />
           )}
-          {activeView === "jobs" && <JobsView state={state} currentJob={currentJob} canDelete={isAdmin} onSelect={changeJob} onEdit={(job) => setModal({ type: "job", job })} onCreate={() => setModal({ type: "job" })} onCloseJob={closeJob} onReopen={(job) => setModal({ type: "reopen-job", job })} onDelete={deleteJob} />}
+          {activeView === "jobs" && <JobsView state={state} currentJob={currentJob} canDelete={isAdmin} onSelect={changeJob} onEdit={(job) => setModal({ type: "job", job })} onCreate={() => setModal({ type: "job" })} onAddCity={(job) => setModal({ type: "city-task", job })} onCloseJob={closeJob} onReopen={(job) => setModal({ type: "reopen-job", job })} onDelete={deleteJob} />}
           {activeView === "candidates" && <CandidatesView candidates={currentCandidates} recentUploadedIds={recentCandidateIdsByJob[currentJob.id] || []} selectedId={selectedCandidateId} onSelect={setSelectedCandidateId} onUpload={() => setModal({ type: "resume" })} onMark={markInterview} onAddToTalentPool={addToTalentPool} onDelete={deleteCandidate} currentJob={currentJob} onStateChange={setRemoteState} />}
           {activeView === "talent" && <TalentPoolView jobs={state.jobs} currentJob={currentJob} candidatesByJob={state.candidates} canHardDelete={isAdmin} onStateChange={setRemoteState} onToast={showToast} />}
           {activeView === "interviews" && <InterviewsView jobs={ongoingJobs} selectedJobId={activeInterviewJobId} onJobChange={(jobId) => { setActiveInterviewJobId(jobId); setActiveInterviewBatchId("current"); setActiveInterviewMonth("all"); }} selectedBatchId={activeInterviewBatchId} onBatchChange={setActiveInterviewBatchId} selectedMonth={activeInterviewMonth} onMonthChange={setActiveInterviewMonth} activeStage={activeInterviewStage} candidates={interviewCandidates} onStageChange={setActiveInterviewStage} onSaveStage={updateInterviewStage} />}
@@ -568,6 +571,7 @@ function App() {
       </main>
 
       {modal?.type === "job" && <JobModal job={modal.job} minimumHeadcount={modal.job ? getBatchHeadcountProgress(getCurrentRecruitmentBatch(modal.job), state.candidates[modal.job.id] || []).completed : 0} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); showToast(modal.job ? "职位已更新" : "职位已新增"); }} />}
+      {modal?.type === "city-task" && <JobCityTaskModal job={modal.job} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); showToast("城市招聘任务已创建"); }} />}
       {modal?.type === "reopen-job" && <ReopenJobModal job={modal.job} onClose={() => setModal(null)} onSaved={(next) => { setModal(null); setRemoteState(next); setActiveInterviewJobId(modal.job.id); setActiveInterviewBatchId("current"); showToast("新招聘批次已开启"); }} />}
       {modal?.type === "resume" && <ResumeModal job={currentJob} candidates={currentCandidates} onClose={() => setModal(null)} onStateChange={setRemoteState} onSaved={(next, uploadedCandidateIds) => { setModal(null); setRemoteState(next); setRecentCandidateIdsByJob((current) => ({ ...current, [currentJob.id]: uploadedCandidateIds })); showToast("简历分析完成"); }} />}
       {modal?.type === "accounts" && <AccountManagementModal currentUsername={authStatus.user.username} onClose={() => setModal(null)} onRequireRelogin={() => void logout()} onToast={showToast} />}
@@ -1268,17 +1272,13 @@ function Dashboard({
     return candidates.filter((candidate) => getCandidatePeriodValue(candidate, granularity) === selectedPeriod);
   }, [candidates, granularity, selectedPeriod]);
 
-  const overview = buildRecruitmentAnalytics(filteredCandidates);
+  const overview = buildRecruitmentAnalytics(candidates, granularity, selectedPeriod);
   const activeJobs = state.jobs.filter((job) => job.status === "招聘中");
   const periodActiveJobs = activeJobs.map((job) => ({
     ...job,
     resumeCount: filteredCandidates.filter((candidate) => candidate.jobId === job.id).length,
   }));
   const previousPeriod = getPreviousPeriodValue(selectedPeriod, granularity);
-  const previousCandidates = useMemo(() => {
-    if (!previousPeriod) return [] as Candidate[];
-    return candidates.filter((candidate) => getCandidatePeriodValue(candidate, granularity) === previousPeriod);
-  }, [candidates, granularity, previousPeriod]);
   const headcountAnalytics = buildHeadcountAnalytics(state.jobs, candidates, granularity, selectedPeriod);
   const departmentHeadcountAnalytics = buildDepartmentHeadcountAnalytics(state.jobs, candidates, granularity, selectedPeriod);
   const insightCandidates = filterCandidatesByJobScope(filteredCandidates, insightJobId);
@@ -1306,9 +1306,8 @@ function Dashboard({
   const durationEmptyRows = durationAnalytics.rows.filter((item) => item.level === "empty").slice(0, 1);
   const durationPyramidRows = durationAnalytics.rows.slice(0, 4);
   const actionPlan = buildRecruitmentActionPlan({ activeJobs: insightJobId === "all" ? periodActiveJobs : periodActiveJobs.filter((job) => job.id === insightJobId), channelAnalytics, durationAnalytics, issueReview });
-  const currentComparisonCandidates = filterCandidatesByJobScope(filteredCandidates, insightJobId);
-  const previousComparisonCandidates = filterCandidatesByJobScope(previousCandidates, insightJobId);
-  const periodComparison = buildPeriodComparison(currentComparisonCandidates, previousComparisonCandidates);
+  const comparisonCandidates = filterCandidatesByJobScope(candidates, insightJobId);
+  const periodComparison = buildPeriodComparison(comparisonCandidates, granularity, selectedPeriod, previousPeriod);
   const focusJob = state.jobs.find((job) => job.id === focusJobId) || currentJob;
   const focusJobAnalysis = buildFocusJobAnalysis(focusJob, filteredCandidates.filter((candidate) => candidate.jobId === focusJob.id));
   const pendingOnboardAnalytics = buildPendingOnboardReasonAnalytics(filteredCandidates, state.jobs);
@@ -1348,14 +1347,14 @@ function Dashboard({
         <div className="section-panel-enter">
           <div className="grid cols-4 dashboard-summary-grid">
             <section className="card dashboard-summary-card"><span className="dashboard-summary-label">计划 HC</span><strong className="dashboard-summary-value">{headcountAnalytics.planned}</strong><span className="dashboard-summary-extra">{headcountAnalytics.batchCount} 个招聘批次</span></section>
-            <section className="card dashboard-summary-card"><span className="dashboard-summary-label">已完成 HC</span><strong className="dashboard-summary-value">{headcountAnalytics.completed}</strong><span className="dashboard-summary-extra">完成率 {formatPercent(headcountAnalytics.completed, headcountAnalytics.planned)}</span></section>
-            <section className="card dashboard-summary-card"><span className="dashboard-summary-label">待入职</span><strong className="dashboard-summary-value">{headcountAnalytics.pending}</strong><span className="dashboard-summary-extra">确认入职后计入完成</span></section>
-            <section className="card dashboard-summary-card"><span className="dashboard-summary-label">剩余 HC</span><strong className="dashboard-summary-value">{headcountAnalytics.remaining}</strong><span className="dashboard-summary-extra">按招聘批次月份归集</span></section>
+            <section className="card dashboard-summary-card"><span className="dashboard-summary-label">当期完成 HC</span><strong className="dashboard-summary-value">{headcountAnalytics.completed}</strong><span className="dashboard-summary-extra">按Offer发出月份统计</span></section>
+            <section className="card dashboard-summary-card"><span className="dashboard-summary-label">待入职</span><strong className="dashboard-summary-value">{headcountAnalytics.pending}</strong><span className="dashboard-summary-extra">Offer已发出，入职状态待确认</span></section>
+            <section className="card dashboard-summary-card"><span className="dashboard-summary-label">未完成 HC</span><strong className="dashboard-summary-value">{headcountAnalytics.remaining}</strong><span className="dashboard-summary-extra">按需求归属月份查看当前空缺</span></section>
           </div>
           <section className="hc-overview-band">
             <div className="hc-overview-progress">
-              <div><span>HC 完成进度</span><strong>{formatPercent(headcountAnalytics.completed, headcountAnalytics.planned)}</strong></div>
-              <div className="hc-progress-track" aria-label={`HC完成率${formatPercent(headcountAnalytics.completed, headcountAnalytics.planned)}`}><span style={{ width: `${Math.min(100, percentValue(headcountAnalytics.completed, headcountAnalytics.planned))}%` }} /></div>
+              <div><span>需求 HC 最终完成进度</span><strong>{formatPercent(headcountAnalytics.cohortCompleted, headcountAnalytics.planned)}</strong></div>
+              <div className="hc-progress-track" aria-label={`HC完成率${formatPercent(headcountAnalytics.cohortCompleted, headcountAnalytics.planned)}`}><span style={{ width: `${Math.min(100, percentValue(headcountAnalytics.cohortCompleted, headcountAnalytics.planned))}%` }} /></div>
             </div>
             <div className="hc-demand-breakdown">
               {headcountAnalytics.byDemandType.length
@@ -1441,7 +1440,7 @@ function Dashboard({
         <div className="grid cols-2 dashboard-job-overview-grid">
           <section className="card"><CardHeader title="职位简历量" desc={`按当前${formatAnalyticsGranularity(granularity)}筛选统计在招岗位简历量`} /><JobBarChart jobs={periodActiveJobs} /></section>
           <section className="card pad pending-onboard-card">
-            <CardHeader title="复试通过后未入职原因占比" desc="按部门与面试管理 offer 标签统计全部岗位未入职原因；上表看部门问题分布，下图看整体原因占比。" />
+            <CardHeader title="复试通过后未入职原因占比" desc="待入职由系统自动归类；入职为否时按面试管理中的未入职原因统计。" />
             {pendingOnboardAnalytics.total ? (
               <div className="pending-onboard-layout">
                 <div className="table-wrap pending-onboard-table-wrap">
@@ -1470,7 +1469,7 @@ function Dashboard({
                 </div>
                 <div className="pending-onboard-chart-wrap">
                   <div className="pending-onboard-total">
-                    <span>标签总次数</span>
+                    <span>状态 / 原因总次数</span>
                     <strong>{pendingOnboardAnalytics.total}</strong>
                   </div>
                   <PendingOnboardDonutChart data={pendingOnboardAnalytics.chartData} />
@@ -1736,7 +1735,7 @@ function Dashboard({
                     <th>未分类</th>
                     <th>复试通过</th>
                     <th>待入职</th>
-                    <th>已入职</th>
+                    <th>HC完成</th>
                     <th>剩余 HC</th>
                     <th>完成率</th>
                   </tr>
@@ -1754,7 +1753,7 @@ function Dashboard({
                       <td data-column="未分类">{row.demandTypeCounts["未分类"] || 0}</td>
                       <td data-column="复试通过">{row.finalInterviewPassed}</td>
                       <td data-column="待入职">{row.pending}</td>
-                      <td data-column="已入职">{row.completed}</td>
+                      <td data-column="HC完成">{row.completed}</td>
                       <td data-column="剩余 HC">{row.remaining}</td>
                       <td data-column="完成率">
                         <div className="department-hc-completion">
@@ -1777,7 +1776,7 @@ function Dashboard({
                     <td data-column="未分类">{departmentHeadcountAnalytics.total.demandTypeCounts["未分类"] || 0}</td>
                     <td data-column="复试通过">{departmentHeadcountAnalytics.total.finalInterviewPassed}</td>
                     <td data-column="待入职">{departmentHeadcountAnalytics.total.pending}</td>
-                    <td data-column="已入职">{departmentHeadcountAnalytics.total.completed}</td>
+                    <td data-column="HC完成">{departmentHeadcountAnalytics.total.completed}</td>
                     <td data-column="剩余 HC">{departmentHeadcountAnalytics.total.remaining}</td>
                     <td data-column="完成率">
                       <div className="department-hc-completion">
@@ -1842,6 +1841,7 @@ function JobsView({
   onSelect,
   onEdit,
   onCreate,
+  onAddCity,
   onCloseJob,
   onReopen,
   onDelete,
@@ -1852,6 +1852,7 @@ function JobsView({
   onSelect: (id: string) => void;
   onEdit: (job: Job) => void;
   onCreate: () => void;
+  onAddCity: (job: Job) => void;
   onCloseJob: (job: Job) => Promise<boolean>;
   onReopen: (job: Job) => void;
   onDelete: (job: Job) => void;
@@ -1863,7 +1864,21 @@ function JobsView({
     () => (statusFilter === "全部" ? state.jobs : state.jobs.filter((job) => job.status === statusFilter)),
     [state.jobs, statusFilter],
   );
+  const visibleJobGroups = useMemo(() => {
+    const groups = new Map<string, Job[]>();
+    visibleJobs.forEach((job) => {
+      const groupId = job.profileGroupId || job.id;
+      groups.set(groupId, [...(groups.get(groupId) || []), job]);
+    });
+    return Array.from(groups.entries()).map(([id, jobs]) => ({ id, jobs }));
+  }, [visibleJobs]);
+  const getFilterGroupCount = (filter: Job["status"] | "全部") => new Set(
+    state.jobs
+      .filter((job) => filter === "全部" || job.status === filter)
+      .map((job) => job.profileGroupId || job.id),
+  ).size;
   const selectedJob = state.jobs.find((job) => job.id === selectedJobId) || currentJob;
+  const selectedProfileJobs = state.jobs.filter((job) => (job.profileGroupId || job.id) === (selectedJob.profileGroupId || selectedJob.id));
   const currentBatch = getCurrentRecruitmentBatch(selectedJob);
   const currentHeadcount = getBatchHeadcountProgress(currentBatch, state.candidates[selectedJob.id] || []);
   const historyBatches = [...selectedJob.recruitmentBatches].sort((left, right) => right.sequence - left.sequence);
@@ -1902,7 +1917,7 @@ function JobsView({
         <div className="filter-tabs">
           {filters.map((filter) => (
             <Button key={filter} className={`filter-tab ${statusFilter === filter ? "active" : ""}`} onClick={() => setStatusFilter(filter)}>
-              {filter}<span>{filter === "全部" ? state.jobs.length : state.jobs.filter((job) => job.status === filter).length}</span>
+              {filter}<span>{getFilterGroupCount(filter)}</span>
             </Button>
           ))}
         </div>
@@ -1910,22 +1925,58 @@ function JobsView({
 
       <div className="grid cols-2">
         <section className="card pad">
-          {visibleJobs.length ? (
+          {visibleJobGroups.length ? (
             <div className="job-list">
-              {visibleJobs.map((job) => {
-                const batch = getCurrentRecruitmentBatch(job);
-                const headcount = getBatchHeadcountProgress(batch, state.candidates[job.id] || []);
-                return <article className={`job-card ${job.id === selectedJob.id ? "active" : ""}`} key={job.id} onClick={() => selectJob(job)}>
+              {visibleJobGroups.map((group) => {
+                const primaryJob = group.jobs.find((job) => job.id === selectedJob.id) || group.jobs[0];
+                const groupProgress = group.jobs.reduce((result, job) => {
+                  const progress = getBatchHeadcountProgress(getCurrentRecruitmentBatch(job), state.candidates[job.id] || []);
+                  return {
+                    planned: result.planned + progress.planned,
+                    completed: result.completed + progress.completed,
+                    pending: result.pending + progress.pending,
+                    resumes: result.resumes + job.resumeCount,
+                  };
+                }, { planned: 0, completed: 0, pending: 0, resumes: 0 });
+                const groupStatus: Job["status"] = group.jobs.some((job) => job.status === "招聘中")
+                  ? "招聘中"
+                  : group.jobs.some((job) => job.status === "暂停") ? "暂停" : "已关闭";
+                return <article className={`job-card job-profile-group-card ${group.jobs.some((job) => job.id === selectedJob.id) ? "active" : ""}`} key={group.id} onClick={() => selectJob(primaryJob)}>
                   <div className="job-topline">
                     <div>
-                      <h4>{job.title}</h4>
-                      <span className="meta">{job.dept} · {job.location}</span>
+                      <h4>{primaryJob.title}</h4>
+                      <span className="meta">{primaryJob.dept} · {group.jobs.length} 个城市任务</span>
                     </div>
-                    <Badge color={statusColor(job.status)}>{job.status}</Badge>
+                    <Badge color={statusColor(groupStatus)}>{groupStatus}</Badge>
                   </div>
-                  <div className="kv"><span>{job.salaryRange}</span><span>{job.location}</span><span>{job.experience}</span></div>
-                  <div className="job-batch-line"><span>{batch?.label || "当前批次"}</span><span>{batch?.targetMonth || "未设置月份"}</span><span>{batch?.demandType || "需求未分类"}</span><span>HC {headcount.completed}/{headcount.planned}</span><span>{job.resumeCount}份简历</span></div>
-                  <p className="desc job-card-desc">{job.description}</p>
+                  <div className="job-profile-group-summary">
+                    <span>总 HC <strong>{groupProgress.completed}/{groupProgress.planned}</strong></span>
+                    <span>待入职 <strong>{groupProgress.pending}</strong></span>
+                    <span>简历 <strong>{groupProgress.resumes}</strong></span>
+                    <span>经验 <strong>{primaryJob.experience}</strong></span>
+                  </div>
+                  <div className="job-city-task-list">
+                    {group.jobs.map((job) => {
+                      const batch = getCurrentRecruitmentBatch(job);
+                      const headcount = getBatchHeadcountProgress(batch, state.candidates[job.id] || []);
+                      return (
+                        <button
+                          className={`job-city-task-item ${job.id === selectedJob.id ? "active" : ""}`}
+                          type="button"
+                          key={job.id}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            selectJob(job);
+                          }}
+                        >
+                          <span><strong>{job.location}</strong><small>{batch?.targetMonth || "未设置月份"} · {batch?.demandType || "未分类"}</small></span>
+                          <span><strong>HC {headcount.completed}/{headcount.planned}</strong><small>{job.salaryRange}</small></span>
+                          <Badge color={statusColor(job.status)}>{job.status}</Badge>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="desc job-card-desc">{primaryJob.description}</p>
                 </article>;
               })}
             </div>
@@ -1943,6 +1994,13 @@ function JobsView({
               </div>
               <Badge color={statusColor(selectedJob.status)}>{selectedJob.status}</Badge>
             </div>
+            {selectedProfileJobs.length > 1 ? (
+              <div className="job-detail-city-switcher" aria-label="同岗位城市任务">
+                {selectedProfileJobs.map((job) => (
+                  <Button className={`btn compact ${job.id === selectedJob.id ? "primary" : "ghost"}`} type="button" key={job.id} onClick={() => selectJob(job)}>{job.location}</Button>
+                ))}
+              </div>
+            ) : null}
             <div className="salary-summary">
               <Metric label="薪资范围" value={selectedJob.salaryRange} />
               <Metric label="工作地点" value={selectedJob.location} />
@@ -1978,6 +2036,7 @@ function JobsView({
             <div><span className="meta">职位描述</span><p className="desc spaced-small">{selectedJob.description}</p></div>
             <div className="toolbar-left">
               <Button className="btn primary" onClick={() => onEdit(selectedJob)}>编辑职位</Button>
+              <Button className="btn" onClick={() => onAddCity(selectedJob)}><IconPlus />增加城市</Button>
               {selectedJob.status === "已关闭"
                 ? <Button className="btn primary" onClick={() => onReopen(selectedJob)}>重新招聘</Button>
                 : <Button className="btn" onClick={() => handleCloseJob(selectedJob)}>关闭本轮招聘</Button>}
@@ -2605,8 +2664,8 @@ function getCurrentRecruitmentBatch(job: Job) {
 function getBatchHeadcountProgress(batch: RecruitmentBatch | null, candidates: Candidate[]) {
   const planned = batch?.plannedHeadcount || 0;
   const batchCandidates = batch ? candidates.filter((candidate) => candidate.recruitmentBatchId === batch.id) : [];
-  const completed = batchCandidates.filter((candidate) => candidate.onboarded === "是").length;
-  const pending = batchCandidates.filter((candidate) => candidate.onboarded === "待入职" && candidate.interviewStage === "offer").length;
+  const completed = batchCandidates.filter(isActiveHeadcountCompletion).length;
+  const pending = batchCandidates.filter((candidate) => isActiveHeadcountCompletion(candidate) && candidate.onboarded === "待入职").length;
   return {
     planned,
     completed,
@@ -3460,12 +3519,26 @@ function formatCandidateInterviewPack(candidate: Candidate, interviewPack: Retur
 
 const interviewStages = ["推荐", "初试", "复试", "offer"] as const;
 type InterviewStage = (typeof interviewStages)[number];
+type OfferStatus = "待发出" | "已发出";
+type InterviewStageSaveHandler = (
+  candidateId: string,
+  interviewStage: NonNullable<Candidate["interviewStage"]>,
+  stageRecommendation: NonNullable<Candidate["stageRecommendation"]>,
+  interviewResult: NonNullable<Candidate["interviewResult"]>,
+  onboarded: NonNullable<Candidate["onboarded"]>,
+  reportMonth: string,
+  interviewReason: string,
+  reasonTags: string[],
+  interviewTimeline: NonNullable<Candidate["interviewTimeline"]>,
+  offerStatus?: OfferStatus,
+  plannedOnboardDate?: string,
+) => Promise<void>;
 
 function formatInterviewStageLabel(stage: InterviewStage | NonNullable<Candidate["interviewStage"]>) {
   return stage;
 }
 
-function InterviewsView({ jobs, selectedJobId, onJobChange, selectedBatchId, onBatchChange, selectedMonth, onMonthChange, candidates, activeStage, onStageChange, onSaveStage }: { jobs: Job[]; selectedJobId: string; onJobChange: (jobId: string) => void; selectedBatchId: string; onBatchChange: (batchId: string) => void; selectedMonth: string; onMonthChange: (month: string) => void; candidates: Candidate[]; activeStage: InterviewStage; onStageChange: (stage: InterviewStage) => void; onSaveStage: (candidateId: string, interviewStage: NonNullable<Candidate["interviewStage"]>, stageRecommendation: NonNullable<Candidate["stageRecommendation"]>, interviewResult: NonNullable<Candidate["interviewResult"]>, onboarded: NonNullable<Candidate["onboarded"]>, reportMonth: string, interviewReason: string, reasonTags: string[], interviewTimeline: NonNullable<Candidate["interviewTimeline"]>) => Promise<void> }) {
+function InterviewsView({ jobs, selectedJobId, onJobChange, selectedBatchId, onBatchChange, selectedMonth, onMonthChange, candidates, activeStage, onStageChange, onSaveStage }: { jobs: Job[]; selectedJobId: string; onJobChange: (jobId: string) => void; selectedBatchId: string; onBatchChange: (batchId: string) => void; selectedMonth: string; onMonthChange: (month: string) => void; candidates: Candidate[]; activeStage: InterviewStage; onStageChange: (stage: InterviewStage) => void; onSaveStage: InterviewStageSaveHandler }) {
   const selectedJob = selectedJobId === "all" ? null : jobs.find((job) => job.id === selectedJobId) || null;
   const currentBatch = selectedJob ? getCurrentRecruitmentBatch(selectedJob) : null;
   const previousBatches = selectedJob
@@ -3477,15 +3550,15 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedBatchId, onB
     const candidateJob = jobs.find((job) => job.id === candidate.jobId);
     return Boolean(candidateJob && candidate.recruitmentBatchId === candidateJob.currentBatchId);
   });
-  const monthOptions = Array.from(new Set(batchScopedCandidates.map((candidate) => normalizeReportMonth(candidate.reportMonth || formatReportMonth())))).sort((a, b) => b.localeCompare(a, "zh-Hans-CN"));
+  const activeStageCandidates = batchScopedCandidates
+    .filter((candidate) => isInterviewCandidate(candidate))
+    .filter((candidate) => (candidate.interviewStage || "推荐") === activeStage);
+  const monthOptions = Array.from(new Set(activeStageCandidates.map((candidate) => getCandidateStageReportMonth(candidate, activeStage)).filter(Boolean))).sort((a, b) => b.localeCompare(a, "zh-Hans-CN"));
   const showJobColumn = selectedJobId === "all";
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
   const [tableScrollState, setTableScrollState] = useState({ clientWidth: 0, scrollWidth: 0, scrollLeft: 0 });
-  const periodScopedCandidates = batchScopedCandidates
-    .filter((candidate) => isInterviewCandidate(candidate))
-    .filter((candidate) => selectedMonth === "all" || normalizeReportMonth(candidate.reportMonth || formatReportMonth()) === selectedMonth);
-  const interviewCandidates = periodScopedCandidates
-    .filter((candidate) => (candidate.interviewStage || "推荐") === activeStage);
+  const interviewCandidates = activeStageCandidates
+    .filter((candidate) => selectedMonth === "all" || getCandidateStageReportMonth(candidate, activeStage) === selectedMonth);
   const maxTableScrollLeft = Math.max(tableScrollState.scrollWidth - tableScrollState.clientWidth, 0);
 
   useEffect(() => {
@@ -3575,8 +3648,8 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedBatchId, onB
         </div>
         <div className="stage-filter-tabs">
           {interviewStages.map((stage) => (
-            <Button key={stage} type="button" className={`stage-filter ${activeStage === stage ? "active" : ""}`} onClick={() => onStageChange(stage)}>
-              {formatInterviewStageLabel(stage)}<span>{periodScopedCandidates.filter((candidate) => (candidate.interviewStage || "推荐") === stage).length}</span>
+            <Button key={stage} type="button" className={`stage-filter ${activeStage === stage ? "active" : ""}`} onClick={() => { onStageChange(stage); onMonthChange("all"); }}>
+              {formatInterviewStageLabel(stage)}<span>{batchScopedCandidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.interviewStage || "推荐") === stage && (selectedMonth === "all" || getCandidateStageReportMonth(candidate, stage) === selectedMonth)).length}</span>
             </Button>
           ))}
         </div>
@@ -3585,7 +3658,7 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedBatchId, onB
         <div className="table-wrap interview-table-wrap" ref={tableWrapRef}>
           {interviewCandidates.length ? (
             <table className="table interview-table">
-              <thead><tr><th>候选人</th><th>统计月份</th>{showJobColumn && <th>岗位</th>}<th>来源</th><th>{activeStage === "推荐" ? "是否推荐" : "阶段"}</th><th>{activeStage === "推荐" ? "推荐流向" : activeStage === "offer" ? "入职" : "面试结果"}</th><th>标签</th><th>备注</th><th>操作</th></tr></thead>
+              <thead><tr><th>候选人</th><th>阶段日期</th>{showJobColumn && <th>岗位</th>}<th>来源</th><th>{activeStage === "推荐" ? "是否推荐" : "阶段"}</th>{activeStage === "offer" ? <><th>Offer状态</th><th>计划到岗</th><th>入职状态</th></> : <th>{activeStage === "推荐" ? "推荐流向" : "面试结果"}</th>}<th>{activeStage === "offer" ? "入职日期 / 未入职原因" : "标签"}</th><th>备注</th><th>操作</th></tr></thead>
               <tbody>
                 {interviewCandidates.map((candidate) => <InterviewStageRow key={candidate.id} candidate={candidate} jobs={jobs} showJobColumn={showJobColumn} activeStage={activeStage} onSaveStage={onSaveStage} />)}
               </tbody>
@@ -3614,7 +3687,7 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedBatchId, onB
   );
 }
 
-function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSaveStage }: { candidate: Candidate; jobs: Job[]; showJobColumn: boolean; activeStage: InterviewStage; onSaveStage: (candidateId: string, interviewStage: NonNullable<Candidate["interviewStage"]>, stageRecommendation: NonNullable<Candidate["stageRecommendation"]>, interviewResult: NonNullable<Candidate["interviewResult"]>, onboarded: NonNullable<Candidate["onboarded"]>, reportMonth: string, interviewReason: string, reasonTags: string[], interviewTimeline: NonNullable<Candidate["interviewTimeline"]>) => Promise<void> }) {
+function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSaveStage }: { candidate: Candidate; jobs: Job[]; showJobColumn: boolean; activeStage: InterviewStage; onSaveStage: InterviewStageSaveHandler }) {
   const overview = buildCandidateOverview(candidate);
   const job = jobs.find((item) => item.id === candidate.jobId) || null;
   const defaultReason = candidate.interviewReason || overview.recommendation || overview.risks[0];
@@ -3624,16 +3697,22 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
   const [stageRecommendation, setStageRecommendation] = useState<NonNullable<Candidate["stageRecommendation"]>>(candidate.stageRecommendation || "待定");
   const [interviewResult, setInterviewResult] = useState<NonNullable<Candidate["interviewResult"]>>(candidate.interviewResult || "待定");
   const [onboarded, setOnboarded] = useState<NonNullable<Candidate["onboarded"]>>(candidate.onboarded || "待入职");
-  const [reportMonth, setReportMonth] = useState(candidate.reportMonth || formatReportMonth());
+  const [stageDate, setStageDate] = useState(getCandidateStageEventDate(candidate, activeStage) || formatDateISO());
+  const [offerStatus, setOfferStatus] = useState<OfferStatus>(getCandidateOfferStatus(candidate));
+  const [plannedOnboardDate, setPlannedOnboardDate] = useState(candidate.interviewTimeline?.plannedOnboardDate || "");
+  const [actualOnboardDate, setActualOnboardDate] = useState(candidate.interviewTimeline?.onboardedAt || "");
   const [reason, setReason] = useState(defaultReason);
   const [reasonTags, setReasonTags] = useState<string[]>(defaultReasonTags);
   const [targetStage, setTargetStage] = useState<NonNullable<Candidate["interviewStage"]>>(candidate.interviewStage || "推荐");
   const [editingFlow, setEditingFlow] = useState(false);
   const [saving, setSaving] = useState(false);
   const shouldManageReasonTags = shouldManageReasonTagsForDecision(activeStage, interviewResult, onboarded);
+  const plannedOnboardDateValid = offerStatus === "待发出" || /^\d{4}-\d{2}-\d{2}$/.test(plannedOnboardDate);
+  const actualOnboardDateValid = onboarded !== "是" || /^\d{4}-\d{2}-\d{2}$/.test(actualOnboardDate);
+  const offerDetailsValid = activeStage !== "offer" || (plannedOnboardDateValid && actualOnboardDateValid);
   const timeline = useMemo(
-    () => buildInterviewTimeline(candidate, stage, interviewResult, onboarded),
-    [candidate, interviewResult, onboarded, stage],
+    () => buildInterviewTimeline(candidate, stage, stage, interviewResult, onboarded, stageDate, offerStatus, plannedOnboardDate, actualOnboardDate),
+    [actualOnboardDate, candidate, interviewResult, offerStatus, onboarded, plannedOnboardDate, stage, stageDate],
   );
 
   useEffect(() => {
@@ -3644,10 +3723,13 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
     setStageRecommendation(candidate.stageRecommendation || "待定");
     setInterviewResult(candidate.interviewResult || "待定");
     setOnboarded(candidate.onboarded || "待入职");
-    setReportMonth(candidate.reportMonth || formatReportMonth());
+    setStageDate(getCandidateStageEventDate(candidate, activeStage) || formatDateISO());
+    setOfferStatus(getCandidateOfferStatus(candidate));
+    setPlannedOnboardDate(candidate.interviewTimeline?.plannedOnboardDate || "");
+    setActualOnboardDate(candidate.interviewTimeline?.onboardedAt || "");
     setReason(candidate.interviewReason || buildCandidateOverview(candidate).recommendation || buildCandidateOverview(candidate).risks[0]);
     setReasonTags(normalizeStageReasonTags(candidate.reasonTags?.length ? candidate.reasonTags : inferReasonTags(candidate.interviewReason || candidate.reason || "", activeStage, candidate.onboarded), activeStage, candidate.onboarded));
-  }, [activeStage, candidate.id, candidate.interviewStage, candidate.stageRecommendation, candidate.interviewResult, candidate.onboarded, candidate.reportMonth, candidate.interviewReason, candidate.reasonTags, candidate.reason]);
+  }, [activeStage, candidate.id, candidate.interviewStage, candidate.stageRecommendation, candidate.interviewResult, candidate.onboarded, candidate.reportMonth, candidate.interviewReason, candidate.reasonTags, candidate.reason, candidate.interviewTimeline]);
 
   useEffect(() => {
     if (!shouldManageReasonTags && reasonTags.length) setReasonTags([]);
@@ -3661,9 +3743,9 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
         : stage !== "offer" && interviewResult === "通过" ? nextInterviewStage(stage) : stage;
       const nextStageRecommendation = resolveStageRecommendation(nextStage, stageRecommendation);
       const nextResult = nextStage !== stage ? "待定" : interviewResult;
-      const nextTimeline = buildInterviewTimeline(candidate, nextStage, nextResult, onboarded);
+      const nextTimeline = buildInterviewTimeline(candidate, stage, nextStage, interviewResult, onboarded, stageDate, offerStatus, plannedOnboardDate, actualOnboardDate);
       const nextReasonTags = shouldManageReasonTagsForDecision(nextStage, nextResult, onboarded) ? reasonTags : [];
-      await onSaveStage(candidate.id, nextStage, nextStageRecommendation, nextResult, onboarded, normalizeReportMonth(reportMonth), reason, nextReasonTags, nextTimeline);
+      await onSaveStage(candidate.id, nextStage, nextStageRecommendation, nextResult, onboarded, reportMonthFromDate(stageDate), reason, nextReasonTags, nextTimeline, nextStage === "offer" ? offerStatus : "待发出", nextStage === "offer" ? plannedOnboardDate : "");
       setStage(nextStage);
       setTargetStage(nextStage);
       setStageRecommendation(nextStageRecommendation);
@@ -3676,10 +3758,10 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
   const adjustFlow = async () => {
     setSaving(true);
     try {
-      const nextTimeline = buildInterviewTimeline(candidate, targetStage, interviewResult, onboarded);
+      const nextTimeline = buildInterviewTimeline(candidate, stage, targetStage, interviewResult, onboarded, stageDate, targetStage === "offer" ? offerStatus : "待发出", targetStage === "offer" ? plannedOnboardDate : "", targetStage === "offer" ? actualOnboardDate : "");
       const nextStageRecommendation = resolveStageRecommendation(targetStage, stageRecommendation);
       const nextReasonTags = shouldManageReasonTagsForDecision(targetStage, interviewResult, onboarded) ? reasonTags : [];
-      await onSaveStage(candidate.id, targetStage, nextStageRecommendation, interviewResult, onboarded, normalizeReportMonth(reportMonth), reason, nextReasonTags, nextTimeline);
+      await onSaveStage(candidate.id, targetStage, nextStageRecommendation, interviewResult, targetStage === "offer" ? onboarded : "待入职", reportMonthFromDate(stageDate), reason, nextReasonTags, nextTimeline, targetStage === "offer" ? offerStatus : "待发出", targetStage === "offer" ? plannedOnboardDate : "");
       setStage(targetStage);
       setStageRecommendation(nextStageRecommendation);
       setEditingFlow(false);
@@ -3692,7 +3774,7 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
     <tr>
       <td><strong>{candidate.name}</strong><span className="meta">{candidate.uploadTime}</span></td>
       <td>
-        <TextInput className="month-input" value={reportMonth} onChange={(event) => setReportMonth(event.target.value)} onBlur={() => setReportMonth((value) => normalizeReportMonth(value))} placeholder="2026年06月" />
+        <input className="month-input stage-date-input" aria-label={`${formatInterviewStageLabel(activeStage)}日期`} type="date" value={stageDate} onChange={(event) => setStageDate(event.target.value)} />
       </td>
       {showJobColumn && <td><strong>{job?.title || "未知岗位"}</strong></td>}
       <td>{candidate.source.split(" · ")[0]}</td>
@@ -3711,8 +3793,16 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
             {stageRecommendation === "是" ? "保存后进入初试" : stageRecommendation === "否" ? "暂不推进初试" : "等待推荐确认"}
           </div>
         ) : activeStage === "offer" ? (
-          <Select className="decision-select recommendation-select" value={onboarded} onChange={(event) => setOnboarded(event.target.value as NonNullable<Candidate["onboarded"]>)}>
-            {["待入职", "是", "否"].map((item) => <option key={item} value={item}>{item}</option>)}
+          <Select className="decision-select offer-status-select" value={offerStatus} onChange={(event) => {
+            const nextStatus = event.target.value as OfferStatus;
+            setOfferStatus(nextStatus);
+            if (nextStatus === "待发出") {
+              setOnboarded("待入职");
+              setPlannedOnboardDate("");
+              setActualOnboardDate("");
+            }
+          }}>
+            {["待发出", "已发出"].map((item) => <option key={item} value={item}>{item}</option>)}
           </Select>
         ) : (
           <Select className="decision-select recommendation-select" value={interviewResult} onChange={(event) => setInterviewResult(event.target.value as NonNullable<Candidate["interviewResult"]>)}>
@@ -3720,13 +3810,40 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
           </Select>
         )}
       </td>
+      {activeStage === "offer" ? (
+        <>
+          <td>
+            <input className="month-input stage-date-input planned-onboard-input" aria-label="计划到岗日期" type="date" disabled={offerStatus === "待发出"} value={plannedOnboardDate} onChange={(event) => setPlannedOnboardDate(event.target.value)} />
+            {offerStatus === "已发出" && plannedOnboardDate && onboarded === "待入职" ? <span className={`offer-plan-hint ${isDateOverdue(plannedOnboardDate) ? "overdue" : ""}`}>{isDateOverdue(plannedOnboardDate) ? "已超过计划到岗日" : "等待按计划到岗"}</span> : null}
+          </td>
+          <td>
+            <Select disabled={offerStatus === "待发出"} className="decision-select recommendation-select" value={onboarded} onChange={(event) => {
+              const nextOnboarded = event.target.value as NonNullable<Candidate["onboarded"]>;
+              setOnboarded(nextOnboarded);
+              setActualOnboardDate(nextOnboarded === "是" ? actualOnboardDate || formatDateISO() : "");
+            }}>
+              {["待入职", "是", "否"].map((item) => <option key={item} value={item}>{item}</option>)}
+            </Select>
+          </td>
+        </>
+      ) : null}
       <td>
-        {shouldManageReasonTags ? (
+        {activeStage === "offer" && onboarded === "是" ? (
+          <div className="actual-onboard-field">
+            <input className="month-input stage-date-input" aria-label="实际入职日期" type="date" value={actualOnboardDate} onChange={(event) => setActualOnboardDate(event.target.value)} />
+            <span>按实际入职月份进入流程统计</span>
+          </div>
+        ) : activeStage === "offer" && onboarded === "待入职" ? (
+          <div className="reason-tags-empty">
+            <strong>待入职</strong>
+            <span>{offerStatus === "已发出" ? "确认入职后填写实际日期" : "Offer发出后跟进入职"}</span>
+          </div>
+        ) : shouldManageReasonTags ? (
           <ReasonTagsDropdown value={reasonTags} options={currentReasonTagOptions} onChange={setReasonTags} />
         ) : (
           <div className="reason-tags-empty">
             <strong>无需标签</strong>
-            <span>{activeStage === "推荐" ? "推荐阶段只写备注" : activeStage === "offer" ? "已入职不做原因归类" : "仅记录淘汰/未到面原因"}</span>
+            <span>{activeStage === "推荐" ? "推荐阶段只写备注" : activeStage === "offer" ? "仅在入职状态为否时记录原因" : "仅记录淘汰/未到面原因"}</span>
           </div>
         )}
       </td>
@@ -3737,14 +3854,15 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
             {timeline.recommendedAt && <span>推荐初试：{timeline.recommendedAt}</span>}
             {timeline.firstInterviewPassedAt && <span>初试通过：{timeline.firstInterviewPassedAt}</span>}
             {timeline.secondInterviewPassedAt && <span>复试通过：{timeline.secondInterviewPassedAt}</span>}
-            {timeline.offerAt && <span>offer确认：{timeline.offerAt}</span>}
+            {getTimelineOfferSentAt(timeline) && <span>Offer发出：{getTimelineOfferSentAt(timeline)}</span>}
+            {timeline.plannedOnboardDate && <span>计划到岗：{timeline.plannedOnboardDate}</span>}
             {timeline.onboardedAt && <span>已入职：{timeline.onboardedAt}</span>}
           </div>
         </div>
       </td>
       <td>
         <div className="interview-actions">
-          <Button className="btn compact" type="button" disabled={saving} onClick={save}>{saving ? "保存中" : "保存"}</Button>
+          <Button className="btn compact" type="button" disabled={saving || !offerDetailsValid} title={!plannedOnboardDateValid ? "请先填写计划到岗日期" : !actualOnboardDateValid ? "请先填写实际入职日期" : undefined} onClick={save}>{saving ? "保存中" : "保存"}</Button>
           <Button className="btn compact ghost" type="button" disabled={saving} onClick={() => setEditingFlow((value) => !value)}>{editingFlow ? "收起" : "修改流程"}</Button>
           {editingFlow && (
             <div className="flow-edit-panel">
@@ -3806,7 +3924,7 @@ function shouldManageReasonTagsForDecision(
   interviewResult: NonNullable<Candidate["interviewResult"]>,
   onboarded: NonNullable<Candidate["onboarded"]>,
 ) {
-  if (stage === "offer") return onboarded !== "是";
+  if (stage === "offer") return onboarded === "否";
   return interviewResult === "淘汰" || interviewResult === "未到面";
 }
 
@@ -3850,40 +3968,125 @@ function inferReasonTags(reason: string, stage: InterviewStage = "初试", onboa
 
 function buildInterviewTimeline(
   candidate: Candidate,
-  stage: NonNullable<Candidate["interviewStage"]>,
+  currentStage: NonNullable<Candidate["interviewStage"]>,
+  targetStage: NonNullable<Candidate["interviewStage"]>,
   interviewResult: NonNullable<Candidate["interviewResult"]>,
   onboarded: NonNullable<Candidate["onboarded"]>,
+  stageDate: string,
+  offerStatus: OfferStatus,
+  plannedOnboardDate: string,
+  actualOnboardDate: string,
 ) {
-  const stamp = formatDateISO();
+  const stamp = stageDate || formatDateISO();
   const next = { ...(candidate.interviewTimeline || {}) };
-  if (stage !== "推荐") {
-    next.recommendedAt = next.recommendedAt || stamp;
-  } else if ((candidate.stageRecommendation || "待定") !== "是") {
-    delete next.recommendedAt;
+  next.recommendedAt = currentStage === "推荐" ? stamp : next.recommendedAt || formatDateISO();
+
+  if (currentStage === "初试" && interviewResult !== "待定") {
+    if (interviewResult !== "未到面") next.firstInterviewAt = stamp;
+    if (interviewResult === "通过") next.firstInterviewPassedAt = stamp;
+    else delete next.firstInterviewPassedAt;
   }
-  if ((stage === "复试" || stage === "offer") && interviewResult !== "未到面") {
-    next.firstInterviewPassedAt = next.firstInterviewPassedAt || stamp;
+
+  if (currentStage === "复试" && interviewResult !== "待定") {
+    if (interviewResult !== "未到面") next.secondInterviewAt = stamp;
+    if (interviewResult === "通过") next.secondInterviewPassedAt = stamp;
+    else delete next.secondInterviewPassedAt;
   }
-  if (stage === "offer") {
-    if (interviewResult !== "未到面") {
-      next.secondInterviewPassedAt = next.secondInterviewPassedAt || stamp;
+
+  if (targetStage === "offer") {
+    if (offerStatus === "已发出") {
+      next.offerSentAt = stamp;
+      next.offerAt = stamp;
+      next.plannedOnboardDate = plannedOnboardDate;
+    } else {
+      next.offerSentAt = "";
+      delete next.offerAt;
+      delete next.plannedOnboardDate;
     }
-    next.offerAt = next.offerAt || stamp;
-  }
-  if (onboarded === "是") {
-    next.onboardedAt = next.onboardedAt || stamp;
-  }
-  if (stage !== "offer") {
-    delete next.secondInterviewPassedAt;
+    if (onboarded === "是" && offerStatus === "已发出") next.onboardedAt = actualOnboardDate;
+    else delete next.onboardedAt;
+  } else {
+    delete next.offerSentAt;
     delete next.offerAt;
-  }
-  if (stage === "推荐") {
-    delete next.firstInterviewPassedAt;
-  }
-  if (onboarded !== "是") {
+    delete next.plannedOnboardDate;
     delete next.onboardedAt;
   }
+
+  if (targetStage === "推荐") {
+    delete next.firstInterviewAt;
+    delete next.firstInterviewPassedAt;
+    delete next.secondInterviewAt;
+    delete next.secondInterviewPassedAt;
+  } else if (targetStage === "初试") {
+    delete next.secondInterviewAt;
+    delete next.secondInterviewPassedAt;
+  }
+
   return next;
+}
+
+function getTimelineOfferSentAt(timeline: Candidate["interviewTimeline"]) {
+  if (!timeline) return "";
+  if (Object.prototype.hasOwnProperty.call(timeline, "offerSentAt")) return timeline.offerSentAt || "";
+  return timeline.offerAt || "";
+}
+
+function getCandidateOfferStatus(candidate: Candidate): OfferStatus {
+  const timeline = candidate.interviewTimeline || {};
+  if (Object.prototype.hasOwnProperty.call(timeline, "offerSentAt")) return timeline.offerSentAt ? "已发出" : "待发出";
+  if (timeline.offerAt || candidate.interviewStage === "offer") return "已发出";
+  return "待发出";
+}
+
+function getCandidateOfferSentAt(candidate: Candidate) {
+  const timeline = candidate.interviewTimeline || {};
+  if (Object.prototype.hasOwnProperty.call(timeline, "offerSentAt")) return timeline.offerSentAt || "";
+  if (timeline.offerAt) return timeline.offerAt;
+  return candidate.interviewStage === "offer" ? reportMonthToDate(candidate.reportMonth) : "";
+}
+
+function isActiveHeadcountCompletion(candidate: Candidate) {
+  return candidate.interviewStage === "offer" && Boolean(getCandidateOfferSentAt(candidate)) && candidate.onboarded !== "否";
+}
+
+function getCandidateStageEventDate(candidate: Candidate, stage: InterviewStage) {
+  const timeline = candidate.interviewTimeline || {};
+  const hasStructuredTimeline = Boolean(
+    timeline.recommendedAt
+    || timeline.firstInterviewAt
+    || timeline.firstInterviewPassedAt
+    || timeline.secondInterviewAt
+    || timeline.secondInterviewPassedAt
+    || timeline.offerAt
+    || Object.prototype.hasOwnProperty.call(timeline, "offerSentAt"),
+  );
+  if (stage === "推荐") return timeline.recommendedAt || (!hasStructuredTimeline ? reportMonthToDate(candidate.reportMonth) : "");
+  if (stage === "初试") return timeline.firstInterviewAt || timeline.firstInterviewPassedAt || (!hasStructuredTimeline ? reportMonthToDate(candidate.reportMonth) : "");
+  if (stage === "复试") return timeline.secondInterviewAt || timeline.secondInterviewPassedAt || (!hasStructuredTimeline ? reportMonthToDate(candidate.reportMonth) : "");
+  return getCandidateOfferSentAt(candidate);
+}
+
+function getCandidateStageReportMonth(candidate: Candidate, stage: InterviewStage) {
+  const date = getCandidateStageEventDate(candidate, stage);
+  return date ? reportMonthFromDate(date) : "";
+}
+
+function reportMonthFromDate(value: string) {
+  const matched = value.match(/^(\d{4})-(\d{2})-\d{2}$/);
+  return matched ? `${matched[1]}年${matched[2]}月` : formatReportMonth();
+}
+
+function reportMonthToDate(value?: string) {
+  const matched = String(value || "").match(/^(\d{4})年(\d{2})月$/);
+  return matched ? `${matched[1]}-${matched[2]}-01` : "";
+}
+
+function isDateOverdue(value: string) {
+  const date = parseFlexibleDate(value);
+  if (!date) return false;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return date.getTime() < today.getTime();
 }
 
 function formatReportMonth(date = new Date()) {
@@ -3959,6 +4162,34 @@ function getCandidatePeriodValue(candidate: Candidate, granularity: AnalyticsGra
   return `${parsed.year}年`;
 }
 
+function getDatePeriodValue(value: string, granularity: AnalyticsGranularity) {
+  const date = parseFlexibleDate(value);
+  if (!date) return "";
+  const year = date.getFullYear();
+  const month = date.getMonth() + 1;
+  if (granularity === "month") return `${year}年${String(month).padStart(2, "0")}月`;
+  if (granularity === "quarter") return `${year}年Q${Math.floor((month - 1) / 3) + 1}`;
+  return `${year}年`;
+}
+
+function dateMatchesPeriod(value: string, granularity: AnalyticsGranularity, selectedPeriod: string) {
+  return Boolean(value) && getDatePeriodValue(value, granularity) === selectedPeriod;
+}
+
+function getCandidateTimelineDates(candidate: Candidate) {
+  const timeline = candidate.interviewTimeline || {};
+  return [
+    timeline.recommendedAt,
+    timeline.firstInterviewAt,
+    timeline.firstInterviewPassedAt,
+    timeline.secondInterviewAt,
+    timeline.secondInterviewPassedAt,
+    getCandidateOfferSentAt(candidate),
+    timeline.plannedOnboardDate,
+    timeline.onboardedAt,
+  ].filter((value): value is string => Boolean(value));
+}
+
 function getRecruitmentBatchPeriodValue(batch: RecruitmentBatch, granularity: AnalyticsGranularity) {
   const parsed = parseReportMonth(batch.targetMonth);
   if (granularity === "month") return parsed.normalized;
@@ -3968,7 +4199,11 @@ function getRecruitmentBatchPeriodValue(batch: RecruitmentBatch, granularity: An
 
 function getAnalyticsPeriodOptions(candidates: Candidate[], granularity: AnalyticsGranularity, jobs: Job[] = []) {
   const batchPeriods = jobs.flatMap((job) => job.recruitmentBatches.map((batch) => getRecruitmentBatchPeriodValue(batch, granularity)));
-  return Array.from(new Set([...candidates.map((candidate) => getCandidatePeriodValue(candidate, granularity)), ...batchPeriods]))
+  const candidatePeriods = candidates.flatMap((candidate) => [
+    getCandidatePeriodValue(candidate, granularity),
+    ...getCandidateTimelineDates(candidate).map((date) => getDatePeriodValue(date, granularity)),
+  ]);
+  return Array.from(new Set([...candidatePeriods, ...batchPeriods]))
     .filter(Boolean)
     .sort((a, b) => b.localeCompare(a, "zh-Hans-CN"))
     .map((value) => ({ value, label: value }));
@@ -3985,12 +4220,14 @@ function buildHeadcountAnalytics(jobs: Job[], candidates: Candidate[], granulari
     demandType: batch.demandType || "未分类",
     ...getBatchHeadcountProgress(batch, candidates.filter((candidate) => candidate.jobId === job.id)),
   }));
-  const totals = rows.reduce((result, row) => ({
+  const cohortTotals = rows.reduce((result, row) => ({
     planned: result.planned + row.planned,
-    completed: result.completed + row.completed,
-    pending: result.pending + row.pending,
+    cohortCompleted: result.cohortCompleted + row.completed,
     remaining: result.remaining + row.remaining,
-  }), { planned: 0, completed: 0, pending: 0, remaining: 0 });
+  }), { planned: 0, cohortCompleted: 0, remaining: 0 });
+  const completedCandidates = candidates.filter((candidate) => isActiveHeadcountCompletion(candidate) && dateMatchesPeriod(getCandidateOfferSentAt(candidate), granularity, selectedPeriod));
+  const completed = completedCandidates.length;
+  const pending = completedCandidates.filter((candidate) => candidate.onboarded === "待入职").length;
   const demandTypes = [...recruitmentDemandTypeOptions, "未分类"];
   const byDemandType = demandTypes.map((demandType) => {
     const demandRows = rows.filter((row) => row.demandType === demandType);
@@ -4000,7 +4237,7 @@ function buildHeadcountAnalytics(jobs: Job[], candidates: Candidate[], granulari
       completed: demandRows.reduce((sum, row) => sum + row.completed, 0),
     };
   }).filter((item) => item.planned > 0);
-  return { ...totals, batchCount: batches.length, byDemandType };
+  return { ...cohortTotals, completed, pending, batchCount: batches.length, byDemandType };
 }
 
 function buildDepartmentHeadcountAnalytics(jobs: Job[], candidates: Candidate[], granularity: AnalyticsGranularity, selectedPeriod: string) {
@@ -4104,6 +4341,34 @@ function percentValue(value: number, total: number) {
   return Number((((value / total) * 100)).toFixed(1));
 }
 
+function buildRecruitmentStageCounts(candidates: Candidate[], granularity: AnalyticsGranularity, selectedPeriod: string) {
+  const inPeriod = (value: string) => dateMatchesPeriod(value, granularity, selectedPeriod);
+  const getLegacyDate = (candidate: Candidate) => reportMonthToDate(candidate.reportMonth);
+  const getRecommendedDate = (candidate: Candidate) => candidate.interviewTimeline?.recommendedAt || (isInterviewCandidate(candidate) ? getLegacyDate(candidate) : "");
+  const getFirstInterviewDate = (candidate: Candidate) => candidate.interviewTimeline?.firstInterviewAt
+    || candidate.interviewTimeline?.firstInterviewPassedAt
+    || ((candidate.interviewStage === "初试" || candidate.interviewStage === "复试" || candidate.interviewStage === "offer") ? getLegacyDate(candidate) : "");
+  const getFirstPassDate = (candidate: Candidate) => candidate.interviewTimeline?.firstInterviewPassedAt
+    || ((candidate.interviewStage === "复试" || candidate.interviewStage === "offer") ? getLegacyDate(candidate) : "");
+  const getSecondInterviewDate = (candidate: Candidate) => candidate.interviewTimeline?.secondInterviewAt
+    || candidate.interviewTimeline?.secondInterviewPassedAt
+    || ((candidate.interviewStage === "复试" || candidate.interviewStage === "offer") ? getLegacyDate(candidate) : "");
+  const getSecondPassDate = (candidate: Candidate) => candidate.interviewTimeline?.secondInterviewPassedAt
+    || (candidate.interviewStage === "offer" ? getLegacyDate(candidate) : "");
+  const getOnboardedDate = (candidate: Candidate) => candidate.interviewTimeline?.onboardedAt
+    || (candidate.onboarded === "是" ? getLegacyDate(candidate) : "");
+
+  return {
+    recommendedTotal: candidates.filter((candidate) => inPeriod(getRecommendedDate(candidate))).length,
+    attendedFirstInterview: candidates.filter((candidate) => inPeriod(getFirstInterviewDate(candidate))).length,
+    passedFirstInterview: candidates.filter((candidate) => inPeriod(getFirstPassDate(candidate))).length,
+    attendedRetest: candidates.filter((candidate) => inPeriod(getSecondInterviewDate(candidate))).length,
+    passedRetest: candidates.filter((candidate) => inPeriod(getSecondPassDate(candidate))).length,
+    completedOfferCount: candidates.filter((candidate) => isActiveHeadcountCompletion(candidate) && inPeriod(getCandidateOfferSentAt(candidate))).length,
+    onboardedCount: candidates.filter((candidate) => candidate.onboarded === "是" && inPeriod(getOnboardedDate(candidate))).length,
+  };
+}
+
 function isRecommendedToDepartment(candidate: Candidate) {
   if (!isInterviewCandidate(candidate)) return false;
   const stage = candidate.interviewStage || "推荐";
@@ -4111,25 +4376,17 @@ function isRecommendedToDepartment(candidate: Candidate) {
   return candidate.stageRecommendation === "是";
 }
 
-function buildPeriodComparison(currentCandidates: Candidate[], previousCandidates: Candidate[]) {
-  const currentOverview = buildRecruitmentAnalytics(currentCandidates);
-  const previousOverview = buildRecruitmentAnalytics(previousCandidates);
-  const currentRecommended = currentCandidates.filter(isInterviewCandidate).length;
-  const previousRecommended = previousCandidates.filter(isInterviewCandidate).length;
-  const currentAttendedFirst = currentCandidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.interviewStage === "初试" || candidate.interviewStage === "复试" || candidate.interviewStage === "offer") && candidate.interviewResult !== "未到面").length;
-  const previousAttendedFirst = previousCandidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.interviewStage === "初试" || candidate.interviewStage === "复试" || candidate.interviewStage === "offer") && candidate.interviewResult !== "未到面").length;
-  const currentFirstPass = currentCandidates.filter((candidate) => candidate.interviewStage === "复试" || candidate.interviewStage === "offer").length;
-  const previousFirstPass = previousCandidates.filter((candidate) => candidate.interviewStage === "复试" || candidate.interviewStage === "offer").length;
-  const currentRetestPass = currentCandidates.filter((candidate) => candidate.interviewStage === "offer").length;
-  const previousRetestPass = previousCandidates.filter((candidate) => candidate.interviewStage === "offer").length;
-  const currentOnboarded = currentCandidates.filter((candidate) => candidate.interviewStage === "offer" && candidate.onboarded === "是").length;
-  const previousOnboarded = previousCandidates.filter((candidate) => candidate.interviewStage === "offer" && candidate.onboarded === "是").length;
+function buildPeriodComparison(candidates: Candidate[], granularity: AnalyticsGranularity, currentPeriod: string, previousPeriod: string) {
+  const currentOverview = buildRecruitmentAnalytics(candidates, granularity, currentPeriod);
+  const previousOverview = buildRecruitmentAnalytics(candidates, granularity, previousPeriod);
+  const current = buildRecruitmentStageCounts(candidates, granularity, currentPeriod);
+  const previous = buildRecruitmentStageCounts(candidates, granularity, previousPeriod);
 
   const metrics = [
-    { label: "推荐到初试出席率", current: percentValue(currentAttendedFirst, currentRecommended), previous: percentValue(previousAttendedFirst, previousRecommended), type: "rate" as const },
-    { label: "初试通过率", current: percentValue(currentFirstPass, currentAttendedFirst), previous: percentValue(previousFirstPass, previousAttendedFirst), type: "rate" as const },
-    { label: "复试通过率", current: percentValue(currentRetestPass, currentFirstPass), previous: percentValue(previousRetestPass, previousFirstPass), type: "rate" as const },
-    { label: "offer入职率", current: percentValue(currentOnboarded, currentRetestPass), previous: percentValue(previousOnboarded, previousRetestPass), type: "rate" as const },
+    { label: "推荐到初试出席率", current: percentValue(current.attendedFirstInterview, current.recommendedTotal), previous: percentValue(previous.attendedFirstInterview, previous.recommendedTotal), type: "rate" as const },
+    { label: "初试通过率", current: percentValue(current.passedFirstInterview, current.attendedFirstInterview), previous: percentValue(previous.passedFirstInterview, previous.attendedFirstInterview), type: "rate" as const },
+    { label: "复试通过率", current: percentValue(current.passedRetest, current.attendedRetest), previous: percentValue(previous.passedRetest, previous.attendedRetest), type: "rate" as const },
+    { label: "Offer后入职率", current: percentValue(current.onboardedCount, current.completedOfferCount), previous: percentValue(previous.onboardedCount, previous.completedOfferCount), type: "rate" as const },
   ].map((item) => {
     const delta = Number((item.current - item.previous).toFixed(1));
     return {
@@ -4152,14 +4409,9 @@ function buildPeriodComparison(currentCandidates: Candidate[], previousCandidate
   return { metrics, summary };
 }
 
-function buildRecruitmentAnalytics(candidates: Candidate[]) {
-  const resumeTotal = candidates.length;
-  const recommendedTotal = candidates.filter(isInterviewCandidate).length;
-  const attendedFirstInterview = candidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.interviewStage === "初试" || candidate.interviewStage === "复试" || candidate.interviewStage === "offer") && (candidate.interviewResult !== "未到面")).length;
-  const passedFirstInterview = candidates.filter((candidate) => candidate.interviewStage === "复试" || candidate.interviewStage === "offer").length;
-  const attendedRetest = candidates.filter((candidate) => candidate.interviewStage === "复试" || candidate.interviewStage === "offer").length;
-  const passedRetest = candidates.filter((candidate) => candidate.interviewStage === "offer").length;
-  const hiredCount = candidates.filter((candidate) => candidate.interviewStage === "offer" && candidate.onboarded !== "否").length;
+function buildRecruitmentAnalytics(candidates: Candidate[], granularity: AnalyticsGranularity, selectedPeriod: string) {
+  const resumeTotal = candidates.filter((candidate) => getCandidatePeriodValue(candidate, granularity) === selectedPeriod).length;
+  const { recommendedTotal, attendedFirstInterview, passedFirstInterview, attendedRetest, passedRetest, completedOfferCount: hiredCount } = buildRecruitmentStageCounts(candidates, granularity, selectedPeriod);
 
   const rows = [
     {
@@ -4203,12 +4455,12 @@ function buildRecruitmentAnalytics(candidates: Candidate[]) {
       note: "进入 offer 阶段",
     },
     {
-      label: "最终录用人数",
+      label: "HC完成（Offer已发）",
       count: hiredCount,
       share: formatPercent(hiredCount, recommendedTotal),
       conversion: formatPercent(hiredCount, passedRetest),
       conversionHint: "录用人数占比",
-      note: "含待入职与已入职",
+      note: "待入职与已入职计入，入职否会撤回",
     },
   ];
 
@@ -4269,15 +4521,17 @@ function buildPendingOnboardReasonAnalytics(candidates: Candidate[], jobs: Job[]
   targetCandidates.forEach((candidate) => {
     const job = jobs.find((item) => item.id === candidate.jobId);
     const department = job?.dept || "未知部门";
-    const tags = normalizeStageReasonTags(
-      candidate.reasonTags?.length
-        ? candidate.reasonTags
-        : inferReasonTags(candidate.interviewReason || candidate.reason || "", "offer", candidate.onboarded),
-      "offer",
-      candidate.onboarded,
-    );
+    const tags = candidate.interviewStage === "offer" && candidate.onboarded === "待入职"
+      ? ["待入职"]
+      : normalizeStageReasonTags(
+        candidate.reasonTags?.length
+          ? candidate.reasonTags
+          : inferReasonTags(candidate.interviewReason || candidate.reason || "", "offer", candidate.onboarded),
+        "offer",
+        candidate.onboarded,
+      );
 
-    const normalizedTags = tags.length ? tags : ["其他"];
+    const normalizedTags = tags.length ? tags : ["其他（身体、家人等）"];
     const deptMap = departmentCounter.get(department) || new Map<string, number>();
     normalizedTags.forEach((tag) => {
       reasonCounter.set(tag, (reasonCounter.get(tag) || 0) + 1);
@@ -4286,7 +4540,7 @@ function buildPendingOnboardReasonAnalytics(candidates: Candidate[], jobs: Job[]
     departmentCounter.set(department, deptMap);
   });
 
-  const reasonColumns = offerReasonTagOptions;
+  const reasonColumns = ["待入职", ...offerReasonTagOptions];
   const departmentRows = Array.from(departmentCounter.entries())
     .map(([department, counts]) => ({
       department,
@@ -4406,14 +4660,14 @@ function buildStageDurationAnalytics(candidates: Candidate[]) {
     },
     {
       key: "secondPassToOffer",
-      label: "复试通过→offer确认",
-      values: candidates.map((candidate) => daysBetween(candidate.interviewTimeline?.secondInterviewPassedAt, candidate.interviewTimeline?.offerAt)).filter((value): value is number => value !== null),
+      label: "复试通过→Offer发出",
+      values: candidates.map((candidate) => daysBetween(candidate.interviewTimeline?.secondInterviewPassedAt, getCandidateOfferSentAt(candidate))).filter((value): value is number => value !== null),
       threshold: 7,
     },
     {
       key: "offerToOnboard",
-      label: "offer确认→入职完结",
-      values: candidates.map((candidate) => daysBetween(candidate.interviewTimeline?.offerAt, candidate.interviewTimeline?.onboardedAt)).filter((value): value is number => value !== null),
+      label: "Offer发出→入职完结",
+      values: candidates.map((candidate) => daysBetween(getCandidateOfferSentAt(candidate), candidate.interviewTimeline?.onboardedAt)).filter((value): value is number => value !== null),
       threshold: 14,
     },
   ].map((item) => {
@@ -6404,6 +6658,80 @@ function ReopenJobModal({ job, onClose, onSaved }: { job: Job; onClose: () => vo
   );
 }
 
+type JobCityTaskDraft = MultiCityJobPayload["cityTasks"][number] & { id: string };
+
+function createJobCityTaskDraft(source: Partial<JobCityTaskDraft> = {}): JobCityTaskDraft {
+  return {
+    id: source.id || `city_task_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    location: source.location || "",
+    targetMonth: source.targetMonth || formatReportMonth(),
+    salaryRange: normalizeSalaryRangeValue(source.salaryRange || ""),
+    demandType: source.demandType || "离职替补",
+    plannedHeadcount: source.plannedHeadcount || 1,
+  };
+}
+
+function JobCityTaskModal({ job, onClose, onSaved }: { job: Job; onClose: () => void; onSaved: (state: AppState) => void }) {
+  const [tasks, setTasks] = useState<JobCityTaskDraft[]>(() => [createJobCityTaskDraft({
+    targetMonth: formatReportMonth(),
+    salaryRange: job.salaryRange,
+    demandType: job.demandType || "离职替补",
+    plannedHeadcount: job.plannedHeadcount || 1,
+  })]);
+  const [submitting, setSubmitting] = useState(false);
+  const [saveError, setSaveError] = useState("");
+  const task = tasks[0];
+  const valid = Boolean(task?.location)
+    && /^\d{4}年(?:0[1-9]|1[0-2])月$/.test(task?.targetMonth || "")
+    && isValidSalaryRangeValue(task?.salaryRange || "")
+    && Boolean(task?.demandType)
+    && Number(task?.plannedHeadcount) >= 1;
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!task || !valid) return;
+    setSubmitting(true);
+    setSaveError("");
+    try {
+      const { id: _id, ...payload } = task;
+      onSaved(await api.addJobCityTask(job.id, {
+        ...payload,
+        location: normalizeRegionToCity(payload.location),
+        targetMonth: normalizeReportMonth(payload.targetMonth),
+        salaryRange: normalizeSalaryRangeValue(payload.salaryRange),
+      }));
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : "城市招聘任务创建失败");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="增加城市招聘任务"
+      className="modal-wide job-city-task-modal"
+      onClose={onClose}
+      actions={(
+        <>
+          <Button className="btn" type="button" onClick={onClose} disabled={submitting}>取消</Button>
+          <Button className="btn primary" type="submit" form="jobCityTaskForm" disabled={!valid || submitting}>{submitting ? "创建中..." : "创建城市任务"}</Button>
+        </>
+      )}
+    >
+      <form id="jobCityTaskForm" className="modal-body" onSubmit={submit}>
+        <div className="reopen-job-summary">
+          <strong>{job.title}</strong>
+          <span>{job.dept} · 共用当前岗位画像</span>
+          <p>新城市会独立维护招聘月份、薪资、需求类型、HC、简历和面试流程。</p>
+        </div>
+        <JobCityTasksField tasks={tasks} onChange={setTasks} allowMultiple={false} />
+        {saveError ? <div className="form-validation-error">{saveError}</div> : null}
+      </form>
+    </Modal>
+  );
+}
+
 function JobModal({ job, minimumHeadcount, onClose, onSaved }: { job?: Job; minimumHeadcount: number; onClose: () => void; onSaved: (state: AppState) => void }) {
   const [form, setForm] = useState<JobPayload>({
     title: job?.title || "",
@@ -6419,6 +6747,14 @@ function JobModal({ job, minimumHeadcount, onClose, onSaved }: { job?: Job; mini
     description: job?.description || "",
     status: job?.status || "招聘中",
   });
+  const [cityTasks, setCityTasks] = useState<JobCityTaskDraft[]>(() => [createJobCityTaskDraft({
+    location: job?.location || "",
+    targetMonth: job ? getCurrentRecruitmentBatch(job)?.targetMonth || formatReportMonth() : formatReportMonth(),
+    salaryRange: job?.salaryRange || "",
+    demandType: job?.demandType || "离职替补",
+    plannedHeadcount: job?.plannedHeadcount || 1,
+  })]);
+  const [targetMonth, setTargetMonth] = useState(job ? getCurrentRecruitmentBatch(job)?.targetMonth || formatReportMonth() : formatReportMonth());
   const [jdResult, setJdResult] = useState<{ description: string; html: React.ReactNode } | null>(null);
   const [generatedQuestions, setGeneratedQuestions] = useState<JobCopilotResult["interviewQuestions"]>(buildJobQuestions(form));
   const [copilotLoading, setCopilotLoading] = useState<null | "jd" | "questions">(null);
@@ -6432,14 +6768,49 @@ function JobModal({ job, minimumHeadcount, onClose, onSaved }: { job?: Job; mini
   const salaryRangeValid = isValidSalaryRangeValue(form.salaryRange);
   const demandTypeValid = Boolean(form.demandType);
   const keywordsValid = splitKeywords(form.keywords).length > 0;
+  const cityLocations = cityTasks.map((task) => normalizeRegionToCity(task.location)).filter(Boolean);
+  const cityTasksValid = cityTasks.length > 0
+    && cityTasks.every((task) => Boolean(task.location) && Boolean(task.demandType) && /^\d{4}年(?:0[1-9]|1[0-2])月$/.test(task.targetMonth) && isValidSalaryRangeValue(task.salaryRange) && task.plannedHeadcount >= 1)
+    && new Set(cityLocations).size === cityTasks.length;
+  const targetMonthValid = /^\d{4}年(?:0[1-9]|1[0-2])月$/.test(targetMonth);
+  const canSave = scoreWeightValid && keywordsValid && (job ? salaryRangeValid && demandTypeValid && targetMonthValid : cityTasksValid);
+  const updateCityTasks = (nextTasks: JobCityTaskDraft[]) => {
+    setCityTasks(nextTasks);
+    const primaryTask = nextTasks[0];
+    if (!primaryTask) return;
+    setForm((current) => ({
+      ...current,
+      location: primaryTask.location,
+      salaryRange: primaryTask.salaryRange,
+      demandType: primaryTask.demandType,
+      plannedHeadcount: primaryTask.plannedHeadcount,
+    }));
+  };
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!scoreWeightValid || !salaryRangeValid || !demandTypeValid || !keywordsValid) return;
+    if (!canSave) return;
     const payload = { ...form, salaryRange: normalizeSalaryRangeValue(form.salaryRange) };
     setSaveError("");
     try {
-      const next = job ? await api.updateJob(job.id, payload) : await api.createJob(payload);
+      const next = job
+        ? await api.updateJob(job.id, { ...payload, targetMonth: normalizeReportMonth(targetMonth) })
+        : await api.createMultiCityJob({
+          title: form.title,
+          dept: form.dept,
+          experience: form.experience,
+          level: form.level,
+          keywords: form.keywords,
+          scoreWeights: form.scoreWeights,
+          description: form.description,
+          status: form.status,
+          cityTasks: cityTasks.map(({ id: _id, ...task }) => ({
+            ...task,
+            location: normalizeRegionToCity(task.location),
+            targetMonth: normalizeReportMonth(task.targetMonth),
+            salaryRange: normalizeSalaryRangeValue(task.salaryRange),
+          })),
+        });
       onSaved(next);
     } catch (error) {
       setSaveError(error instanceof Error ? error.message : "职位保存失败");
@@ -6571,25 +6942,41 @@ function JobModal({ job, minimumHeadcount, onClose, onSaved }: { job?: Job; mini
   };
 
   return (
-    <Modal title={job ? "编辑职位" : "新增职位"} className="modal-wide modal-job-editor" onClose={onClose} actions={<Button className="btn primary" type="submit" form="jobForm" disabled={!scoreWeightValid || !salaryRangeValid || !demandTypeValid || !keywordsValid}>保存职位</Button>}>
+    <Modal title={job ? "编辑职位" : "新增职位"} className="modal-wide modal-job-editor" onClose={onClose} actions={<Button className="btn primary" type="submit" form="jobForm" disabled={!canSave}>{job ? "保存职位" : `创建 ${cityTasks.length} 个城市任务`}</Button>}>
       <form id="jobForm" onSubmit={submit}>
         <div className="modal-body form-grid">
+          {job ? <div className="reopen-job-note full">修改职位名称、部门、经验、级别、关键词、评分权重或JD时，会同步到同岗位的其他城市任务；当前城市的薪资、HC和招聘批次保持独立。</div> : null}
           <Input label="职位名称" value={form.title} onChange={(title) => setForm({ ...form, title })} />
           <Input label="所属部门" value={form.dept} onChange={(dept) => setForm({ ...form, dept })} />
-          <label className="form-field">
-            <span>需求类型</span>
-            <Select value={form.demandType} onChange={(event) => setForm((current) => ({ ...current, demandType: event.target.value as Job["demandType"] }))}>
-              <option value="" disabled>请选择需求类型</option>
-              {recruitmentDemandTypeOptions.map((item) => <option key={item} value={item}>{item}</option>)}
-            </Select>
-          </label>
-          <HeadcountField
-            value={form.plannedHeadcount}
-            minimum={Math.max(1, minimumHeadcount)}
-            disabled={job?.status === "已关闭"}
-            onChange={(plannedHeadcount) => setForm((current) => ({ ...current, plannedHeadcount }))}
-          />
-          <RegionCascaderField label="工作城市" value={form.location} onChange={(location) => setForm((current) => ({ ...current, location }))} />
+          {job ? (
+            <>
+              <label className="form-field">
+                <span>需求类型</span>
+                <Select value={form.demandType} onChange={(event) => setForm((current) => ({ ...current, demandType: event.target.value as Job["demandType"] }))}>
+                  <option value="" disabled>请选择需求类型</option>
+                  {recruitmentDemandTypeOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+                </Select>
+              </label>
+              <HeadcountField
+                value={form.plannedHeadcount}
+                minimum={Math.max(1, minimumHeadcount)}
+                completed={minimumHeadcount}
+                disabled={job.status === "已关闭"}
+                onChange={(plannedHeadcount) => setForm((current) => ({ ...current, plannedHeadcount }))}
+              />
+              <label className="form-field">
+                <span>招聘月份</span>
+                <TextInput
+                  value={targetMonth}
+                  onChange={(event) => setTargetMonth(event.target.value)}
+                  onBlur={() => setTargetMonth((value) => normalizeReportMonth(value))}
+                  placeholder="2026年07月"
+                />
+                <small>用于职位 HC 和招聘批次归属，可与面试管理月份分别校准。</small>
+              </label>
+              <RegionCascaderField label="工作城市" value={form.location} onChange={(location) => setForm((current) => ({ ...current, location }))} />
+            </>
+          ) : null}
           <label className="form-field">
             <span>经验要求</span>
             <Select value={form.experience} onChange={(event) => setForm((current) => ({ ...current, experience: event.target.value }))}>
@@ -6597,7 +6984,7 @@ function JobModal({ job, minimumHeadcount, onClose, onSaved }: { job?: Job; mini
             </Select>
           </label>
           <Input label="职位级别" value={form.level} onChange={(level) => setForm({ ...form, level })} />
-          <SalaryRangeField value={form.salaryRange} onChange={(salaryRange) => setForm((current) => ({ ...current, salaryRange }))} />
+          {job ? <SalaryRangeField value={form.salaryRange} onChange={(salaryRange) => setForm((current) => ({ ...current, salaryRange }))} /> : null}
           <label className="form-field">
             <span>招聘状态</span>
             <Select disabled={job?.status === "已关闭"} value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value as Job["status"] })}>
@@ -6605,6 +6992,7 @@ function JobModal({ job, minimumHeadcount, onClose, onSaved }: { job?: Job; mini
             </Select>
             {job?.status === "已关闭" ? <small>保存画像后，请在职位详情使用“重新招聘”开启新批次。</small> : null}
           </label>
+          {!job ? <JobCityTasksField tasks={cityTasks} onChange={updateCityTasks} /> : null}
           <JobKeywordField title={form.title} value={form.keywords} onChange={(keywords) => setForm((current) => ({ ...current, keywords }))} />
           <ScoreWeightPanel
             value={form.scoreWeights}
@@ -6682,6 +7070,76 @@ function JobModal({ job, minimumHeadcount, onClose, onSaved }: { job?: Job; mini
 
       </form>
     </Modal>
+  );
+}
+
+function JobCityTasksField({ tasks, onChange, allowMultiple = true }: { tasks: JobCityTaskDraft[]; onChange: (tasks: JobCityTaskDraft[]) => void; allowMultiple?: boolean }) {
+  const updateTask = (id: string, patch: Partial<JobCityTaskDraft>) => {
+    onChange(tasks.map((task) => task.id === id ? { ...task, ...patch } : task));
+  };
+  const addTask = () => {
+    const template = tasks[0];
+    onChange([...tasks, createJobCityTaskDraft({
+      ...template,
+      id: "",
+      location: "",
+    })]);
+  };
+  const removeTask = (id: string) => {
+    if (tasks.length <= 1) return;
+    onChange(tasks.filter((task) => task.id !== id));
+  };
+  const normalizedLocations = tasks.map((task) => normalizeRegionToCity(task.location)).filter(Boolean);
+  const hasDuplicateLocation = new Set(normalizedLocations).size !== normalizedLocations.length;
+
+  return (
+    <section className="job-city-tasks full">
+      <div className="job-city-tasks-head">
+        <div>
+          <strong>招聘城市与 HC</strong>
+          <span>岗位画像共用，城市薪资、招聘月份、需求类型和 HC 独立统计。</span>
+        </div>
+        {allowMultiple ? <Button className="btn ghost compact" type="button" onClick={addTask}><IconPlus />增加城市</Button> : null}
+      </div>
+      <div className="job-city-task-table">
+        <div className="job-city-task-columns" aria-hidden="true">
+          <span>招聘城市</span>
+          <span>招聘月份</span>
+          <span>薪资范围</span>
+          <span>需求类型</span>
+          <span>计划 HC</span>
+          <span>操作</span>
+        </div>
+        {tasks.map((task, index) => (
+          <div className="job-city-task-row" key={task.id}>
+            <div className="job-city-task-control"><RegionCascaderField label={`招聘城市${index + 1}`} value={task.location} onChange={(location) => updateTask(task.id, { location })} /></div>
+            <label className="form-field job-city-task-control">
+              <span>招聘月份</span>
+              <TextInput
+                value={task.targetMonth}
+                placeholder="2026年08月"
+                onChange={(event) => updateTask(task.id, { targetMonth: event.target.value })}
+                onBlur={() => updateTask(task.id, { targetMonth: normalizeReportMonth(task.targetMonth) })}
+              />
+            </label>
+            <div className="job-city-task-control"><SalaryRangeField value={task.salaryRange} onChange={(salaryRange) => updateTask(task.id, { salaryRange })} /></div>
+            <label className="form-field job-city-task-control">
+              <span>需求类型</span>
+              <Select value={task.demandType} onChange={(event) => updateTask(task.id, { demandType: event.target.value as JobCityTaskDraft["demandType"] })}>
+                {recruitmentDemandTypeOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+              </Select>
+            </label>
+            <div className="job-city-task-headcount">
+              <Button type="button" aria-label={`减少${task.location || `城市${index + 1}`}HC`} title="减少HC" disabled={task.plannedHeadcount <= 1} onClick={() => updateTask(task.id, { plannedHeadcount: Math.max(1, task.plannedHeadcount - 1) })}><IconMinus /></Button>
+              <input aria-label={`${task.location || `城市${index + 1}`}计划HC`} type="number" min={1} max={999} value={task.plannedHeadcount} onChange={(event) => updateTask(task.id, { plannedHeadcount: Math.min(999, Math.max(1, Number(event.target.value) || 1)) })} />
+              <Button type="button" aria-label={`增加${task.location || `城市${index + 1}`}HC`} title="增加HC" disabled={task.plannedHeadcount >= 999} onClick={() => updateTask(task.id, { plannedHeadcount: Math.min(999, task.plannedHeadcount + 1) })}><IconPlus /></Button>
+            </div>
+            {allowMultiple ? <Button className="btn ghost compact job-city-task-remove" type="button" aria-label={`删除城市任务${index + 1}`} title="删除城市任务" disabled={tasks.length <= 1} onClick={() => removeTask(task.id)}><IconDelete /></Button> : <span />}
+          </div>
+        ))}
+      </div>
+      {hasDuplicateLocation ? <p className="score-config-warning">同一岗位画像下不能重复添加相同城市。</p> : null}
+    </section>
   );
 }
 
@@ -7536,7 +7994,7 @@ function TextArea({ className, value, onChange, placeholder, required, readOnly 
 }) {
   return <ArcoInput.TextArea className={className} value={value} onChange={(_, event) => onChange?.(event)} placeholder={placeholder} required={required} readOnly={readOnly} />;
 }
-function HeadcountField({ value, onChange, minimum = 1, disabled = false }: { value: number; onChange: (value: number) => void; minimum?: number; disabled?: boolean }) {
+function HeadcountField({ value, onChange, minimum = 1, completed = 0, disabled = false }: { value: number; onChange: (value: number) => void; minimum?: number; completed?: number; disabled?: boolean }) {
   const update = (next: number) => onChange(Math.min(999, Math.max(minimum, Number.isFinite(next) ? Math.round(next) : minimum)));
   return (
     <label className="form-field headcount-field">
@@ -7546,7 +8004,7 @@ function HeadcountField({ value, onChange, minimum = 1, disabled = false }: { va
         <input aria-label="计划HC人数" type="number" min={minimum} max={999} required disabled={disabled} value={value} onChange={(event) => update(Number(event.target.value))} />
         <Button type="button" aria-label="增加HC" title="增加HC" disabled={disabled || value >= 999} onClick={() => update(value + 1)}><IconPlus /></Button>
       </div>
-      {disabled ? <small>已关闭批次的 HC 已冻结，重新招聘时可设置新 HC。</small> : minimum > 1 ? <small>当前已有 {minimum} 人入职，HC 不可低于该人数。</small> : <small>同一岗位多人需求直接调整 HC，无需重复建岗。</small>}
+      {disabled ? <small>已关闭批次的 HC 已冻结，重新招聘时可设置新 HC。</small> : completed > 0 ? <small>当前已有 {completed} 个 HC 完成，计划 HC 不可低于已完成数量。</small> : <small>同一岗位多人需求直接调整 HC，无需重复建岗。</small>}
     </label>
   );
 }

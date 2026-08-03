@@ -1411,6 +1411,88 @@ textarea:focus {
   background: transparent;
 }
 
+.job-profile-group-card {
+  gap: 12px;
+}
+
+.job-profile-group-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.job-profile-group-summary > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 8px 10px;
+  color: var(--muted);
+  background: #f4f8f5;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.job-profile-group-summary strong {
+  overflow: hidden;
+  color: var(--green-900);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-city-task-list {
+  display: grid;
+  gap: 6px;
+  max-height: 210px;
+  overflow-y: auto;
+}
+
+.job-city-task-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(100px, 0.8fr) auto;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 9px 10px;
+  color: var(--text);
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.job-city-task-item:hover,
+.job-city-task-item.active {
+  background: var(--green-50);
+  border-color: var(--green-700);
+}
+
+.job-city-task-item > span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.job-city-task-item strong,
+.job-city-task-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-city-task-item small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.job-detail-city-switcher {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
 .job-batch-line {
   display: flex;
   flex-wrap: wrap;
@@ -2609,7 +2691,7 @@ textarea:focus {
 
 .interview-table {
   width: max-content;
-  min-width: 1680px;
+  min-width: 1900px;
 }
 
 .interview-table-card {
@@ -2756,6 +2838,33 @@ textarea:focus {
   box-shadow: 0 0 0 3px rgba(15, 76, 58, 0.08);
 }
 
+.stage-date-input {
+  width: 148px;
+  color-scheme: light;
+}
+
+.stage-date-input:disabled {
+  color: #8a9992;
+  background: #f3f6f4;
+  cursor: not-allowed;
+}
+
+.planned-onboard-input {
+  display: block;
+}
+
+.offer-plan-hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--green-700);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.offer-plan-hint.overdue {
+  color: #946238;
+}
+
 .decision-reason {
   width: min(560px, 100%);
   min-height: 72px;
@@ -2796,6 +2905,18 @@ textarea:focus {
 }
 
 .reason-tags-empty span {
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.actual-onboard-field {
+  display: grid;
+  gap: 6px;
+  min-width: 180px;
+}
+
+.actual-onboard-field span {
+  color: var(--muted);
   font-size: 12px;
   line-height: 1.4;
 }
@@ -5113,6 +5234,123 @@ textarea:focus {
 
 .modal-job-editor .modal-body {
   padding: 20px;
+}
+
+.job-city-tasks {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 14px;
+  background: #f7faf8;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.job-city-tasks-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.job-city-tasks-head > div {
+  display: grid;
+  gap: 3px;
+}
+
+.job-city-tasks-head strong {
+  color: var(--green-900);
+  font-size: 14px;
+}
+
+.job-city-tasks-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.job-city-task-table {
+  width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.job-city-task-columns,
+.job-city-task-row {
+  display: grid;
+  grid-template-columns: minmax(170px, 1.1fr) minmax(125px, 0.8fr) minmax(180px, 1fr) minmax(150px, 0.9fr) 126px 42px;
+  gap: 8px;
+  min-width: 930px;
+  align-items: end;
+}
+
+.job-city-task-columns {
+  padding: 0 2px 6px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.job-city-task-row {
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.job-city-task-control,
+.job-city-task-control .form-field,
+.job-city-task-control .arco-select,
+.job-city-task-control .arco-cascader,
+.job-city-task-control .arco-input-wrapper {
+  min-width: 0;
+  width: 100%;
+}
+
+.job-city-task-control.form-field,
+.job-city-task-control .form-field {
+  gap: 0;
+}
+
+.job-city-task-control.form-field > span:first-child,
+.job-city-task-control .form-field > span:first-child {
+  display: none;
+}
+
+.job-city-task-headcount {
+  display: grid;
+  grid-template-columns: 32px 1fr 32px;
+  align-items: center;
+  min-height: 42px;
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.job-city-task-headcount button {
+  display: grid;
+  height: 40px;
+  padding: 0;
+  color: var(--green-700);
+  background: transparent;
+  border: 0;
+  place-items: center;
+}
+
+.job-city-task-headcount input {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 0 4px;
+  border: 0;
+  border-right: 1px solid var(--line);
+  border-left: 1px solid var(--line);
+  outline: 0;
+  text-align: center;
+}
+
+.job-city-task-remove {
+  width: 38px;
+  padding: 0 !important;
+  color: #9d4b4b;
 }
 
 .modal-head,
@@ -7834,6 +8072,15 @@ body,
 }
 
 @media (max-width: 760px) {
+  .job-profile-group-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .job-city-tasks-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .app-shell {
     display: block;
     width: 100%;

@@ -22,6 +22,7 @@ export const authSessions = sqliteTable("auth_sessions", {
 
 export const jobs = sqliteTable("jobs", {
   id: text("id").primaryKey(),
+  profileGroupId: text("profile_group_id").notNull().default(""),
   title: text("title").notNull(),
   dept: text("dept").notNull(),
   location: text("location").notNull(),

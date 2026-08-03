@@ -92,6 +92,7 @@ export function upsertJob(job: JobUpsertInput) {
     getDb()
       .update(dbSchema.jobs)
       .set({
+        profileGroupId: job.profileGroupId || job.id,
         title: job.title,
         dept: job.dept,
         location: normalizeRegionToCity(job.location),
@@ -121,6 +122,7 @@ export function upsertJob(job: JobUpsertInput) {
       .insert(dbSchema.jobs)
       .values({
         id: job.id,
+        profileGroupId: job.profileGroupId || job.id,
         title: job.title,
         dept: job.dept,
         location: normalizeRegionToCity(job.location),
@@ -498,6 +500,7 @@ function upsertJobNoPersist(job: Job) {
   const existing = getDb().select({ id: dbSchema.jobs.id }).from(dbSchema.jobs).where(eq(dbSchema.jobs.id, job.id)).get();
   const row = {
     id: job.id,
+    profileGroupId: job.profileGroupId || job.id,
     title: job.title,
     dept: job.dept,
     location: normalizeRegionToCity(job.location),
@@ -592,6 +595,7 @@ function rowToJob(row: JobRow, resumeCount: number): Job {
     : recruitmentBatches.find((batch) => batch.status !== "已关闭")?.id || recruitmentBatches.at(-1)?.id || "";
   return {
     id: row.id,
+    profileGroupId: row.profileGroupId || row.id,
     title: row.title,
     dept: row.dept,
     location: normalizeRegionToCity(row.location),
@@ -1147,6 +1151,7 @@ function ensureSchema() {
   sqliteDb.run("INSERT OR IGNORE INTO auth_users (username, role) VALUES ('guest', 'guest');");
   sqliteDb.run(`CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
+    profile_group_id TEXT NOT NULL DEFAULT '',
     title TEXT NOT NULL,
     dept TEXT NOT NULL,
     location TEXT NOT NULL,
@@ -1166,12 +1171,14 @@ function ensureSchema() {
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 	  );`);
+	  ensureColumn("jobs", "profile_group_id", "TEXT NOT NULL DEFAULT ''");
 	  ensureColumn("jobs", "salary_range", "TEXT NOT NULL DEFAULT '面议'");
 	  ensureColumn("jobs", "demand_type", "TEXT NOT NULL DEFAULT ''");
 	  ensureColumn("jobs", "planned_headcount", "INTEGER NOT NULL DEFAULT 1");
 	  ensureColumn("jobs", "score_weights", `TEXT NOT NULL DEFAULT '{"experience":30,"professional":30,"stability":15,"education":10,"business":15}'`);
   ensureColumn("jobs", "current_batch_id", "TEXT NOT NULL DEFAULT ''");
   ensureColumn("jobs", "recruitment_batches", "TEXT NOT NULL DEFAULT '[]'");
+  sqliteDb.run("UPDATE jobs SET profile_group_id = id WHERE profile_group_id IS NULL OR profile_group_id = ''");
   sqliteDb.run(`CREATE TABLE IF NOT EXISTS candidates (
     id TEXT PRIMARY KEY,
     job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,

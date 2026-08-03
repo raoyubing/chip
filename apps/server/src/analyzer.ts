@@ -39,6 +39,7 @@ export function createCandidate(input: {
   fileUrl?: string | null;
 }): Candidate {
   const result = evaluateResume(input.resumeText, input.job);
+  const currentBatch = input.job.recruitmentBatches.find((batch) => batch.id === input.job.currentBatchId);
   return {
     id: input.id,
     jobId: input.job.id,
@@ -50,6 +51,7 @@ export function createCandidate(input: {
     reason: result.reason,
     resumeText: input.resumeText,
     uploadTime: new Date().toLocaleDateString("zh-CN"),
+    reportMonth: currentBatch?.targetMonth || formatCandidateReportMonth(),
     fileName: input.fileName ?? null,
     fileType: input.fileType ?? null,
     fileSize: input.fileSize ?? null,
@@ -61,6 +63,10 @@ export function createCandidate(input: {
     reasonTags: inferDefaultReasonTags(result.reason),
     interviewTimeline: {},
   };
+}
+
+function formatCandidateReportMonth(date = new Date()) {
+  return `${date.getFullYear()}年${String(date.getMonth() + 1).padStart(2, "0")}月`;
 }
 
 function buildKeyPointAnalysis(keyPoints: string[], resumeText: string, job: Job) {

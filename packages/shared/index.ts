@@ -209,6 +209,7 @@ export interface RecruitmentBatch {
 
 export interface Job {
   id: string;
+  profileGroupId: string;
   title: string;
   dept: string;
   location: string;
@@ -230,9 +231,13 @@ export interface Job {
 
 export interface CandidateTimeline {
   recommendedAt?: string;
+  firstInterviewAt?: string;
   firstInterviewPassedAt?: string;
+  secondInterviewAt?: string;
   secondInterviewPassedAt?: string;
   offerAt?: string;
+  offerSentAt?: string;
+  plannedOnboardDate?: string;
   onboardedAt?: string;
 }
 

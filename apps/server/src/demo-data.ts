@@ -57,10 +57,11 @@ const jobs: Job[] = [
   }),
 ];
 
-function demoJob(job: Omit<Job, "currentBatchId" | "recruitmentBatches">): Job {
+function demoJob(job: Omit<Job, "profileGroupId" | "currentBatchId" | "recruitmentBatches">): Job {
   const currentBatchId = `${job.id}_batch_1`;
   return {
     ...job,
+    profileGroupId: job.id,
     currentBatchId,
     recruitmentBatches: [{
       id: currentBatchId,

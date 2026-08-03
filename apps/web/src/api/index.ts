@@ -7,7 +7,7 @@ import { salaryApi } from "./salary.api";
 import { voiceApi } from "./voice.api";
 
 export type { InterviewStagePayload } from "./candidate.api";
-export type { JobCopilotPayload, JobCopilotResult, JobPayload, ResumeUploadPayload } from "./job.api";
+export type { JobCopilotPayload, JobCopilotResult, JobPayload, MultiCityJobPayload, ResumeUploadPayload, UpdateJobPayload } from "./job.api";
 export type { VoiceAnalysisPayload, VoiceChunkPayload, VoiceFinalEvaluatePayload, VoiceSegmentAnalyzePayload } from "./voice.api";
 
 export const api = {
