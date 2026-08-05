@@ -54,6 +54,7 @@ import {
   clearDatabase,
   setSetting,
   updateCandidate,
+  updateCandidates,
   updateVoiceTranscriptSegmentAnalysis,
   upsertJob,
 } from "./db.js";
@@ -665,6 +666,7 @@ server.put("/api/jobs/:id", async (request) => {
   if (!existing) throw server.httpErrors.notFound("职位不存在");
   const body = updateJobSchema.parse(request.body);
   const { targetMonth: requestedTargetMonth, ...jobFields } = body;
+  const scoreWeightsChanged = scoreWeightLabels.some(([key]) => existing.scoreWeights[key] !== jobFields.scoreWeights[key]);
   const currentBatch = existing.recruitmentBatches.find((batch) => batch.id === existing.currentBatchId);
   const targetMonth = requestedTargetMonth || currentBatch?.targetMonth || formatReportMonth();
   if (existing.status === "已关闭" && jobFields.status !== "已关闭") {
@@ -696,6 +698,13 @@ server.put("/api/jobs/:id", async (request) => {
   getJobs()
     .filter((job) => job.id !== existing.id && job.profileGroupId === existing.profileGroupId)
     .forEach((job) => upsertJob({ ...job, ...sharedProfile }));
+  if (scoreWeightsChanged) {
+    const updatedProfileJobs = getJobs().filter((job) => job.profileGroupId === existing.profileGroupId && job.status !== "已关闭");
+    const rescoredCandidates = updatedProfileJobs.flatMap((job) => getCandidates(job.id)
+      .filter((candidate) => candidate.recruitmentBatchId === job.currentBatchId)
+      .map((candidate) => reweightCandidateEvaluation(candidate, job)));
+    updateCandidates(rescoredCandidates);
+  }
   return getState();
 });
 
@@ -750,6 +759,14 @@ server.post("/api/candidates/:id/mark-interview", async (request) => {
   const params = z.object({ id: z.string() }).parse(request.params);
   const candidate = getCandidateById(params.id);
   if (!candidate) throw server.httpErrors.notFound("候选人不存在");
+  const timeline = candidate.interviewTimeline || {};
+  if (
+    candidate.conclusion === "已邀面试"
+    || candidate.interviewStage === "初试"
+    || candidate.interviewStage === "复试"
+    || candidate.interviewStage === "offer"
+    || Boolean(timeline.firstInterviewAt || timeline.secondInterviewAt || timeline.offerAt || timeline.offerSentAt)
+  ) return getState();
   updateCandidate({
     ...candidate,
     conclusion: "已邀面试",
@@ -873,7 +890,9 @@ server.patch("/api/candidates/:id/interview-stage", async (request) => {
     stageRecommendation: z.enum(["待定", "是", "否"]).default("待定"),
     interviewResult: z.enum(["通过", "淘汰", "待定", "未到面"]).default("待定"),
     onboarded: z.enum(["待入职", "是", "否"]).default("待入职"),
-    offerStatus: z.enum(["待发出", "已发出"]).optional(),
+    offerStatus: z.enum(["待决策", "已发出", "不发出", "待发出"])
+      .transform((value) => value === "待发出" ? "待决策" as const : value)
+      .optional(),
     plannedOnboardDate: z.string().trim().optional(),
     reportMonth: z.string().trim().min(1).default(formatReportMonth()),
     interviewReason: z.string().default(""),
@@ -886,6 +905,8 @@ server.patch("/api/candidates/:id/interview-stage", async (request) => {
       secondInterviewPassedAt: z.string().optional(),
       offerAt: z.string().optional(),
       offerSentAt: z.string().optional(),
+      offerDecision: z.enum(["待决策", "已发出", "不发出"]).optional(),
+      offerDecisionAt: z.string().optional(),
       plannedOnboardDate: z.string().optional(),
       onboardedAt: z.string().optional(),
     }).default({}),
@@ -893,18 +914,20 @@ server.patch("/api/candidates/:id/interview-stage", async (request) => {
   const candidate = getCandidateById(params.id);
   if (!candidate) throw server.httpErrors.notFound("候选人不存在");
   const offerStatus = resolveOfferStatus(candidate, body);
-  const plannedOnboardDate = body.plannedOnboardDate ?? body.interviewTimeline.plannedOnboardDate ?? candidate.interviewTimeline?.plannedOnboardDate ?? "";
-  const actualOnboardDate = body.interviewTimeline.onboardedAt ?? candidate.interviewTimeline?.onboardedAt ?? "";
-  if (body.offerStatus === "已发出" && !/^\d{4}-\d{2}-\d{2}$/.test(plannedOnboardDate)) {
+  const onboarded = body.interviewStage === "offer" && offerStatus === "已发出" ? body.onboarded : "待入职";
+  const plannedOnboardDate = body.interviewStage === "offer" && offerStatus === "已发出"
+    ? body.plannedOnboardDate ?? body.interviewTimeline.plannedOnboardDate ?? candidate.interviewTimeline?.plannedOnboardDate ?? ""
+    : "";
+  const actualOnboardDate = body.interviewStage === "offer" && offerStatus === "已发出"
+    ? body.interviewTimeline.onboardedAt ?? candidate.interviewTimeline?.onboardedAt ?? ""
+    : "";
+  if (offerStatus === "已发出" && !/^\d{4}-\d{2}-\d{2}$/.test(plannedOnboardDate)) {
     throw server.httpErrors.badRequest("Offer标记为已发出时，请填写计划到岗日期。");
   }
-  if (body.offerStatus === "待发出" && body.onboarded !== "待入职") {
-    throw server.httpErrors.badRequest("Offer尚未发出，入职状态只能为待入职。");
-  }
-  if (body.onboarded === "是" && !/^\d{4}-\d{2}-\d{2}$/.test(actualOnboardDate)) {
+  if (onboarded === "是" && !/^\d{4}-\d{2}-\d{2}$/.test(actualOnboardDate)) {
     throw server.httpErrors.badRequest("确认入职时，请填写实际入职日期。");
   }
-  const willCompleteHeadcount = body.interviewStage === "offer" && offerStatus === "已发出" && body.onboarded !== "否";
+  const willCompleteHeadcount = body.interviewStage === "offer" && offerStatus === "已发出" && onboarded !== "否";
   if (willCompleteHeadcount && !isActiveHeadcountCompletion(candidate)) {
     const job = getJob(candidate.jobId);
     const batch = job?.recruitmentBatches.find((item) => item.id === candidate.recruitmentBatchId);
@@ -915,16 +938,20 @@ server.patch("/api/candidates/:id/interview-stage", async (request) => {
     }
   }
   const stageRecommendation = resolveStageRecommendation(body.interviewStage, body.stageRecommendation);
-  const reasonTags = shouldManageReasonTags(body.interviewStage, body.interviewResult, body.onboarded)
-    ? normalizeReasonTags(body.reasonTags.length ? body.reasonTags : inferReasonTags(body.interviewReason, body.interviewStage, body.onboarded), body.interviewStage, body.onboarded)
+  const reasonTags = shouldManageReasonTags(body.interviewStage, body.interviewResult, onboarded, offerStatus)
+    ? normalizeReasonTags(body.reasonTags.length ? body.reasonTags : inferReasonTags(body.interviewReason, body.interviewStage, onboarded), body.interviewStage, onboarded)
     : [];
-  const timeline = mergeInterviewTimeline(candidate, { ...body, stageRecommendation, offerStatus, plannedOnboardDate });
+  if (body.interviewStage === "offer" && offerStatus === "不发出" && !normalizeReasonTags(body.reasonTags, "offer", onboarded).length) {
+    throw server.httpErrors.badRequest("Offer决定为不发出时，请选择原因标签。");
+  }
+  const timeline = mergeInterviewTimeline(candidate, { ...body, stageRecommendation, onboarded, offerStatus, plannedOnboardDate });
   updateCandidate({
     ...candidate,
+    conclusion: "已邀面试",
     interviewStage: body.interviewStage,
     stageRecommendation,
     interviewResult: body.interviewResult,
-    onboarded: body.onboarded,
+    onboarded,
     reportMonth: body.reportMonth,
     interviewReason: body.interviewReason,
     reasonTags,
@@ -2088,6 +2115,43 @@ function applyCandidateEvaluation(candidate: Candidate, evaluation: CandidateEva
   } satisfies Candidate;
 }
 
+function reweightCandidateEvaluation(candidate: Candidate, job: Job): Candidate {
+  const fallback = buildFallbackCandidateEvaluation(candidate, job);
+  const scoreDimensions = candidate.evaluation?.scoreDimensions?.length
+    ? normalizeScoreDimensions(candidate.evaluation.scoreDimensions, job)
+    : fallback.scoreDimensions;
+  const score = clampScoreValue(scoreWeightLabels.reduce((sum, [key]) => {
+    const dimension = scoreDimensions.find((item) => item.key === key);
+    return sum + (dimension?.score || 0) * (job.scoreWeights[key] / 100);
+  }, 0));
+  const previousEvaluation = candidate.evaluation || fallback;
+  const summary = buildReweightedCandidateSummary(previousEvaluation.summary || candidate.reason, score);
+  const preserveWorkflowConclusion = candidate.conclusion === "待筛选" || candidate.conclusion === "已邀面试";
+
+  return {
+    ...candidate,
+    score,
+    conclusion: preserveWorkflowConclusion ? candidate.conclusion : mapConclusionFromScore(score),
+    reason: summary,
+    evaluation: {
+      summary,
+      strengths: previousEvaluation.strengths,
+      weaknesses: previousEvaluation.weaknesses,
+      risks: previousEvaluation.risks,
+      interviewFocuses: previousEvaluation.interviewFocuses,
+      scoreDimensions,
+    },
+  };
+}
+
+function buildReweightedCandidateSummary(summary: string, score: number) {
+  const base = summary
+    .replace(/\s*当前按岗位评分模型加权后为\s*\d+(?:\.\d+)?\s*分。?/g, "")
+    .replace(/\s*按最新岗位评分权重重新计算为\s*\d+(?:\.\d+)?\s*分。?/g, "")
+    .trim();
+  return `${base}${base ? " " : ""}按最新岗位评分权重重新计算为 ${score} 分。`;
+}
+
 function buildFallbackCandidateEvaluation(candidate: Candidate, job: Job) {
   const keywords = normalizeKeywords(job.keywords);
   const matched = candidate.keyPointAnalysis.filter((item) => item.matched).map((item) => item.keyword);
@@ -3192,7 +3256,7 @@ function mergeInterviewTimeline(
     stageRecommendation: NonNullable<Candidate["stageRecommendation"]>;
     interviewResult: NonNullable<Candidate["interviewResult"]>;
     onboarded: NonNullable<Candidate["onboarded"]>;
-    offerStatus: "待发出" | "已发出";
+    offerStatus: "待决策" | "已发出" | "不发出";
     plannedOnboardDate: string;
     reportMonth: string;
     interviewTimeline: Candidate["interviewTimeline"];
@@ -3214,6 +3278,8 @@ function mergeInterviewTimeline(
     next.firstInterviewPassedAt = next.firstInterviewPassedAt || stamp;
     next.secondInterviewAt = next.secondInterviewAt || next.secondInterviewPassedAt || stamp;
     next.secondInterviewPassedAt = next.secondInterviewPassedAt || stamp;
+    next.offerDecision = body.offerStatus;
+    next.offerDecisionAt = next.offerDecisionAt || next.secondInterviewPassedAt || stamp;
     if (body.offerStatus === "已发出") {
       const offerSentAt = next.offerSentAt || next.offerAt || stamp;
       next.offerSentAt = offerSentAt;
@@ -3235,6 +3301,8 @@ function mergeInterviewTimeline(
     delete next.secondInterviewPassedAt;
     delete next.offerAt;
     delete next.offerSentAt;
+    delete next.offerDecision;
+    delete next.offerDecisionAt;
     delete next.plannedOnboardDate;
   }
   if (body.interviewStage === "初试") {
@@ -3242,11 +3310,15 @@ function mergeInterviewTimeline(
     delete next.secondInterviewPassedAt;
     delete next.offerAt;
     delete next.offerSentAt;
+    delete next.offerDecision;
+    delete next.offerDecisionAt;
     delete next.plannedOnboardDate;
   }
   if (body.interviewStage === "复试") {
     delete next.offerAt;
     delete next.offerSentAt;
+    delete next.offerDecision;
+    delete next.offerDecisionAt;
     delete next.plannedOnboardDate;
   }
   if (body.onboarded !== "是") delete next.onboardedAt;
@@ -3258,22 +3330,32 @@ function resolveOfferStatus(
   body: {
     interviewStage: NonNullable<Candidate["interviewStage"]>;
     onboarded: NonNullable<Candidate["onboarded"]>;
-    offerStatus?: "待发出" | "已发出";
+    offerStatus?: "待决策" | "已发出" | "不发出";
     interviewTimeline: Candidate["interviewTimeline"];
   },
 ) {
-  if (body.interviewStage !== "offer") return "待发出" as const;
+  if (body.interviewStage !== "offer") return "待决策" as const;
   if (body.offerStatus) return body.offerStatus;
+  if (body.interviewTimeline?.offerDecision) return body.interviewTimeline.offerDecision;
   if (Object.prototype.hasOwnProperty.call(body.interviewTimeline || {}, "offerSentAt")) {
-    return body.interviewTimeline?.offerSentAt ? "已发出" as const : "待发出" as const;
+    return body.interviewTimeline?.offerSentAt ? "已发出" as const : "待决策" as const;
   }
   if (body.interviewTimeline?.offerAt || body.onboarded === "是") return "已发出" as const;
-  if ((candidate.interviewStage || "推荐") === "offer") return getCandidateOfferSentAt(candidate) ? "已发出" as const : "待发出" as const;
-  return "已发出" as const;
+  if ((candidate.interviewStage || "推荐") === "offer") return getCandidateOfferDecision(candidate);
+  return "待决策" as const;
+}
+
+function getCandidateOfferDecision(candidate: Candidate): "待决策" | "已发出" | "不发出" {
+  const timeline = candidate.interviewTimeline || {};
+  if (timeline.offerDecision) return timeline.offerDecision;
+  if (Object.prototype.hasOwnProperty.call(timeline, "offerSentAt")) return timeline.offerSentAt ? "已发出" : "待决策";
+  if (timeline.offerAt || candidate.onboarded === "是" || candidate.onboarded === "否") return "已发出";
+  return candidate.interviewStage === "offer" ? "已发出" : "待决策";
 }
 
 function getCandidateOfferSentAt(candidate: Candidate) {
   const timeline = candidate.interviewTimeline || {};
+  if (getCandidateOfferDecision(candidate) !== "已发出") return "";
   if (Object.prototype.hasOwnProperty.call(timeline, "offerSentAt")) return timeline.offerSentAt || "";
   if (timeline.offerAt) return timeline.offerAt;
   return candidate.interviewStage === "offer" ? reportMonthToDate(candidate.reportMonth) : "";
@@ -3309,8 +3391,9 @@ function shouldManageReasonTags(
   stage: NonNullable<Candidate["interviewStage"]>,
   interviewResult: NonNullable<Candidate["interviewResult"]>,
   onboarded?: Candidate["onboarded"],
+  offerStatus?: "待决策" | "已发出" | "不发出",
 ) {
-  if (stage === "offer") return onboarded === "否";
+  if (stage === "offer") return offerStatus === "不发出" || onboarded === "否";
   return interviewResult === "淘汰" || interviewResult === "未到面";
 }
 

@@ -7333,6 +7333,7 @@ body {
 }
 
 .arco-select-popup .job-keyword-popup .arco-select-option {
+  height: 44px;
   min-height: 44px;
   width: 100%;
   margin: 4px 0;

@@ -78,7 +78,7 @@ export declare namespace RequestDTO {
     stageRecommendation: "待定" | "是" | "否";
     interviewResult: "通过" | "淘汰" | "待定" | "未到面";
     onboarded: "待入职" | "是" | "否";
-    offerStatus?: "待发出" | "已发出";
+    offerStatus?: "待决策" | "已发出" | "不发出";
     plannedOnboardDate?: string;
     reportMonth: string;
     interviewReason: string;

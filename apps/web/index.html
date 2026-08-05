@@ -7,6 +7,16 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      window.addEventListener("error", function (event) {
+        if (
+          event.message === "ResizeObserver loop limit exceeded" ||
+          event.message === "ResizeObserver loop completed with undelivered notifications."
+        ) {
+          event.stopImmediatePropagation();
+        }
+      }, true);
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -237,6 +237,8 @@ export interface CandidateTimeline {
   secondInterviewPassedAt?: string;
   offerAt?: string;
   offerSentAt?: string;
+  offerDecision?: "待决策" | "已发出" | "不发出";
+  offerDecisionAt?: string;
   plannedOnboardDate?: string;
   onboardedAt?: string;
 }

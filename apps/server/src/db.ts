@@ -142,7 +142,17 @@ export function upsertJob(job: JobUpsertInput) {
       })
       .run();
   }
+  syncCandidateRecruitmentMonthsNoPersist(job.id, recruitmentContext.recruitmentBatches);
   persist();
+}
+
+function syncCandidateRecruitmentMonthsNoPersist(jobId: string, recruitmentBatches: RecruitmentBatch[]) {
+  recruitmentBatches.forEach((batch) => {
+    sqliteDb.run(
+      "UPDATE candidates SET report_month = ? WHERE job_id = ? AND recruitment_batch_id = ?",
+      [batch.targetMonth, jobId, batch.id],
+    );
+  });
 }
 
 export function closeJob(id: string) {
@@ -220,6 +230,17 @@ export function insertCandidates(candidates: Candidate[]) {
 }
 
 export function updateCandidate(candidate: Candidate) {
+  updateCandidateNoPersist(candidate);
+  persist();
+}
+
+export function updateCandidates(candidates: Candidate[]) {
+  if (!candidates.length) return;
+  candidates.forEach(updateCandidateNoPersist);
+  persist();
+}
+
+function updateCandidateNoPersist(candidate: Candidate) {
   const data = serializeCandidate(candidate);
   const existingFile = getDb()
     .select({ fileBlob: dbSchema.candidates.fileBlob })
@@ -265,7 +286,6 @@ export function updateCandidate(candidate: Candidate) {
     })
     .where(eq(dbSchema.candidates.id, data.id))
     .run();
-  persist();
 }
 
 export function deleteCandidate(id: string) {
@@ -996,9 +1016,12 @@ function normalizeBlob(value: unknown) {
 }
 
 function serializeCandidate(candidate: Candidate) {
+  const job = getJob(candidate.jobId);
+  const recruitmentBatchId = candidate.recruitmentBatchId || job?.currentBatchId || "";
+  const recruitmentMonth = job?.recruitmentBatches.find((batch) => batch.id === recruitmentBatchId)?.targetMonth;
   return {
     ...candidate,
-    recruitmentBatchId: candidate.recruitmentBatchId || getJob(candidate.jobId)?.currentBatchId || "",
+    recruitmentBatchId,
     fileName: candidate.fileName ?? null,
     fileType: candidate.fileType ?? null,
     fileSize: candidate.fileSize ?? null,
@@ -1014,7 +1037,7 @@ function serializeCandidate(candidate: Candidate) {
     stageRecommendation: normalizeStageRecommendation(candidate.stageRecommendation),
     interviewResult: candidate.interviewResult || "待定",
     onboarded: normalizeOnboarded(candidate.onboarded),
-    reportMonth: candidate.reportMonth || formatReportMonth(),
+    reportMonth: recruitmentMonth || candidate.reportMonth || formatReportMonth(),
     interviewReason: candidate.interviewReason || "",
     reasonTags: JSON.stringify(candidate.reasonTags || []),
     interviewTimeline: JSON.stringify(candidate.interviewTimeline || {}),
@@ -1310,6 +1333,7 @@ function ensureRecruitmentBatchAssignments() {
       "UPDATE candidates SET recruitment_batch_id = ? WHERE job_id = ? AND (recruitment_batch_id IS NULL OR recruitment_batch_id = '')",
       [currentBatchId, fallback.id],
     );
+    syncCandidateRecruitmentMonthsNoPersist(fallback.id, recruitmentBatches);
   });
 }
 
