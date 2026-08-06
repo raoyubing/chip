@@ -36,7 +36,7 @@ import {
 } from "@arco-design/web-react/icon";
 import zhCN from "@arco-design/web-react/es/locale/zh-CN";
 import { bossIndustryGroups, normalizeBossIndustryName, normalizeRegionToCity, type RegionNode } from "@xiaosongshu/shared";
-import { api, type AuthAccountSummary, type JobCopilotResult, type JobPayload, type MultiCityJobPayload, type ResumeUploadPayload } from "./api";
+import { api, type AuthAccountSummary, type JobCopilotResult, type JobPayload, type MultiCityJobPayload, type RecruitmentReviewPayload, type RecruitmentReviewResult, type ResumeUploadPayload } from "./api";
 import type { AppState, AuthStatus, Candidate, CandidateInterviewPlan, CandidateInterviewPlanQuestion, InterviewMethodKey, Job, JobScoreWeights, RecruitmentBatch, ResumeFilePayload, SalaryData, SalaryFilters, UploadedFile, VoiceAnalysis, VoiceFinalEvaluation, VoiceFollowUpPlan, VoiceRecruiterCoachReport, VoiceSegmentInsight } from "./types";
 import "@arco-design/web-react/dist/css/arco.css";
 import "./styles.css";
@@ -1268,6 +1268,9 @@ function Dashboard({
   const [insightJobId, setInsightJobId] = useState<string>("all");
   const [selectedChannel, setSelectedChannel] = useState<string>("all");
   const [activeSection, setActiveSection] = useState<"overview" | "jobs" | "flow" | "actions">("overview");
+  const [aiReview, setAiReview] = useState<RecruitmentReviewResult | null>(null);
+  const [aiReviewStatus, setAiReviewStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [aiReviewError, setAiReviewError] = useState("");
 
   useEffect(() => {
     setFocusJobId(currentJob.id);
@@ -1287,6 +1290,7 @@ function Dashboard({
   const insightJobOptions = state.jobs.filter((job) =>
     processPeriodCandidates.some((candidate) => candidate.jobId === job.id)
     || filteredCandidates.some((candidate) => candidate.jobId === job.id)
+    || job.recruitmentBatches.some((batch) => getRecruitmentBatchPeriodValue(batch, granularity) === selectedPeriod)
   );
   const channelPeriodCandidates = Array.from(new Map(
     [...filteredCandidates, ...processPeriodCandidates].map((candidate) => [candidate.id, candidate]),
@@ -1326,6 +1330,17 @@ function Dashboard({
   const focusJob = state.jobs.find((job) => job.id === focusJobId) || currentJob;
   const focusJobAnalysis = buildFocusJobAnalysis(focusJob, filteredCandidates.filter((candidate) => candidate.jobId === focusJob.id));
   const pendingOnboardAnalytics = buildPendingOnboardReasonAnalytics(candidates, state.jobs, granularity, selectedPeriod);
+  const reviewScopeLabel = insightJobId === "all"
+    ? "全部岗位"
+    : state.jobs.find((job) => job.id === insightJobId)?.title || "当前岗位";
+  const reviewScopeJobs = state.jobs.filter((job) => insightJobId === "all"
+    ? job.recruitmentBatches.some((batch) => getRecruitmentBatchPeriodValue(batch, granularity) === selectedPeriod)
+      || comparisonCandidates.some((candidate) => candidate.jobId === job.id && candidateHasProcessInPeriod(candidate, granularity, selectedPeriod))
+    : job.id === insightJobId);
+  const reviewHeadcountAnalytics = buildHeadcountAnalytics(reviewScopeJobs, comparisonCandidates, granularity, selectedPeriod);
+  const reviewDepartmentHeadcountAnalytics = buildDepartmentHeadcountAnalytics(reviewScopeJobs, comparisonCandidates, granularity, selectedPeriod);
+  const reviewPendingOnboardAnalytics = buildPendingOnboardReasonAnalytics(comparisonCandidates, reviewScopeJobs, granularity, selectedPeriod);
+  const reviewRemarks = buildRecruitmentReviewRemarks(insightCandidates, state.jobs, granularity, selectedPeriod);
   useEffect(() => {
     if (insightJobId !== "all" && !insightJobOptions.some((job) => job.id === insightJobId)) {
       setInsightJobId("all");
@@ -1341,6 +1356,98 @@ function Dashboard({
       setSelectedChannel("all");
     }
   }, [channelAnalytics.rows, selectedChannel]);
+
+  useEffect(() => {
+    setAiReview(null);
+    setAiReviewStatus("idle");
+    setAiReviewError("");
+  }, [granularity, insightJobId, selectedPeriod]);
+
+  async function generateRecruitmentReview(forceRefresh = false) {
+    if (!selectedPeriod) {
+      setAiReviewError("请先选择统计周期");
+      setAiReviewStatus("error");
+      return;
+    }
+    const payload: RecruitmentReviewPayload = {
+      granularity,
+      selectedPeriod,
+      scopeLabel: `${selectedPeriod} · ${reviewScopeLabel}`,
+      jobScope: { id: insightJobId, label: reviewScopeLabel },
+      snapshot: {
+        headcount: reviewHeadcountAnalytics,
+        departmentHeadcount: reviewDepartmentHeadcountAnalytics,
+        funnel: overview.rows,
+        periodComparison: periodComparison.metrics,
+        channels: channelAnalytics.rows,
+        stageDurations: durationAnalytics.rows,
+        outcomes: {
+          noShowCount: issueReview.noShowCount,
+          rejectedCount: issueReview.rejectedCount,
+          pendingOnboardCount: issueReview.pendingOnboardCount,
+          failedOnboardCount: issueReview.failedOnboardCount,
+        },
+        reasonTags: issueReview.topReasons,
+        pendingOnboardReasons: reviewPendingOnboardAnalytics.rows,
+      },
+      jobs: reviewScopeJobs.slice(0, 30).map((job) => ({
+        id: job.id,
+        title: job.title,
+        department: job.dept,
+        location: job.location,
+        experience: job.experience,
+        level: job.level,
+        salaryRange: job.salaryRange,
+        keywords: job.keywords.slice(0, 800),
+        description: job.description.slice(0, insightJobId === "all" ? 800 : 2500),
+        status: job.status,
+      })),
+      remarks: reviewRemarks,
+      externalEvidence: reviewScopeJobs.flatMap((job) => {
+        const salaryData = job.salaryData;
+        if (!salaryData || salaryData.status === "insufficient_data") return [];
+        return [{
+          jobTitle: job.title,
+          location: job.location,
+          currentSalaryRange: job.salaryRange,
+          p25: salaryData.p25,
+          p50: salaryData.p50,
+          p75: salaryData.p75,
+          confidence: salaryData.research.confidence,
+          updatedAt: salaryData.updatedAt,
+          sourceSummary: salaryData.research.coreSources.join("、") || salaryData.research.confidenceReason,
+        }];
+      }),
+      externalSignals: [
+        ...issueReview.topReasons
+          .filter((item) => /其他.{0,6}offer|接到.{0,6}offer|竞争.{0,6}offer/i.test(item.label))
+          .map((item) => ({
+            type: "competing_offer" as const,
+            evidence: `面试管理原因标签“${item.label}”在当前范围内出现`,
+            count: item.count,
+          })),
+        ...reviewRemarks
+          .filter((item) => /其他.{0,6}offer|接到.{0,6}offer|竞争.{0,6}offer/i.test(item.remark))
+          .slice(0, 3)
+          .map((item) => ({
+            type: "competing_offer" as const,
+            evidence: `${item.candidateRef}（${item.jobTitle}/${item.stage}）备注明确提到其他 Offer`,
+          })),
+      ],
+      forceRefresh,
+    };
+
+    setAiReviewStatus("loading");
+    setAiReviewError("");
+    try {
+      const result = await api.generateRecruitmentReview(payload);
+      setAiReview(result);
+      setAiReviewStatus("idle");
+    } catch (error) {
+      setAiReviewStatus("error");
+      setAiReviewError(error instanceof Error ? error.message : "AI招聘运营复盘生成失败，请稍后重试。");
+    }
+  }
 
   return (
     <>
@@ -1603,6 +1710,75 @@ function Dashboard({
         </section>
       </div> : null}
 
+      {activeSection === "actions" ? <section className="card pad recruitment-ai-review section-panel-enter">
+        <div className="analytics-table-head recruitment-ai-review-head">
+          <div>
+            <h3 className="card-title">AI招聘运营复盘</h3>
+            <p className="helper-text">基于系统指标与面试备注识别问题，区分内部原因和有证据的外部原因。</p>
+          </div>
+          <div className="recruitment-ai-review-actions">
+            <label className="interview-filter-field analytics-scope-field recruitment-ai-review-scope">
+              <span>复盘范围</span>
+              <Select value={insightJobId} onChange={(event) => setInsightJobId(event.target.value)}>
+                <option value="all">全部岗位</option>
+                {insightJobOptions.map((job) => <option key={job.id} value={job.id}>{formatJobOption(job)}{job.status === "招聘中" ? "" : ` · ${job.status}`}</option>)}
+              </Select>
+            </label>
+            <Button
+              className="btn primary recruitment-ai-review-button"
+              type="button"
+              disabled={aiReviewStatus === "loading" || !selectedPeriod}
+              onClick={() => void generateRecruitmentReview(Boolean(aiReview))}
+            >
+              <IconExperiment />
+              {aiReviewStatus === "loading" ? "分析中" : aiReview ? "重新分析" : "生成分析"}
+            </Button>
+          </div>
+        </div>
+
+        {aiReview ? (
+          <div className="recruitment-ai-review-meta">
+            <span>{aiReview.scopeLabel}</span>
+            <span>生成于 {new Date(aiReview.generatedAt).toLocaleString("zh-CN", { hour12: false })}</span>
+            <span className={`recruitment-ai-review-mode ${aiReview.analysisMode}`}>{aiReview.analysisMode === "deepseek" ? "DeepSeek 分析" : "系统规则分析"}</span>
+            {aiReview.cached ? <span className="recruitment-ai-review-cache">复用相同数据结果</span> : null}
+          </div>
+        ) : null}
+
+        {aiReview?.notice ? <div className="recruitment-ai-review-notice">{aiReview.notice}</div> : null}
+
+        {aiReviewStatus === "error" ? <div className="recruitment-ai-review-error" role="alert">{aiReviewError}</div> : null}
+
+        {aiReviewStatus === "loading" && !aiReview ? (
+          <div className="recruitment-ai-review-empty"><strong>正在分析招聘数据与面试备注...</strong></div>
+        ) : aiReview?.issues.length ? (
+          <div className="recruitment-ai-review-list">
+            {aiReview.issues.map((issue, index) => (
+              <article className="recruitment-ai-review-issue" key={`${issue.problem}-${index}`}>
+                <div className="recruitment-ai-review-index">{String(index + 1).padStart(2, "0")}</div>
+                <dl className="recruitment-ai-review-fields">
+                  <div className="recruitment-ai-review-problem">
+                    <dt>问题点：</dt>
+                    <dd>{issue.problem}</dd>
+                  </div>
+                  <ReviewIssueField label="数据证据：" values={issue.dataEvidence} />
+                  <ReviewIssueField label="备注证据：" values={issue.remarkEvidence} />
+                  <ReviewIssueField label="内部原因：" values={issue.internalCauses} />
+                  <ReviewIssueField label="外部原因：" values={issue.externalCauses} />
+                  <ReviewIssueField label="解决方案：" values={issue.solutions} />
+                  <ReviewIssueField label="负责人建议：" values={issue.ownerSuggestions} />
+                </dl>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <div className="recruitment-ai-review-empty">
+            <strong>尚未生成本期复盘</strong>
+            <span>{selectedPeriod} · {reviewScopeLabel}</span>
+          </div>
+        )}
+      </section> : null}
+
       {activeSection === "flow" ? <div className="grid cols-2 dashboard-insight-grid section-panel-enter">
         <section className="card pad analytics-funnel-card">
           <div className="analytics-table-head">
@@ -1836,6 +2012,19 @@ function Dashboard({
         </section>
       </div> : null}
     </>
+  );
+}
+
+function ReviewIssueField({ label, values }: { label: string; values: string[] }) {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>
+        <ul>
+          {(values.length ? values : ["暂无可引用证据"]).map((value, index) => <li key={`${value}-${index}`}>{value}</li>)}
+        </ul>
+      </dd>
+    </div>
   );
 }
 
@@ -3545,6 +3734,29 @@ function formatInterviewStageLabel(stage: InterviewStage | NonNullable<Candidate
   return stage;
 }
 
+function appendInterviewStageRemark(
+  savedRemark: string,
+  draftRemark: string,
+  stage: NonNullable<Candidate["interviewStage"]>,
+  stageDate: string,
+) {
+  const saved = savedRemark.trimEnd();
+  const draft = draftRemark.trim();
+  if (!draft) return saved;
+  if (draft === savedRemark.trim()) return savedRemark.trim();
+
+  const appended = draftRemark.startsWith(savedRemark)
+    ? draftRemark.slice(savedRemark.length).trim()
+    : "";
+  if (saved && !appended) return draft;
+
+  const newEntry = appended || draft;
+  const formattedEntry = /^【[^】]+】/.test(newEntry)
+    ? newEntry
+    : `【${stageDate || formatDateISO()}｜${stage === "offer" ? "Offer" : stage}】\n${newEntry}`;
+  return saved ? `${saved}\n\n${formattedEntry}` : formattedEntry;
+}
+
 function InterviewsView({ jobs, selectedJobId, onJobChange, selectedBatchId, onBatchChange, selectedMonth, onMonthChange, candidates, activeStage, onStageChange, onSaveStage }: { jobs: Job[]; selectedJobId: string; onJobChange: (jobId: string) => void; selectedBatchId: string; onBatchChange: (batchId: string) => void; selectedMonth: string; onMonthChange: (month: string) => void; candidates: Candidate[]; activeStage: InterviewStage; onStageChange: (stage: InterviewStage) => void; onSaveStage: InterviewStageSaveHandler }) {
   const selectedJob = selectedJobId === "all" ? null : jobs.find((job) => job.id === selectedJobId) || null;
   const currentBatch = selectedJob ? getCurrentRecruitmentBatch(selectedJob) : null;
@@ -3687,9 +3899,8 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedBatchId, onB
 }
 
 function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSaveStage }: { candidate: Candidate; jobs: Job[]; showJobColumn: boolean; activeStage: InterviewStage; onSaveStage: InterviewStageSaveHandler }) {
-  const overview = buildCandidateOverview(candidate);
   const job = jobs.find((item) => item.id === candidate.jobId) || null;
-  const defaultReason = candidate.interviewReason || overview.recommendation || overview.risks[0];
+  const defaultReason = candidate.interviewReason || "";
   const currentReasonTagOptions = getReasonTagOptions(activeStage);
   const defaultReasonTags = normalizeStageReasonTags(candidate.reasonTags?.length ? candidate.reasonTags : inferReasonTags(defaultReason, activeStage, candidate.onboarded), activeStage, candidate.onboarded);
   const [stage, setStage] = useState<NonNullable<Candidate["interviewStage"]>>(candidate.interviewStage || "推荐");
@@ -3727,7 +3938,7 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
     setOfferStatus(getCandidateOfferStatus(candidate));
     setPlannedOnboardDate(candidate.interviewTimeline?.plannedOnboardDate || "");
     setActualOnboardDate(candidate.interviewTimeline?.onboardedAt || "");
-    setReason(candidate.interviewReason || buildCandidateOverview(candidate).recommendation || buildCandidateOverview(candidate).risks[0]);
+    setReason(candidate.interviewReason || "");
     setReasonTags(normalizeStageReasonTags(candidate.reasonTags?.length ? candidate.reasonTags : inferReasonTags(candidate.interviewReason || candidate.reason || "", activeStage, candidate.onboarded), activeStage, candidate.onboarded));
   }, [activeStage, candidate.id, candidate.interviewStage, candidate.stageRecommendation, candidate.interviewResult, candidate.onboarded, candidate.reportMonth, candidate.interviewReason, candidate.reasonTags, candidate.reason, candidate.interviewTimeline]);
 
@@ -3747,7 +3958,8 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
       const nextOnboarded = nextOfferStatus === "已发出" ? onboarded : "待入职";
       const nextTimeline = buildInterviewTimeline(candidate, stage, nextStage, interviewResult, nextOnboarded, stageDate, nextOfferStatus, plannedOnboardDate, actualOnboardDate);
       const nextReasonTags = shouldManageReasonTagsForDecision(nextStage, nextResult, nextOnboarded, nextOfferStatus) ? reasonTags : [];
-      await onSaveStage(candidate.id, nextStage, nextStageRecommendation, nextResult, nextOnboarded, reportMonthFromDate(stageDate), reason, nextReasonTags, nextTimeline, nextOfferStatus, nextOfferStatus === "已发出" ? plannedOnboardDate : "");
+      const nextReason = appendInterviewStageRemark(candidate.interviewReason || "", reason, stage, stageDate);
+      await onSaveStage(candidate.id, nextStage, nextStageRecommendation, nextResult, nextOnboarded, reportMonthFromDate(stageDate), nextReason, nextReasonTags, nextTimeline, nextOfferStatus, nextOfferStatus === "已发出" ? plannedOnboardDate : "");
       setStage(nextStage);
       setTargetStage(nextStage);
       setStageRecommendation(nextStageRecommendation);
@@ -3765,7 +3977,8 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
       const nextTimeline = buildInterviewTimeline(candidate, stage, targetStage, interviewResult, nextOnboarded, stageDate, nextOfferStatus, targetStage === "offer" ? plannedOnboardDate : "", targetStage === "offer" ? actualOnboardDate : "");
       const nextStageRecommendation = resolveStageRecommendation(targetStage, stageRecommendation);
       const nextReasonTags = shouldManageReasonTagsForDecision(targetStage, interviewResult, nextOnboarded, nextOfferStatus) ? reasonTags : [];
-      await onSaveStage(candidate.id, targetStage, nextStageRecommendation, interviewResult, nextOnboarded, reportMonthFromDate(stageDate), reason, nextReasonTags, nextTimeline, nextOfferStatus, nextOfferStatus === "已发出" ? plannedOnboardDate : "");
+      const nextReason = appendInterviewStageRemark(candidate.interviewReason || "", reason, stage, stageDate);
+      await onSaveStage(candidate.id, targetStage, nextStageRecommendation, interviewResult, nextOnboarded, reportMonthFromDate(stageDate), nextReason, nextReasonTags, nextTimeline, nextOfferStatus, nextOfferStatus === "已发出" ? plannedOnboardDate : "");
       setStage(targetStage);
       setStageRecommendation(nextStageRecommendation);
       setEditingFlow(false);
@@ -3870,7 +4083,7 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
       </td>
       <td>
         <div className="decision-reason-block">
-          <TextArea className="decision-reason interview-remark" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="可填写面试判断、跟进情况、风险说明等备注" />
+          <TextArea className="decision-reason interview-remark" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="补充本次评价、跟进情况或风险说明" />
           <div className="timeline-brief">
             {timeline.recommendedAt && <span>推荐初试：{timeline.recommendedAt}</span>}
             {timeline.firstInterviewPassedAt && <span>初试通过：{timeline.firstInterviewPassedAt}</span>}
@@ -4235,6 +4448,36 @@ function candidateHasProcessInPeriod(candidate: Candidate, granularity: Analytic
   const timelineDates = getCandidateTimelineDates(candidate);
   if (timelineDates.length) return timelineDates.some((date) => dateMatchesPeriod(date, granularity, selectedPeriod));
   return isInterviewCandidate(candidate) && getCandidatePeriodValue(candidate, granularity) === selectedPeriod;
+}
+
+function buildRecruitmentReviewRemarks(candidates: Candidate[], jobs: Job[], granularity: AnalyticsGranularity, selectedPeriod: string) {
+  const remarks = candidates.map((candidate) => {
+    const source = candidate.interviewReason?.trim() || "";
+    if (!source) return null;
+    const structuredEntries = Array.from(source.matchAll(/【(\d{4}-\d{2}-\d{2})[｜|]([^】]+)】\s*\n?([\s\S]*?)(?=(?:\n{1,2})【\d{4}-\d{2}-\d{2}[｜|]|$)/g));
+    const periodEntries = structuredEntries.filter((entry) => dateMatchesPeriod(entry[1], granularity, selectedPeriod));
+    if (structuredEntries.length && !periodEntries.length) return null;
+    const periodRemark = periodEntries.length
+      ? periodEntries.map((entry) => `【${entry[1]}｜${entry[2]}】\n${entry[3].trim()}`).join("\n\n")
+      : source;
+    const anonymizedRemark = periodRemark
+      .split(candidate.name).join("该候选人")
+      .replace(/1[3-9]\d{9}/g, "[手机号已隐藏]")
+      .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[邮箱已隐藏]")
+      .slice(0, 1200);
+    const timelineDates = getCandidateTimelineDates(candidate).sort((a, b) => b.localeCompare(a));
+    return {
+      jobTitle: jobs.find((job) => job.id === candidate.jobId)?.title || "未找到关联岗位",
+      stage: candidate.interviewStage === "offer" ? "Offer" : candidate.interviewStage || "未标记阶段",
+      occurredAt: periodEntries.at(-1)?.[1] || timelineDates[0] || "",
+      remark: anonymizedRemark,
+    };
+  }).filter((item): item is NonNullable<typeof item> => Boolean(item));
+
+  return remarks
+    .sort((a, b) => b.occurredAt.localeCompare(a.occurredAt))
+    .slice(0, 20)
+    .map((item, index) => ({ ...item, candidateRef: `候选人${index + 1}` }));
 }
 
 function getRecruitmentBatchPeriodValue(batch: RecruitmentBatch, granularity: AnalyticsGranularity) {

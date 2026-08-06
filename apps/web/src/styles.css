@@ -1829,7 +1829,7 @@ textarea:focus {
 }
 
 .dashboard-action-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  grid-template-columns: minmax(0, 1fr) !important;
   align-items: start;
 }
 
@@ -2287,6 +2287,162 @@ textarea:focus {
 
 .analytics-issue-summary-card {
   min-height: 100%;
+}
+
+.recruitment-ai-review {
+  margin-top: 16px;
+}
+
+.recruitment-ai-review-head {
+  align-items: center;
+}
+
+.recruitment-ai-review-actions {
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.recruitment-ai-review-scope {
+  min-width: 230px;
+}
+
+.recruitment-ai-review-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 116px;
+}
+
+.recruitment-ai-review-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  padding: 10px 0 2px;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.recruitment-ai-review-mode,
+.recruitment-ai-review-cache {
+  color: var(--green-700);
+  font-weight: 700;
+}
+
+.recruitment-ai-review-mode.rules {
+  color: #80691e;
+}
+
+.recruitment-ai-review-notice {
+  padding: 10px 12px;
+  color: #725d24;
+  background: #fbf8e9;
+  border: 1px solid rgba(154, 125, 42, 0.2);
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.recruitment-ai-review-list {
+  display: grid;
+  border-top: 1px solid var(--line);
+}
+
+.recruitment-ai-review-issue {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 16px;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.recruitment-ai-review-issue:last-child {
+  padding-bottom: 4px;
+  border-bottom: 0;
+}
+
+.recruitment-ai-review-index {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  color: #ffffff;
+  background: var(--green-900);
+  border-radius: 8px;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.recruitment-ai-review-fields {
+  display: grid;
+  gap: 0;
+  margin: 0;
+}
+
+.recruitment-ai-review-fields > div {
+  display: grid;
+  grid-template-columns: 104px minmax(0, 1fr);
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px dashed rgba(57, 118, 87, 0.13);
+}
+
+.recruitment-ai-review-fields > div:last-child {
+  border-bottom: 0;
+}
+
+.recruitment-ai-review-fields dt {
+  color: #547062;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.recruitment-ai-review-fields dd {
+  min-width: 0;
+  margin: 0;
+  color: #35483f;
+  line-height: 1.7;
+}
+
+.recruitment-ai-review-fields ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.recruitment-ai-review-problem dd {
+  color: var(--green-900);
+  font-size: 16px;
+  font-weight: 800;
+}
+
+.recruitment-ai-review-empty,
+.recruitment-ai-review-error {
+  display: grid;
+  gap: 6px;
+  min-height: 132px;
+  padding: 28px;
+  color: #64786c;
+  background: #f7f9f4;
+  border: 1px dashed rgba(57, 118, 87, 0.2);
+  border-radius: 8px;
+  place-items: center;
+  text-align: center;
+}
+
+.recruitment-ai-review-empty strong {
+  color: #385846;
+}
+
+.recruitment-ai-review-error {
+  min-height: auto;
+  color: #725d24;
+  background: #fbf8e9;
+  border-color: rgba(154, 125, 42, 0.24);
 }
 
 .analytics-channel-grid,
@@ -5744,6 +5900,34 @@ textarea:focus {
 }
 
 @media (max-width: 760px) {
+  .recruitment-ai-review-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .recruitment-ai-review-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .recruitment-ai-review-scope {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .recruitment-ai-review-button {
+    width: 100%;
+  }
+
+  .recruitment-ai-review-issue {
+    grid-template-columns: 1fr;
+  }
+
+  .recruitment-ai-review-fields > div {
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+
   .auth-shell {
     grid-template-columns: 1fr;
   }

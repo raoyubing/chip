@@ -146,6 +146,138 @@ test("工作台时间筛选固定在右上角并作用于四个分区", async ({
   await expect(page.getByText("按当前年度筛选统计在招岗位简历量")).toBeVisible();
 });
 
+test("AI招聘运营复盘按固定字段输出备注证据并缓存相同快照", async ({ page }) => {
+  test.setTimeout(90_000);
+  const payload = {
+    granularity: "month",
+    selectedPeriod: "2025年12月",
+    scopeLabel: "2025年12月 · 测试岗位",
+    jobScope: { id: "review-test-job", label: "测试岗位" },
+    snapshot: {
+      headcount: { planned: 3, remaining: 2, overdueRemaining: 1 },
+      periodComparison: [{ label: "初试通过率", current: 40, previous: 65, delta: -25 }],
+      stageDurations: [{ label: "初试通过→复试通过", averageDays: 12, sampleCount: 4, level: "risk" }],
+      channels: [{ source: "BOSS", resumeCount: 5, onboardedCount: 0 }],
+      reasonTags: [{ label: "部门对比", count: 2 }],
+    },
+    jobs: [{
+      id: "review-test-job",
+      title: "测试岗位",
+      department: "测试部门",
+      location: "北京市",
+      experience: "5-10年",
+      level: "经理",
+      salaryRange: "20k - 30k",
+      keywords: "业务协同、团队管理",
+      description: "负责业务协同与团队管理。",
+      status: "招聘中",
+    }],
+    remarks: [{
+      candidateRef: "候选人1",
+      jobTitle: "测试岗位",
+      stage: "复试",
+      occurredAt: "2025-12-18",
+      remark: "初试反馈等待较久，用人部门仍在进行多位候选人对比。",
+    }],
+    externalEvidence: [],
+  };
+
+  const firstResponse = await page.request.post("/api/analytics/recruitment-review", { data: payload });
+  expect(firstResponse.ok(), await firstResponse.text()).toBeTruthy();
+  const firstResult = await firstResponse.json();
+  expect(firstResult.cached).toBe(false);
+  expect(firstResult.analysisMode).toBe("rules");
+  expect(firstResult.notice).toContain("系统基于真实指标");
+  expect(firstResult.issues.length).toBeGreaterThan(0);
+  for (const issue of firstResult.issues) {
+    expect(issue).toEqual(expect.objectContaining({
+      problem: expect.any(String),
+      dataEvidence: expect.any(Array),
+      remarkEvidence: expect.any(Array),
+      internalCauses: expect.any(Array),
+      externalCauses: expect.any(Array),
+      solutions: expect.any(Array),
+      ownerSuggestions: expect.any(Array),
+    }));
+    expect(issue.externalCauses.join(" ")).toContain("外部证据不足");
+  }
+  expect(firstResult.issues[0].remarkEvidence.join(" ")).toContain("初试反馈等待较久");
+
+  const secondResponse = await page.request.post("/api/analytics/recruitment-review", { data: payload });
+  expect(secondResponse.ok(), await secondResponse.text()).toBeTruthy();
+  const secondResult = await secondResponse.json();
+  expect(secondResult.cached).toBe(true);
+  expect(secondResult.generatedAt).toBe(firstResult.generatedAt);
+
+  const currentDate = new Date();
+  const currentPeriod = `${currentDate.getFullYear()}年${String(currentDate.getMonth() + 1).padStart(2, "0")}月`;
+  const currentPeriodResponse = await page.request.post("/api/analytics/recruitment-review", {
+    data: {
+      ...payload,
+      selectedPeriod: currentPeriod,
+      scopeLabel: `${currentPeriod} · 当前周期测试岗位`,
+      snapshot: {
+        headcount: { planned: 5, remaining: 5, overdueRemaining: 0 },
+        periodComparison: [{ label: "初试通过率", current: 60, previous: 61, delta: -1 }],
+        stageDurations: [{ label: "初试通过→复试通过", averageDays: 3, sampleCount: 5, level: "healthy" }],
+        channels: [],
+        reasonTags: [],
+      },
+      remarks: [],
+    },
+  });
+  expect(currentPeriodResponse.ok(), await currentPeriodResponse.text()).toBeTruthy();
+  const currentPeriodResult = await currentPeriodResponse.json();
+  expect(currentPeriodResult.issues.map((issue: { problem: string }) => issue.problem).join(" ")).not.toContain("未完成HC");
+  expect(currentPeriodResult.issues.map((issue: { problem: string }) => issue.problem).join(" ")).not.toContain("耗时偏长");
+
+  const futurePeriodResponse = await page.request.post("/api/analytics/recruitment-review", {
+    data: {
+      ...payload,
+      selectedPeriod: "2099年12月",
+      scopeLabel: "2099年12月 · 未来周期测试岗位",
+      snapshot: {
+        headcount: { planned: 8, remaining: 8, overdueRemaining: 4 },
+        periodComparison: [{ label: "初试通过率", current: 0, previous: 70, delta: -70 }],
+        stageDurations: [],
+        channels: [],
+        reasonTags: [],
+      },
+      remarks: [],
+    },
+  });
+  expect(futurePeriodResponse.ok(), await futurePeriodResponse.text()).toBeTruthy();
+  const futurePeriodResult = await futurePeriodResponse.json();
+  expect(futurePeriodResult.issues[0].problem).toContain("尚未开始");
+  expect(futurePeriodResult.issues.map((issue: { problem: string }) => issue.problem).join(" ")).not.toContain("未完成HC");
+
+  const competingOfferResponse = await page.request.post("/api/analytics/recruitment-review", {
+    data: {
+      ...payload,
+      selectedPeriod: "2025年11月",
+      scopeLabel: "2025年11月 · 竞争Offer测试岗位",
+      externalSignals: [{ type: "competing_offer", evidence: "候选人1备注明确提到已接到其他 Offer", count: 1 }],
+    },
+  });
+  expect(competingOfferResponse.ok(), await competingOfferResponse.text()).toBeTruthy();
+  const competingOfferResult = await competingOfferResponse.json();
+  expect(competingOfferResult.issues[0].externalCauses.join(" ")).toContain("其他 Offer");
+
+  await page.goto("/");
+  await page.locator(".section-radio-tabs").getByText("问题与行动").click();
+  const reviewSection = page.locator(".recruitment-ai-review");
+  await expect(reviewSection.getByRole("heading", { name: "AI招聘运营复盘" })).toBeVisible();
+  await expect(reviewSection.locator(".recruitment-ai-review-scope")).toContainText("复盘范围");
+  await reviewSection.getByRole("button", { name: "生成分析" }).click();
+  const firstIssue = reviewSection.locator(".recruitment-ai-review-issue").first();
+  await expect(firstIssue).toBeVisible();
+  for (const label of ["问题点：", "数据证据：", "备注证据：", "内部原因：", "外部原因：", "解决方案：", "负责人建议："]) {
+    await expect(firstIssue.getByText(label, { exact: true })).toBeVisible();
+  }
+  await expect(reviewSection.locator(".recruitment-ai-review-mode")).toHaveText("系统规则分析");
+  await expect(reviewSection.locator(".recruitment-ai-review-notice")).toContainText("DeepSeek 未配置");
+});
+
 test("职位池导出数据为 Excel 文件", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: /职位管理/ }).click();
@@ -886,12 +1018,16 @@ test("小松鼠主流程无控制台错误，并可标记面试进入初试", as
   await expect(page.getByRole("columnheader", { name: "阶段日期" })).toBeVisible();
   await page.getByLabel("推荐日期").fill("2026-07-02");
   await selectArcoOption(page, page.locator(".recommendation-select").first(), "是");
+  await page.locator(".interview-remark").first().fill("推荐部门继续评估，重点确认业务落地经验。");
   await page.getByRole("button", { name: "保存" }).first().click();
 
   await page.locator(".stage-filter", { hasText: "初试" }).click();
   await expect(page.locator(".stage-filter.active").filter({ hasText: "初试" })).toBeVisible();
+  const recommendedRemark = await page.locator(".interview-remark").first().inputValue();
+  expect(recommendedRemark).toContain("【2026-07-02｜推荐】\n推荐部门继续评估，重点确认业务落地经验。");
 
   await page.getByLabel("初试日期").fill("2026-07-14");
+  await page.locator(".interview-remark").first().fill(`${recommendedRemark}\n初试沟通表达清晰，专业基础符合要求。`);
   await page.getByRole("button", { name: "保存" }).first().click();
   await page.locator(".stage-filter", { hasText: "推荐" }).click();
   await page.locator(".stage-filter", { hasText: "初试" }).click();
@@ -908,6 +1044,8 @@ test("小松鼠主流程无控制台错误，并可标记面试进入初试", as
 
   await page.getByLabel("初试日期").fill("2026-07-15");
   await selectArcoOption(page, page.locator(".recommendation-select").first(), "通过");
+  const firstInterviewRemark = await page.locator(".interview-remark").first().inputValue();
+  await page.locator(".interview-remark").first().fill(`${firstInterviewRemark}\n补充核验后通过初试，复试关注团队管理跨度。`);
   await page.getByRole("button", { name: "保存" }).first().click();
   await page.locator(".stage-filter", { hasText: "复试" }).click();
   await expect(page.locator(".stage-filter.active").filter({ hasText: "复试" })).toBeVisible();
@@ -916,6 +1054,8 @@ test("小松鼠主流程无控制台错误，并可标记面试进入初试", as
   await expect(page.getByRole("columnheader", { name: "岗位" })).toBeVisible();
 
   await selectArcoOption(page, page.locator(".recommendation-select").first(), "通过");
+  const secondInterviewRemark = await page.locator(".interview-remark").first().inputValue();
+  await page.locator(".interview-remark").first().fill(`${secondInterviewRemark}\n复试认可专业能力，建议进入Offer决策。`);
   await page.getByRole("button", { name: "保存" }).first().click();
   await page.locator(".stage-filter", { hasText: "offer" }).click();
   await expect(page.locator(".stage-filter.active").filter({ hasText: "offer" })).toBeVisible();
@@ -944,6 +1084,8 @@ test("小松鼠主流程无控制台错误，并可标记面试进入初试", as
   await expect(page.getByLabel("实际入职日期")).toHaveCount(0);
   await expect(page.locator(".interview-table tbody tr").first()).toContainText("确认入职后填写实际日期");
   await expect(page.locator(".interview-table tbody tr").first().locator(".reason-tags-select")).toHaveCount(0);
+  const offerRemark = await offerRow.locator(".interview-remark").inputValue();
+  await offerRow.locator(".interview-remark").fill(`${offerRemark}\nOffer方案已确认，等待候选人按计划到岗。`);
   await page.getByRole("button", { name: "保存" }).first().click();
 
   const savedState = await (await page.request.get("/api/state")).json();
@@ -959,6 +1101,12 @@ test("小松鼠主流程无控制台错误，并可标记面试进入初试", as
     plannedOnboardDate: "2026-08-20",
   });
   expect(savedCandidate.onboarded).toBe("待入职");
+  expect(savedCandidate.interviewReason).toContain("【2026-07-02｜推荐】\n推荐部门继续评估，重点确认业务落地经验。");
+  expect(savedCandidate.interviewReason).toContain("【2026-07-14｜初试】\n初试沟通表达清晰，专业基础符合要求。");
+  expect(savedCandidate.interviewReason).toContain("【2026-07-15｜初试】\n补充核验后通过初试，复试关注团队管理跨度。");
+  expect(savedCandidate.interviewReason).toContain("【2026-08-02｜复试】\n复试认可专业能力，建议进入Offer决策。");
+  expect(savedCandidate.interviewReason).toContain("【2026-08-05｜Offer】\nOffer方案已确认，等待候选人按计划到岗。");
+  expect(savedCandidate.interviewReason.match(/【2026-07-14｜初试】/g)).toHaveLength(1);
 
   await page.getByRole("button", { name: /工作台概览/ }).click();
   await selectArcoOption(page, page.locator(".dashboard-global-filters .arco-select"), "2026年07月");
