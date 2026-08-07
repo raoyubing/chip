@@ -1288,7 +1288,10 @@ test("简历甄选移除已入库人选后仍保留人才档案", async ({ page 
   await expect(page.locator(".candidate-card").filter({ hasText: candidateName })).toHaveCount(0);
 
   await page.getByRole("button", { name: "人才库", exact: true }).click();
-  await expect(page.locator(".talent-table tbody tr").filter({ hasText: candidateName })).toBeVisible();
+  const talentRow = page.locator(".talent-table tbody tr").filter({ hasText: candidateName });
+  await expect(talentRow).toBeVisible();
+  await expect(talentRow).toContainText("可重新推荐");
+  await expect(talentRow).toContainText("未进入流程");
 });
 
 test("简历服务返回 HTML 错误页时显示友好提示", async ({ page }) => {

@@ -2430,9 +2430,8 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, canHardDelete, onSt
     const matchesJob = jobId === "all" || candidate.jobId === jobId;
     const matchesProfile =
       profileFilter === "all"
-      || (profileFilter === "high" && candidate.score >= 85)
-      || (profileFilter === "reusable" && isReusableTalent(candidate))
-      || (profileFilter === "interviewed" && Boolean(candidate.interviewStage));
+      || (profileFilter === "quality" && candidate.score >= 75)
+      || (profileFilter === "high" && candidate.score >= 85);
     return matchesKeyword && matchesJob && matchesProfile;
   }), [talentCandidates, jobs, keyword, jobId, profileFilter]);
   const selectedTalent = filteredCandidates.find((candidate) => candidate.id === selectedTalentId) || filteredCandidates[0] || null;
@@ -2445,8 +2444,8 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, canHardDelete, onSt
     : null;
   const recommendCandidateAgeDays = recommendCandidate ? getTalentArchiveAgeDays(recommendCandidate) : null;
   const shouldWarnRevival = typeof recommendCandidateAgeDays === "number" && recommendCandidateAgeDays > 90;
+  const qualityProfileCount = talentCandidates.filter((candidate) => candidate.score >= 75).length;
   const highProfileCount = talentCandidates.filter((candidate) => candidate.score >= 85).length;
-  const reusableCount = talentCandidates.filter(isReusableTalent).length;
 
   useEffect(() => {
     if (!recommendCandidate) return;
@@ -2570,8 +2569,8 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, canHardDelete, onSt
         </div>
         <div className="talent-metrics">
           <Metric label="入库人才" value={talentCandidates.length} />
+          <Metric label="优质人才" value={qualityProfileCount} />
           <Metric label="高画像人选" value={highProfileCount} />
-          <Metric label="可复用人选" value={reusableCount} />
         </div>
       </section>
 
@@ -2579,7 +2578,7 @@ function TalentPoolView({ jobs, currentJob, candidatesByJob, canHardDelete, onSt
         <div className="talent-filter-grid">
           <label className="field"><span>搜索人才</span><ArcoInput prefix={<IconSearch />} value={keyword} onChange={setKeyword} placeholder="输入姓名、岗位、关键词、经历内容" allowClear /></label>
           <label className="field"><span>原岗位</span><Select value={jobId} onChange={(event) => setJobId(event.target.value)}><option value="all">全部岗位</option>{jobs.map((job) => <option key={job.id} value={job.id}>{job.title} · {job.dept}</option>)}</Select></label>
-          <label className="field"><span>画像筛选</span><Select value={profileFilter} onChange={(event) => setProfileFilter(event.target.value)}><option value="all">全部画像</option><option value="high">高画像（85分+）</option><option value="reusable">可复用（75分+且命中关键点）</option><option value="interviewed">已进入面试流程</option></Select></label>
+          <label className="field"><span>画像筛选</span><Select value={profileFilter} onChange={(event) => setProfileFilter(event.target.value)}><option value="all">全部画像</option><option value="quality">优质人才（75分及以上）</option><option value="high">高画像（85分及以上）</option></Select></label>
         </div>
       </section>
 
@@ -3026,6 +3025,7 @@ function getTalentOutcome(candidate: Candidate) {
 }
 
 function isTalentInActiveProcess(candidate: Candidate) {
+  if (!isInterviewCandidate(candidate)) return false;
   if (candidate.interviewStage === "推荐") {
     return candidate.stageRecommendation !== "否";
   }
@@ -3039,13 +3039,17 @@ function isTalentInActiveProcess(candidate: Candidate) {
 }
 
 function getTalentProcessStageLabel(candidate: Candidate) {
+  if (!isInterviewCandidate(candidate)) return "未进入流程";
   if (!candidate.interviewStage) return "未进入流程";
   if (candidate.interviewStage === "offer" && getCandidateOfferStatus(candidate) === "不发出") return "复试通过 · 未发Offer";
   return candidate.interviewStage === "offer" ? "Offer" : candidate.interviewStage;
 }
 
 function formatTalentArchiveTime(candidate: Candidate) {
-  return candidate.talentPoolAt || candidate.interviewTimeline?.onboardedAt || (isHiredTalent(candidate) ? "入职自动归档" : "已入库");
+  return candidate.talentPoolAt
+    || candidate.interviewTimeline?.recommendedAt
+    || candidate.interviewTimeline?.onboardedAt
+    || (isHiredTalent(candidate) ? "入职自动归档" : "已入库");
 }
 
 function formatSimpleDate(date = new Date()) {
@@ -3077,6 +3081,7 @@ function getTalentArchiveAgeDays(candidate: Candidate) {
 
 function getTalentArchiveDate(candidate: Candidate) {
   return parseTalentDate(candidate.talentPoolAt)
+    || parseTalentDate(candidate.interviewTimeline?.recommendedAt)
     || parseTalentDate(candidate.interviewTimeline?.onboardedAt)
     || parseTalentDate(candidate.uploadTime)
     || null;
@@ -3131,11 +3136,6 @@ function TalentFreshnessHat({ candidate, compact = false }: { candidate: Candida
   );
 }
 
-function isReusableTalent(candidate: Candidate) {
-  const matchedCount = candidate.keyPointAnalysis.filter((item) => item.matched).length;
-  return getTalentOutcome(candidate).key === "reusable" && candidate.score >= 75 && matchedCount >= 2;
-}
-
 function buildTalentOutcomeSummary(candidates: Candidate[]): Record<TalentOutcomeKey, number> {
   return candidates.reduce<Record<TalentOutcomeKey, number>>((summary, candidate) => {
     const outcome = getTalentOutcome(candidate);
@@ -3146,9 +3146,8 @@ function buildTalentOutcomeSummary(candidates: Candidate[]): Record<TalentOutcom
 
 function buildTalentProfileTags(candidate: Candidate, matchedKeywords: string[], frequentKeywords: Set<string>) {
   const tags = [
-    candidate.score >= 85 ? "高画像" : null,
-    isReusableTalent(candidate) ? "可复用" : null,
-    candidate.interviewStage ? `流程：${candidate.interviewStage}` : null,
+    candidate.score >= 85 ? "高画像" : candidate.score >= 75 ? "优质人才" : null,
+    isInterviewCandidate(candidate) && candidate.interviewStage ? `流程：${candidate.interviewStage}` : null,
     ...matchedKeywords.filter((keyword) => frequentKeywords.has(keyword)).slice(0, 2).map((keyword) => `高频：${keyword}`),
     ...matchedKeywords.slice(0, 2),
   ].filter((tag): tag is string => Boolean(tag));
@@ -3830,22 +3829,22 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedBatchId, onB
         <div className="toolbar">
           <div>
             <h3 className="card-title">{selectedJob ? `${selectedJob.title} · 面试管理` : "面试管理"}</h3>
-            <p className="helper-text">默认只看当前招聘批次；切换历史批次可回看旧人选，数据不会混入本轮招聘。</p>
+            <p className="helper-text">先选择岗位，再查看该岗位当前或历史招聘轮次；选择全部岗位时，默认汇总各岗位当前一轮。</p>
           </div>
           <div className="toolbar-right interview-filters">
             <label className="interview-filter-field">
-              <span>岗位范围</span>
+              <span>选择岗位</span>
               <Select value={selectedJobId} onChange={(event) => onJobChange(event.target.value)}>
-                <option value="all">全部</option>
+                <option value="all">全部岗位</option>
                 {jobs.map((job) => <option key={job.id} value={job.id}>{formatJobOption(job)}{job.status === "招聘中" ? "" : ` · ${job.status}`}</option>)}
               </Select>
             </label>
             <label className="interview-filter-field">
-              <span>招聘批次</span>
+              <span>招聘轮次</span>
               <Select value={selectedBatchId} onChange={(event) => { onBatchChange(event.target.value); onMonthChange("all"); }}>
-                <option value="current">{selectedJob && currentBatch ? `当前 · ${currentBatch.label} ${currentBatch.targetMonth}` : "全部岗位当前批次"}</option>
+                <option value="current">{selectedJob && currentBatch ? `当前招聘 · ${currentBatch.label} · ${currentBatch.targetMonth}` : "各岗位当前轮次"}</option>
                 {previousBatches.map((batch) => <option key={batch.id} value={batch.id}>{batch.label} · {batch.targetMonth}</option>)}
-                <option value="all">全部批次</option>
+                <option value="all">{selectedJob ? "该岗位全部轮次" : "全部岗位全部轮次"}</option>
               </Select>
             </label>
             <label className="interview-filter-field">

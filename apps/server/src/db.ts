@@ -912,6 +912,9 @@ function normalizeLegacyExperience(value: string) {
 }
 
 function rowToCandidate(row: CandidateRow): Candidate {
+  const removedFromTalentPool = Boolean(row.removedFromTalentPool);
+  const onboarded = normalizeOnboarded(row.onboarded);
+  const isAutomaticallyArchived = row.conclusion === "已邀面试" || onboarded === "是";
   return {
     id: row.id,
     jobId: row.jobId,
@@ -937,16 +940,16 @@ function rowToCandidate(row: CandidateRow): Candidate {
     interviewStage: normalizeInterviewStage(row.interviewStage),
     stageRecommendation: normalizeStageRecommendation(row.stageRecommendation),
     interviewResult: String(row.interviewResult || "待定") as Candidate["interviewResult"],
-    onboarded: normalizeOnboarded(row.onboarded),
+    onboarded,
     reportMonth: row.reportMonth || formatReportMonth(),
     interviewReason: row.interviewReason || "",
     reasonTags: parseStringArray(row.reasonTags),
     interviewTimeline: parseCandidateTimeline(row.interviewTimeline),
-    isInTalentPool: Boolean(row.isInTalentPool),
+    isInTalentPool: !removedFromTalentPool && (Boolean(row.isInTalentPool) || isAutomaticallyArchived),
     talentPoolAt: row.talentPoolAt || "",
     talentPoolNote: row.talentPoolNote || "",
     removedFromScreening: Boolean(row.removedFromScreening),
-    removedFromTalentPool: Boolean(row.removedFromTalentPool),
+    removedFromTalentPool,
   };
 }
 

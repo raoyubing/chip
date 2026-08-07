@@ -856,6 +856,9 @@ server.post("/api/candidates/:id/mark-interview", async (request) => {
       ...(candidate.interviewTimeline || {}),
       recommendedAt: candidate.interviewTimeline?.recommendedAt || formatDateStamp(),
     },
+    isInTalentPool: true,
+    talentPoolAt: candidate.talentPoolAt || new Date().toLocaleString("zh-CN"),
+    removedFromTalentPool: false,
   });
   return getState();
 });
@@ -1033,6 +1036,8 @@ server.patch("/api/candidates/:id/interview-stage", async (request) => {
     interviewReason: body.interviewReason,
     reasonTags,
     interviewTimeline: timeline,
+    isInTalentPool: candidate.removedFromTalentPool ? candidate.isInTalentPool : true,
+    talentPoolAt: candidate.removedFromTalentPool ? candidate.talentPoolAt : candidate.talentPoolAt || new Date().toLocaleString("zh-CN"),
   });
   return getState();
 });
