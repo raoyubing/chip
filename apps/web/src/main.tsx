@@ -1281,11 +1281,8 @@ function Dashboard({
   }, [candidates, granularity, selectedPeriod]);
 
   const activeJobs = state.jobs.filter((job) => job.status === "招聘中");
-  const periodJobs = state.jobs.map((job) => ({
-    ...job,
-    resumeCount: filteredCandidates.filter((candidate) => candidate.jobId === job.id).length,
-  }));
-  const periodActiveJobs = periodJobs.filter((job) => job.status === "招聘中");
+  const periodJobs = buildPeriodJobResumeRows(state.jobs, candidates, granularity, selectedPeriod);
+  const periodActiveJobs = periodJobs;
   const processPeriodCandidates = candidates.filter((candidate) => candidateHasProcessInPeriod(candidate, granularity, selectedPeriod));
   const insightJobOptions = state.jobs.filter((job) =>
     processPeriodCandidates.some((candidate) => candidate.jobId === job.id)
@@ -1328,7 +1325,10 @@ function Dashboard({
   const actionPlan = buildRecruitmentActionPlan({ activeJobs: insightJobId === "all" ? periodActiveJobs : periodJobs.filter((job) => job.id === insightJobId), channelAnalytics, durationAnalytics, issueReview });
   const periodComparison = buildPeriodComparison(comparisonCandidates, granularity, selectedPeriod, previousPeriod);
   const focusJob = state.jobs.find((job) => job.id === focusJobId) || currentJob;
-  const focusJobAnalysis = buildFocusJobAnalysis(focusJob, filteredCandidates.filter((candidate) => candidate.jobId === focusJob.id));
+  const focusJobAnalysis = buildFocusJobAnalysis(
+    focusJob,
+    getJobCandidatesForRecruitmentPeriod(focusJob, candidates, granularity, selectedPeriod),
+  );
   const pendingOnboardAnalytics = buildPendingOnboardReasonAnalytics(candidates, state.jobs, granularity, selectedPeriod);
   const reviewScopeLabel = insightJobId === "all"
     ? "全部岗位"
@@ -1558,7 +1558,7 @@ function Dashboard({
 
       {activeSection === "jobs" ? <div className="grid dashboard-job-analysis-stack section-panel-enter">
         <div className="grid cols-2 dashboard-job-overview-grid">
-          <section className="card"><CardHeader title="职位简历量" desc={`按当前${formatAnalyticsGranularity(granularity)}筛选统计在招岗位简历量`} /><JobBarChart jobs={periodActiveJobs} /></section>
+          <section className="card"><CardHeader title="职位简历量" desc="按招聘月份展示当期岗位，并延续展示尚未完成的跨期岗位" /><JobBarChart jobs={periodActiveJobs} /></section>
           <section className="card pad pending-onboard-card">
             <CardHeader title="复试通过后未入职原因占比" desc="待决策、待入职由系统自动归类；不发出或入职为否时按面试管理中的原因统计。" />
             {pendingOnboardAnalytics.total ? (
@@ -3771,12 +3771,12 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedBatchId, onB
   const activeStageCandidates = batchScopedCandidates
     .filter((candidate) => isInterviewCandidate(candidate))
     .filter((candidate) => (candidate.interviewStage || "推荐") === activeStage);
-  const monthOptions = Array.from(new Set(activeStageCandidates.map((candidate) => getCandidateStageReportMonth(candidate, activeStage)).filter(Boolean))).sort((a, b) => b.localeCompare(a, "zh-Hans-CN"));
+  const monthOptions = Array.from(new Set(activeStageCandidates.flatMap((candidate) => getCandidateInterviewDisplayMonths(candidate, activeStage)))).sort((a, b) => b.localeCompare(a, "zh-Hans-CN"));
   const showJobColumn = selectedJobId === "all";
   const tableWrapRef = useRef<HTMLDivElement | null>(null);
   const [tableScrollState, setTableScrollState] = useState({ clientWidth: 0, scrollWidth: 0, scrollLeft: 0 });
   const interviewCandidates = activeStageCandidates
-    .filter((candidate) => selectedMonth === "all" || getCandidateStageReportMonth(candidate, activeStage) === selectedMonth);
+    .filter((candidate) => selectedMonth === "all" || getCandidateInterviewDisplayMonths(candidate, activeStage).includes(selectedMonth));
   const maxTableScrollLeft = Math.max(tableScrollState.scrollWidth - tableScrollState.clientWidth, 0);
 
   useEffect(() => {
@@ -3859,7 +3859,7 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedBatchId, onB
         <div className="stage-filter-tabs">
           {interviewStages.map((stage) => (
             <Button key={stage} type="button" className={`stage-filter ${activeStage === stage ? "active" : ""}`} onClick={() => { onStageChange(stage); onMonthChange("all"); }}>
-              {formatInterviewStageLabel(stage)}<span>{batchScopedCandidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.interviewStage || "推荐") === stage && (selectedMonth === "all" || getCandidateStageReportMonth(candidate, stage) === selectedMonth)).length}</span>
+              {formatInterviewStageLabel(stage)}<span>{batchScopedCandidates.filter((candidate) => isInterviewCandidate(candidate) && (candidate.interviewStage || "推荐") === stage && (selectedMonth === "all" || getCandidateInterviewDisplayMonths(candidate, stage).includes(selectedMonth))).length}</span>
             </Button>
           ))}
         </div>
@@ -3870,7 +3870,7 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedBatchId, onB
             <table className="table interview-table">
               <thead><tr><th>候选人</th><th>阶段日期</th>{showJobColumn && <th>岗位</th>}<th>来源</th><th>{activeStage === "推荐" ? "是否推荐" : "阶段"}</th>{activeStage === "offer" ? <><th>Offer状态</th><th>计划到岗</th><th>入职状态</th></> : <th>{activeStage === "推荐" ? "推荐流向" : "面试结果"}</th>}<th>{activeStage === "offer" ? "入职日期 / 未入职原因" : "标签"}</th><th>备注</th><th>操作</th></tr></thead>
               <tbody>
-                {interviewCandidates.map((candidate) => <InterviewStageRow key={candidate.id} candidate={candidate} jobs={jobs} showJobColumn={showJobColumn} activeStage={activeStage} onSaveStage={onSaveStage} />)}
+                {interviewCandidates.map((candidate) => <InterviewStageRow key={candidate.id} candidate={candidate} jobs={jobs} showJobColumn={showJobColumn} activeStage={activeStage} selectedMonth={selectedMonth} onSaveStage={onSaveStage} />)}
               </tbody>
             </table>
           ) : (
@@ -3897,7 +3897,7 @@ function InterviewsView({ jobs, selectedJobId, onJobChange, selectedBatchId, onB
   );
 }
 
-function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSaveStage }: { candidate: Candidate; jobs: Job[]; showJobColumn: boolean; activeStage: InterviewStage; onSaveStage: InterviewStageSaveHandler }) {
+function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, selectedMonth, onSaveStage }: { candidate: Candidate; jobs: Job[]; showJobColumn: boolean; activeStage: InterviewStage; selectedMonth: string; onSaveStage: InterviewStageSaveHandler }) {
   const job = jobs.find((item) => item.id === candidate.jobId) || null;
   const defaultReason = candidate.interviewReason || "";
   const currentReasonTagOptions = getReasonTagOptions(activeStage);
@@ -3915,6 +3915,8 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
   const [targetStage, setTargetStage] = useState<NonNullable<Candidate["interviewStage"]>>(candidate.interviewStage || "推荐");
   const [editingFlow, setEditingFlow] = useState(false);
   const [saving, setSaving] = useState(false);
+  const stageReportMonth = getCandidateStageReportMonth(candidate, activeStage);
+  const isCrossMonthCarryover = selectedMonth !== "all" && Boolean(stageReportMonth) && stageReportMonth !== selectedMonth;
   const shouldManageReasonTags = shouldManageReasonTagsForDecision(activeStage, interviewResult, onboarded, offerStatus);
   const plannedOnboardDateValid = offerStatus !== "已发出" || /^\d{4}-\d{2}-\d{2}$/.test(plannedOnboardDate);
   const actualOnboardDateValid = onboarded !== "是" || /^\d{4}-\d{2}-\d{2}$/.test(actualOnboardDate);
@@ -3991,6 +3993,7 @@ function InterviewStageRow({ candidate, jobs, showJobColumn, activeStage, onSave
       <td><strong>{candidate.name}</strong><span className="meta">{candidate.uploadTime}</span></td>
       <td>
         <input className="month-input stage-date-input" aria-label={`${formatInterviewStageLabel(activeStage)}日期`} type="date" value={stageDate} onChange={(event) => setStageDate(event.target.value)} />
+        {isCrossMonthCarryover ? <span className="interview-carryover-hint">跨月进行中 · 始于{stageReportMonth}</span> : null}
       </td>
       {showJobColumn && <td><strong>{job?.title || "未知岗位"}</strong></td>}
       <td>{candidate.source.split(" · ")[0]}</td>
@@ -4321,6 +4324,25 @@ function getCandidateStageReportMonth(candidate: Candidate, stage: InterviewStag
   return date ? reportMonthFromDate(date) : "";
 }
 
+function getCandidateInterviewDisplayMonths(candidate: Candidate, stage: InterviewStage) {
+  const stageMonth = getCandidateStageReportMonth(candidate, stage);
+  if (!stageMonth) return [];
+  if (!isTalentInActiveProcess(candidate)) return [stageMonth];
+
+  const stageMonthIndex = getAnalyticsPeriodIndex(stageMonth, "month");
+  const currentMonth = formatReportMonth();
+  const currentMonthIndex = getAnalyticsPeriodIndex(currentMonth, "month");
+  if (stageMonthIndex === null || currentMonthIndex === null || stageMonthIndex >= currentMonthIndex) return [stageMonth];
+
+  const months: string[] = [];
+  for (let monthIndex = stageMonthIndex; monthIndex <= currentMonthIndex; monthIndex += 1) {
+    const year = Math.floor(monthIndex / 12);
+    const month = monthIndex % 12 + 1;
+    months.push(`${year}年${String(month).padStart(2, "0")}月`);
+  }
+  return months;
+}
+
 function reportMonthFromDate(value: string) {
   const matched = value.match(/^(\d{4})-(\d{2})-\d{2}$/);
   return matched ? `${matched[1]}年${matched[2]}月` : formatReportMonth();
@@ -4484,6 +4506,63 @@ function getRecruitmentBatchPeriodValue(batch: RecruitmentBatch, granularity: An
   if (granularity === "month") return parsed.normalized;
   if (granularity === "quarter") return parsed.quarter;
   return `${parsed.year}年`;
+}
+
+function getJobRecruitmentBatchIdsForPeriod(
+  job: Job,
+  candidates: Candidate[],
+  granularity: AnalyticsGranularity,
+  selectedPeriod: string,
+) {
+  const selectedPeriodIndex = getAnalyticsPeriodIndex(selectedPeriod, granularity);
+  if (selectedPeriodIndex === null) return new Set<string>();
+  const jobCandidates = candidates.filter((candidate) => candidate.jobId === job.id);
+  return new Set(job.recruitmentBatches
+    .filter((batch) => {
+      const batchPeriod = getRecruitmentBatchPeriodValue(batch, granularity);
+      const batchPeriodIndex = getAnalyticsPeriodIndex(batchPeriod, granularity);
+      if (batchPeriodIndex === null || batchPeriodIndex > selectedPeriodIndex) return false;
+      if (batchPeriodIndex === selectedPeriodIndex) return true;
+
+      const closedPeriod = batch.closedAt ? getDatePeriodValue(batch.closedAt, granularity) : "";
+      const closedPeriodIndex = closedPeriod ? getAnalyticsPeriodIndex(closedPeriod, granularity) : null;
+      if (batch.status !== "招聘中" && (closedPeriodIndex === null || closedPeriodIndex < selectedPeriodIndex)) return false;
+
+      const completedAsOfPeriod = jobCandidates.filter((candidate) => {
+        if (candidate.recruitmentBatchId !== batch.id || !isActiveHeadcountCompletion(candidate)) return false;
+        const offerSentAt = getCandidateOfferSentAt(candidate);
+        const offerPeriodIndex = offerSentAt
+          ? getAnalyticsPeriodIndex(getDatePeriodValue(offerSentAt, granularity), granularity)
+          : null;
+        return offerPeriodIndex !== null && offerPeriodIndex <= selectedPeriodIndex;
+      }).length;
+      return completedAsOfPeriod < batch.plannedHeadcount;
+    })
+    .map((batch) => batch.id));
+}
+
+function getJobCandidatesForRecruitmentPeriod(
+  job: Job,
+  candidates: Candidate[],
+  granularity: AnalyticsGranularity,
+  selectedPeriod: string,
+) {
+  const visibleBatchIds = getJobRecruitmentBatchIdsForPeriod(job, candidates, granularity, selectedPeriod);
+  return candidates.filter((candidate) => candidate.jobId === job.id && Boolean(candidate.recruitmentBatchId) && visibleBatchIds.has(candidate.recruitmentBatchId!));
+}
+
+function buildPeriodJobResumeRows(
+  jobs: Job[],
+  candidates: Candidate[],
+  granularity: AnalyticsGranularity,
+  selectedPeriod: string,
+) {
+  return jobs.map((job) => {
+    const periodCandidates = getJobCandidatesForRecruitmentPeriod(job, candidates, granularity, selectedPeriod);
+    const visibleBatchIds = getJobRecruitmentBatchIdsForPeriod(job, candidates, granularity, selectedPeriod);
+    if (!visibleBatchIds.size) return null;
+    return { ...job, resumeCount: periodCandidates.length };
+  }).filter((job): job is Job => Boolean(job));
 }
 
 function getAnalyticsPeriodOptions(candidates: Candidate[], granularity: AnalyticsGranularity, jobs: Job[] = []) {
@@ -8092,7 +8171,11 @@ function JobBarChart({ jobs }: { jobs: Job[] }) {
   const bottomPadding = Math.min(220, Math.max(120, longestTitle * 16));
   const chartHeight = Math.max(340, bottomPadding + 210);
   return (
-    <div className="chart-scroll-wrap chart-scroll-jobs">
+    <div
+      className="chart-scroll-wrap chart-scroll-jobs"
+      role="img"
+      aria-label={jobs.length ? `职位简历量：${jobs.map((job) => `${job.title} ${job.resumeCount}份`).join("；")}` : "职位简历量：当前周期暂无岗位"}
+    >
       <Chart
         className="chart-job-bar"
         style={{ width: `${chartWidth}px`, height: `${chartHeight}px` }}

@@ -143,7 +143,7 @@ test("工作台时间筛选固定在右上角并作用于四个分区", async ({
   await globalFilters.getByRole("button", { name: "年数据" }).click();
   await expect(globalFilters).toContainText("统计年份");
   await page.locator(".section-radio-tabs").getByText("职位分析").click();
-  await expect(page.getByText("按当前年度筛选统计在招岗位简历量")).toBeVisible();
+  await expect(page.getByText("按招聘月份展示当期岗位，并延续展示尚未完成的跨期岗位")).toBeVisible();
 });
 
 test("AI招聘运营复盘按固定字段输出备注证据并缓存相同快照", async ({ page }) => {
@@ -1017,8 +1017,14 @@ test("小松鼠主流程无控制台错误，并可标记面试进入初试", as
   await expect(page.locator(".stage-filter.active").filter({ hasText: "推荐" })).toBeVisible();
   await expect(page.getByRole("columnheader", { name: "阶段日期" })).toBeVisible();
   await page.getByLabel("推荐日期").fill("2026-07-02");
-  await selectArcoOption(page, page.locator(".recommendation-select").first(), "是");
   await page.locator(".interview-remark").first().fill("推荐部门继续评估，重点确认业务落地经验。");
+  await page.getByRole("button", { name: "保存" }).first().click();
+
+  const interviewMonthFilter = page.locator(".interview-filter-field .arco-select").nth(2);
+  await selectArcoOption(page, interviewMonthFilter, "2026年08月");
+  await expect(page.locator(".interview-table tbody tr").first()).toContainText("跨月进行中 · 始于2026年07月");
+  await selectArcoOption(page, interviewMonthFilter, "全部");
+  await selectArcoOption(page, page.locator(".recommendation-select").first(), "是");
   await page.getByRole("button", { name: "保存" }).first().click();
 
   await page.locator(".stage-filter", { hasText: "初试" }).click();
@@ -1177,6 +1183,13 @@ test("访音解析左右区域可独立滚动", async ({ page }) => {
 
   await selectArcoOption(page, page.locator(".voice-form .arco-select").nth(0), /^HRBP/);
   await selectArcoOption(page, page.locator(".voice-form .arco-select").nth(1), /^赖雯/);
+  const associationFields = page.locator(".voice-form > .job-switcher");
+  const jobFieldBox = await associationFields.nth(0).boundingBox();
+  const candidateFieldBox = await associationFields.nth(1).boundingBox();
+  expect(jobFieldBox).not.toBeNull();
+  expect(candidateFieldBox).not.toBeNull();
+  expect(Math.abs(jobFieldBox!.width - candidateFieldBox!.width)).toBeLessThanOrEqual(2);
+  expect(candidateFieldBox!.y).toBeGreaterThan(jobFieldBox!.y + jobFieldBox!.height - 1);
   await page.getByPlaceholder(/可手动补充候选人未被准确识别的关键信息/).fill(
     "候选人负责招聘、绩效和组织发展推进，能讲清业务背景、关键动作和结果。".repeat(8),
   );
